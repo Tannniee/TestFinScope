@@ -1,3 +1,4 @@
+import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from app.backend.database.connection import get_db_connection
@@ -5,7 +6,7 @@ from app.backend.database.connection import get_db_connection
 class TransactionRepository:
     @staticmethod
     def get_all(
-        month: Optional[str] = None, # e.g. "2026-09"
+        month: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         account_id: Optional[int] = None,
@@ -20,7 +21,13 @@ class TransactionRepository:
             cur = conn.cursor()
             query = """
                 SELECT 
-                    t.*,
+                    t.id, t.account_id, t.category_id, t.merchant_id, t.merchant_name,
+                    t.transaction_type, t.amount_minor,
+                    ROUND(CAST(t.amount_minor AS REAL) / 100.0, 2) as amount,
+                    t.transaction_date, t.transaction_time, t.description, t.note,
+                    t.is_recurring, t.recurring_rule_id, t.payment_method, t.essentiality,
+                    t.transfer_group_id, t.linked_transaction_id,
+                    t.created_at, t.updated_at,
                     a.name as account_name,
                     c.name as category_name,
                     c.color as category_color,
@@ -58,12 +65,10 @@ class TransactionRepository:
                 term = f"%{search}%"
                 params.extend([term, term, term])
 
-            # Get total count
             count_query = f"SELECT COUNT(*) FROM ({query}) as count_sub"
             cur.execute(count_query, params)
             total_count = cur.fetchone()[0]
 
-            # Append ordering and pagination
             query += " ORDER BY t.transaction_date DESC, t.transaction_time DESC, t.id DESC LIMIT ? OFFSET ?"
             params.extend([limit, offset])
 
@@ -83,7 +88,13 @@ class TransactionRepository:
             cur = conn.cursor()
             cur.execute("""
                 SELECT 
-                    t.*,
+                    t.id, t.account_id, t.category_id, t.merchant_id, t.merchant_name,
+                    t.transaction_type, t.amount_minor,
+                    ROUND(CAST(t.amount_minor AS REAL) / 100.0, 2) as amount,
+                    t.transaction_date, t.transaction_time, t.description, t.note,
+                    t.is_recurring, t.recurring_rule_id, t.payment_method, t.essentiality,
+                    t.transfer_group_id, t.linked_transaction_id,
+                    t.created_at, t.updated_at,
                     a.name as account_name,
                     c.name as category_name,
                     c.color as category_color,
@@ -98,44 +109,127 @@ class TransactionRepository:
 
     @staticmethod
     def create(data: Dict[str, Any]) -> int:
+        amount_minor = int(round(float(data["amount"]) * 100))
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
                 INSERT INTO transactions (
                     account_id, category_id, merchant_name, transaction_type,
-                    amount, transaction_date, transaction_time, description,
-                    note, is_recurring, payment_method, essentiality
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    amount_minor, transaction_date, transaction_time, description,
+                    note, is_recurring, payment_method, essentiality,
+                    transfer_group_id, linked_transaction_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data["account_id"],
                 data.get("category_id"),
                 data.get("merchant_name", ""),
                 data["transaction_type"],
-                float(data["amount"]),
+                amount_minor,
                 data["transaction_date"],
                 data.get("transaction_time", "12:00"),
                 data.get("description", ""),
                 data.get("note", ""),
                 1 if data.get("is_recurring") else 0,
                 data.get("payment_method", "Card"),
-                data.get("essentiality", "discretionary")
+                data.get("essentiality", "discretionary"),
+                data.get("transfer_group_id"),
+                data.get("linked_transaction_id")
             ))
             conn.commit()
             return cur.lastrowid
 
     @staticmethod
+    def create_transfer(
+        from_account_id: int,
+        to_account_id: int,
+        amount: float,
+        transaction_date: str,
+        transaction_time: str = "12:00",
+        description: str = "Account Transfer",
+        note: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Creates proper double-entry transfer records linked via transfer_group_id.
+        Leg 1: Outflow from source account (Debit)
+        Leg 2: Inflow into destination account (Credit)
+        """
+        if from_account_id == to_account_id:
+            raise ValueError("Source and destination accounts must be different.")
+
+        amount_minor = int(round(float(amount) * 100))
+        group_id = str(uuid.uuid4())
+
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+
+            # Fetch account names
+            cur.execute("SELECT id, name FROM accounts WHERE id IN (?, ?)", (from_account_id, to_account_id))
+            acc_names = {r["id"]: r["name"] for r in cur.fetchall()}
+            from_name = acc_names.get(from_account_id, "Account")
+            to_name = acc_names.get(to_account_id, "Account")
+
+            # Outflow leg (From account)
+            cur.execute("""
+                INSERT INTO transactions (
+                    account_id, merchant_name, transaction_type,
+                    amount_minor, transaction_date, transaction_time, description,
+                    note, payment_method, essentiality, transfer_group_id
+                ) VALUES (?, ?, 'transfer', ?, ?, ?, ?, ?, 'Transfer', 'savings', ?)
+            """, (
+                from_account_id,
+                f"Transfer to {to_name}",
+                amount_minor,
+                transaction_date,
+                transaction_time,
+                description or f"Transfer to {to_name}",
+                note,
+                group_id
+            ))
+            leg1_id = cur.lastrowid
+
+            # Inflow leg (To account)
+            cur.execute("""
+                INSERT INTO transactions (
+                    account_id, merchant_name, transaction_type,
+                    amount_minor, transaction_date, transaction_time, description,
+                    note, payment_method, essentiality, transfer_group_id, linked_transaction_id
+                ) VALUES (?, ?, 'transfer', ?, ?, ?, ?, ?, 'Transfer', 'savings', ?, ?)
+            """, (
+                to_account_id,
+                f"Transfer from {from_name}",
+                amount_minor,
+                transaction_date,
+                transaction_time,
+                f"{description or 'Transfer'} (Received)",
+                note,
+                group_id,
+                leg1_id
+            ))
+            leg2_id = cur.lastrowid
+
+            # Link leg 1 back to leg 2
+            cur.execute("UPDATE transactions SET linked_transaction_id = ? WHERE id = ?", (leg2_id, leg1_id))
+            conn.commit()
+
+            return {
+                "transfer_group_id": group_id,
+                "outflow_tx_id": leg1_id,
+                "inflow_tx_id": leg2_id
+            }
+
+    @staticmethod
     def update(tx_id: int, data: Dict[str, Any]) -> bool:
         allowed = {
             "account_id", "category_id", "merchant_name", "transaction_type",
-            "amount", "transaction_date", "transaction_time", "description",
+            "transaction_date", "transaction_time", "description",
             "note", "is_recurring", "payment_method", "essentiality"
         }
         updates = {k: v for k, v in data.items() if k in allowed}
         if not updates:
             return False
 
-        if "amount" in updates:
-            updates["amount"] = float(updates["amount"])
+        if "amount" in data:
+            updates["amount_minor"] = int(round(float(data["amount"]) * 100))
         if "is_recurring" in updates:
             updates["is_recurring"] = 1 if updates["is_recurring"] else 0
 
@@ -151,9 +245,15 @@ class TransactionRepository:
 
     @staticmethod
     def delete(tx_id: int) -> bool:
+        """Deletes transaction and cleanly deletes linked transfer legs if part of a transfer group."""
         with get_db_connection() as conn:
             cur = conn.cursor()
-            cur.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+            cur.execute("SELECT transfer_group_id FROM transactions WHERE id = ?", (tx_id,))
+            row = cur.fetchone()
+            if row and row["transfer_group_id"]:
+                cur.execute("DELETE FROM transactions WHERE transfer_group_id = ?", (row["transfer_group_id"],))
+            else:
+                cur.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
             conn.commit()
             return cur.rowcount > 0
 
@@ -170,5 +270,7 @@ class TransactionRepository:
         clone.pop("category_name", None)
         clone.pop("category_color", None)
         clone.pop("category_icon", None)
+        clone.pop("transfer_group_id", None)
+        clone.pop("linked_transaction_id", None)
         clone["description"] = f"{clone.get('description', '')} (Copy)".strip()
         return TransactionRepository.create(clone)

@@ -1,6 +1,6 @@
 /**
  * FinScope Modals Controller
- * Add/Edit Transaction, Budget Editor, and Confirm Dialog
+ * Add/Edit Transaction, Double-Entry Transfer, Budget Editor, and Confirm Dialog
  */
 
 import { api } from '../api.js';
@@ -43,7 +43,7 @@ export const modals = {
         btn.classList.add('active');
         const selectedType = btn.dataset.type;
         document.getElementById('tx-type').value = selectedType;
-        this.filterCategoryDropdown(selectedType);
+        this.updateFormFieldsForType(selectedType);
       });
     });
 
@@ -53,13 +53,9 @@ export const modals = {
       const type = document.getElementById('tx-type').value;
       const amount = parseFloat(document.getElementById('tx-amount').value);
       const accountId = parseInt(document.getElementById('tx-account').value);
-      const categoryId = document.getElementById('tx-category').value ? parseInt(document.getElementById('tx-category').value) : null;
-      const merchant = document.getElementById('tx-merchant').value.trim();
       const date = document.getElementById('tx-date').value;
       const time = document.getElementById('tx-time').value || '12:00';
       const description = document.getElementById('tx-description').value.trim();
-      const essentiality = document.getElementById('tx-essentiality').value;
-      const isRecurring = document.getElementById('tx-recurring').checked;
       const note = document.getElementById('tx-note').value.trim();
 
       if (!amount || isNaN(amount) || amount <= 0) {
@@ -75,27 +71,57 @@ export const modals = {
         return;
       }
 
-      const payload = {
-        account_id: accountId,
-        category_id: categoryId,
-        merchant_name: merchant,
-        transaction_type: type,
-        amount: amount,
-        transaction_date: date,
-        transaction_time: time,
-        description: description || merchant,
-        note: note,
-        essentiality: essentiality,
-        is_recurring: isRecurring
-      };
-
       try {
-        if (this.activeTxId) {
-          await api.updateTransaction(this.activeTxId, payload);
-          showToast('Transaction updated successfully', 'success');
+        if (type === 'transfer') {
+          const toAccountId = parseInt(document.getElementById('tx-to-account').value);
+          if (!toAccountId) {
+            showToast('Please select the destination account', 'error');
+            return;
+          }
+          if (accountId === toAccountId) {
+            showToast('Source and destination accounts must be different', 'error');
+            return;
+          }
+
+          await api.createTransfer({
+            from_account_id: accountId,
+            to_account_id: toAccountId,
+            amount: amount,
+            transaction_date: date,
+            transaction_time: time,
+            description: description || 'Account Transfer',
+            note: note
+          });
+          showToast('Transfer completed successfully', 'success');
         } else {
-          await api.createTransaction(payload);
-          showToast('Transaction recorded successfully', 'success');
+          // Expense, Income, or Refund
+          const categoryId = document.getElementById('tx-category').value ? parseInt(document.getElementById('tx-category').value) : null;
+          const merchant = document.getElementById('tx-merchant').value.trim();
+          const essentiality = document.getElementById('tx-essentiality').value;
+          const isRecurring = document.getElementById('tx-recurring').checked;
+
+          const payload = {
+            account_id: accountId,
+            category_id: categoryId,
+            merchant_name: merchant,
+            transaction_type: type,
+            amount: amount,
+            transaction_date: date,
+            transaction_time: time,
+            description: description || merchant,
+            note: note,
+            essentiality: essentiality,
+            is_recurring: isRecurring
+          };
+
+          if (this.activeTxId) {
+            await api.updateTransaction(this.activeTxId, payload);
+            showToast('Transaction updated successfully', 'success');
+          } else {
+            await api.createTransaction(payload);
+            const msg = type === 'refund' ? 'Refund recorded successfully' : 'Transaction recorded successfully';
+            showToast(msg, 'success');
+          }
         }
 
         closeModal();
@@ -106,15 +132,37 @@ export const modals = {
     });
   },
 
-  populateSelectOptions() {
-    // Populate Accounts
-    const accSelect = document.getElementById('tx-account');
-    if (accSelect) {
-      accSelect.innerHTML = '<option value="">Select Account...</option>' +
-        state.accounts.map(a => `<option value="${a.id}">${a.name} (${a.account_type})</option>`).join('');
-    }
+  updateFormFieldsForType(type) {
+    const toAccGroup = document.getElementById('group-to-account');
+    const catGroup = document.getElementById('group-category');
+    const merchantGroup = document.getElementById('group-merchant');
+    const essGroup = document.getElementById('group-essentiality');
 
-    // Populate Categories
+    if (type === 'transfer') {
+      if (toAccGroup) toAccGroup.style.display = 'flex';
+      if (catGroup) catGroup.style.display = 'none';
+      if (merchantGroup) merchantGroup.style.display = 'none';
+      if (essGroup) essGroup.style.display = 'none';
+    } else {
+      if (toAccGroup) toAccGroup.style.display = 'none';
+      if (catGroup) catGroup.style.display = 'flex';
+      if (merchantGroup) merchantGroup.style.display = 'block';
+      if (essGroup) essGroup.style.display = 'flex';
+      this.filterCategoryDropdown(type === 'refund' ? 'expense' : type);
+    }
+  },
+
+  populateSelectOptions() {
+    const accSelect = document.getElementById('tx-account');
+    const toAccSelect = document.getElementById('tx-to-account');
+
+    const accOptions = '<option value="">Select Account...</option>' +
+      state.accounts.map(a => `<option value="${a.id}">${a.name} (${a.account_type})</option>`).join('');
+
+    if (accSelect) accSelect.innerHTML = accOptions;
+    if (toAccSelect) toAccSelect.innerHTML = '<option value="">Select Destination...</option>' +
+      state.accounts.map(a => `<option value="${a.id}">${a.name} (${a.account_type})</option>`).join('');
+
     this.filterCategoryDropdown(document.getElementById('tx-type')?.value || 'expense');
   },
 
@@ -122,7 +170,8 @@ export const modals = {
     const catSelect = document.getElementById('tx-category');
     if (!catSelect) return;
     const currentVal = catSelect.value;
-    const filtered = state.categories.filter(c => c.type === type);
+    const catType = type === 'refund' ? 'expense' : type;
+    const filtered = state.categories.filter(c => c.type === catType);
     catSelect.innerHTML = '<option value="">Select Category...</option>' +
       filtered.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
     if (currentVal) catSelect.value = currentVal;
@@ -154,11 +203,11 @@ export const modals = {
       modalOverlay.querySelectorAll('.segmented-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.type === type);
       });
-      this.filterCategoryDropdown(type);
+      this.updateFormFieldsForType(type);
       document.getElementById('tx-category').value = txData.category_id || '';
     } else {
       this.activeTxId = null;
-      title.textContent = 'Add Transaction';
+      title.textContent = 'Record Transaction';
       form.reset();
       const todayStr = new Date().toISOString().split('T')[0];
       document.getElementById('tx-date').value = defaultDate || todayStr;
@@ -170,7 +219,7 @@ export const modals = {
       if (state.accounts.length > 0) {
         document.getElementById('tx-account').value = state.accounts[0].id;
       }
-      this.filterCategoryDropdown('expense');
+      this.updateFormFieldsForType('expense');
     }
 
     modalOverlay.classList.add('open');

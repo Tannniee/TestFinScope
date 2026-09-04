@@ -1,5 +1,6 @@
 import logging
 from typing import Dict, Any, List, Optional
+from app.backend.config import open_data_folder
 from app.backend.repositories.account_repo import AccountRepository
 from app.backend.repositories.category_repo import CategoryRepository
 from app.backend.repositories.transaction_repo import TransactionRepository
@@ -8,6 +9,7 @@ from app.backend.services.analytics_service import AnalyticsService
 from app.backend.services.budget_service import BudgetService
 from app.backend.services.backup_service import BackupService
 from app.backend.services.sample_data import seed_sample_data
+from app.backend.services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,26 @@ class ApiHandler:
     def create_transaction(self, data: Dict[str, Any]) -> int:
         return TransactionRepository.create(data)
 
+    def create_transfer(
+        self,
+        from_account_id: int,
+        to_account_id: int,
+        amount: float,
+        transaction_date: str,
+        transaction_time: str = "12:00",
+        description: str = "Account Transfer",
+        note: str = ""
+    ) -> Dict[str, Any]:
+        return TransactionRepository.create_transfer(
+            from_account_id=from_account_id,
+            to_account_id=to_account_id,
+            amount=amount,
+            transaction_date=transaction_date,
+            transaction_time=transaction_time,
+            description=description,
+            note=note
+        )
+
     def update_transaction(self, tx_id: int, data: Dict[str, Any]) -> bool:
         return TransactionRepository.update(tx_id, data)
 
@@ -117,3 +139,14 @@ class ApiHandler:
 
     def seed_demo_data(self, clear_existing: bool = False) -> Dict[str, Any]:
         return seed_sample_data(clear_existing=clear_existing)
+
+    def open_data_dir(self) -> str:
+        return open_data_folder()
+
+    # --- Settings ---
+    def get_settings(self) -> Dict[str, str]:
+        return SettingsService.get_all_settings()
+
+    def update_settings(self, settings: Dict[str, str]) -> bool:
+        SettingsService.update_settings(settings)
+        return True

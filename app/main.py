@@ -29,15 +29,10 @@ def main():
     logger.info("Initializing database...")
     init_db()
 
-    # Check if we should seed initial transactions
-    with get_db_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM transactions")
-        count = cur.fetchone()[0]
-
-    if count == 0 or args.seed:
-        logger.info("Populating realistic demo data for initial exploration...")
-        seed_sample_data(clear_existing=args.seed)
+    # Seed sample demo data ONLY if explicitly requested via --seed flag
+    if args.seed:
+        logger.info("Explicit --seed flag passed. Populating realistic demo data...")
+        seed_sample_data(clear_existing=True)
 
     # 2. Start Local Server
     server, actual_port = start_server(port=args.port)

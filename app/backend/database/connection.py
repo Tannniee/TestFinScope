@@ -1,18 +1,18 @@
 import sqlite3
 import logging
 from pathlib import Path
+from contextlib import contextmanager
 from typing import Generator
 from app.backend.config import DB_PATH
+from app.backend.database.migrations_runner import run_migrations
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 1
-
 DEFAULT_ACCOUNTS = [
-    {"name": "Everyday Checking", "account_type": "Everyday", "institution": "Main Bank", "opening_balance": 3500.0, "currency": "USD"},
-    {"name": "High Yield Savings", "account_type": "Savings", "institution": "Capital Savings", "opening_balance": 12800.0, "currency": "USD"},
-    {"name": "Platinum Credit Card", "account_type": "Credit Card", "institution": "Chase", "opening_balance": -450.0, "currency": "USD"},
-    {"name": "Cash Wallet", "account_type": "Cash", "institution": "Cash", "opening_balance": 220.0, "currency": "USD"},
+    {"name": "Everyday Checking", "account_type": "Everyday", "institution": "Main Bank", "opening_balance_minor": 350000, "currency": "USD"},
+    {"name": "High Yield Savings", "account_type": "Savings", "institution": "Capital Savings", "opening_balance_minor": 1280000, "currency": "USD"},
+    {"name": "Platinum Credit Card", "account_type": "Credit Card", "institution": "Chase", "opening_balance_minor": -45000, "currency": "USD"},
+    {"name": "Cash Wallet", "account_type": "Cash", "institution": "Cash", "opening_balance_minor": 22000, "currency": "USD"},
 ]
 
 DEFAULT_CATEGORIES = [
@@ -38,7 +38,13 @@ DEFAULT_CATEGORIES = [
     {"name": "Internal Transfer", "type": "transfer", "icon": "repeat", "color": "#95A5A6"},
 ]
 
-from contextlib import contextmanager
+DEFAULT_SETTINGS = {
+    "currency": "USD",
+    "currency_symbol": "$",
+    "date_format": "YYYY-MM-DD",
+    "theme": "dark",
+    "has_initialized": "true"
+}
 
 @contextmanager
 def get_db_connection() -> Generator[sqlite3.Connection, None, None]:
@@ -52,33 +58,35 @@ def get_db_connection() -> Generator[sqlite3.Connection, None, None]:
         conn.close()
 
 def init_db():
-    """Initializes the database schema and default records if empty."""
-    schema_file = Path(__file__).resolve().parent / "schema.sql"
-    with open(schema_file, "r", encoding="utf-8") as f:
-        schema_sql = f.read()
+    """Initializes the database schema and default records safely using migrations."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     with get_db_connection() as conn:
-        conn.executescript(schema_sql)
+        # 1. Run migrations safely
+        run_migrations(conn)
 
-        # Check migration version
         cur = conn.cursor()
-        cur.execute("SELECT MAX(version) FROM schema_migrations")
-        row = cur.fetchone()
-        version = row[0] if row and row[0] is not None else 0
 
-        if version < CURRENT_SCHEMA_VERSION:
-            conn.execute("INSERT INTO schema_migrations (version) VALUES (?)", (CURRENT_SCHEMA_VERSION,))
+        # 2. Seed default settings if empty
+        for k, v in DEFAULT_SETTINGS.items():
+            conn.execute(
+                "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
+                (k, v)
+            )
 
-        # Seed default accounts if none exist
+        # 3. Seed default accounts if none exist
         cur.execute("SELECT COUNT(*) FROM accounts")
         if cur.fetchone()[0] == 0:
             for acc in DEFAULT_ACCOUNTS:
                 conn.execute(
-                    "INSERT INTO accounts (name, account_type, institution, opening_balance, currency) VALUES (?, ?, ?, ?, ?)",
-                    (acc["name"], acc["account_type"], acc["institution"], acc["opening_balance"], acc["currency"])
+                    """
+                    INSERT INTO accounts (name, account_type, institution, opening_balance_minor, currency)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (acc["name"], acc["account_type"], acc["institution"], acc["opening_balance_minor"], acc["currency"])
                 )
 
-        # Seed default categories if none exist
+        # 4. Seed default categories if none exist
         cur.execute("SELECT COUNT(*) FROM categories")
         if cur.fetchone()[0] == 0:
             for cat in DEFAULT_CATEGORIES:
@@ -88,4 +96,5 @@ def init_db():
                 )
 
         conn.commit()
+
     logger.info("Database initialized successfully at %s", DB_PATH)

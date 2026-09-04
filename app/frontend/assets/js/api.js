@@ -5,7 +5,6 @@
 
 export const api = {
   async call(method, params = {}) {
-    // If PyWebView native bridge is available
     if (window.pywebview && window.pywebview.api && typeof window.pywebview.api[method] === 'function') {
       try {
         return await window.pywebview.api[method](params);
@@ -15,7 +14,6 @@ export const api = {
       }
     }
 
-    // Otherwise fallback to HTTP server
     try {
       const response = await fetch(`/api/${method}`, {
         method: 'POST',
@@ -52,6 +50,9 @@ export const api = {
   },
   createTransaction(data) {
     return this.call('create_transaction', { data });
+  },
+  createTransfer(params) {
+    return this.call('create_transfer', params);
   },
   updateTransaction(id, data) {
     return this.call('update_transaction', { tx_id: id, data });
@@ -97,5 +98,16 @@ export const api = {
   },
   seedDemoData(clearExisting = false) {
     return this.call('seed_demo_data', { clear_existing: clearExisting });
+  },
+  openDataDir() {
+    return this.call('open_data_dir');
+  },
+
+  // Settings
+  getSettings() {
+    return this.call('get_settings');
+  },
+  updateSettings(settings) {
+    return this.call('update_settings', { settings });
   }
 };

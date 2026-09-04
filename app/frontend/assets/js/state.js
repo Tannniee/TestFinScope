@@ -1,5 +1,6 @@
 /**
  * FinScope Global State Manager
+ * Dynamic currency, locale formatting, and state synchronization
  */
 
 import { api } from './api.js';
@@ -12,9 +13,11 @@ const defaultMonth = `${currentYear}-${currentMonthNum}`;
 export const state = {
   month: localStorage.getItem('finscope_month') || defaultMonth,
   accountId: null,
+  currency: 'USD',
   privacyMode: localStorage.getItem('finscope_privacy') === 'true',
   accounts: [],
   categories: [],
+  settings: {},
   listeners: new Set(),
 
   subscribe(fn) {
@@ -59,6 +62,16 @@ export const state = {
     this.notify({ type: 'account_changed', accountId: this.accountId });
   },
 
+  async setCurrency(currencyCode) {
+    this.currency = currencyCode;
+    try {
+      await api.updateSettings({ currency: currencyCode });
+      this.notify({ type: 'currency_changed', currency: currencyCode });
+    } catch (err) {
+      console.error('Failed to update currency setting:', err);
+    }
+  },
+
   togglePrivacyMode() {
     this.privacyMode = !this.privacyMode;
     localStorage.setItem('finscope_privacy', this.privacyMode);
@@ -68,12 +81,17 @@ export const state = {
 
   async loadInitialData() {
     try {
-      const [accs, cats] = await Promise.all([
+      const [accs, cats, settings] = await Promise.all([
         api.getAccounts(),
-        api.getCategories()
+        api.getCategories(),
+        api.getSettings()
       ]);
       this.accounts = accs;
       this.categories = cats;
+      this.settings = settings || {};
+      if (this.settings.currency) {
+        this.currency = this.settings.currency;
+      }
       this.notify({ type: 'meta_loaded' });
     } catch (err) {
       console.error('Failed to load initial metadata:', err);
@@ -85,12 +103,21 @@ export const state = {
       return '••••••';
     }
     const val = Number(amount || 0);
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(val);
+    const curr = this.currency || 'USD';
+
+    try {
+      const locale = curr === 'VND' ? 'vi-VN' : 'en-US';
+      const fractionDigits = curr === 'VND' || curr === 'JPY' ? 0 : 2;
+
+      return new Intl.NumberFormat(locale, {
+        style: 'currency',
+        currency: curr,
+        minimumFractionDigits: fractionDigits,
+        maximumFractionDigits: fractionDigits
+      }).format(val);
+    } catch (err) {
+      return `$${val.toFixed(2)}`;
+    }
   },
 
   formatMonthLabel(monthStr) {

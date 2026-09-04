@@ -127,13 +127,14 @@
             <button type="button" class="segmented-btn active expense" data-type="expense">Expense</button>
             <button type="button" class="segmented-btn income" data-type="income">Income</button>
             <button type="button" class="segmented-btn transfer" data-type="transfer">Transfer</button>
+            <button type="button" class="segmented-btn refund" data-type="refund">Refund</button>
           </div>
         </div>
 
         <!-- Amount & Date -->
         <div class="form-row">
           <div class="form-group">
-            <label class="form-label" for="tx-amount">Amount ($)</label>
+            <label class="form-label" for="tx-amount">Amount</label>
             <input type="number" id="tx-amount" class="form-input" placeholder="0.00" step="0.01" min="0.01" required />
           </div>
           <div class="form-group">
@@ -144,22 +145,28 @@
 
         <!-- Account & Category -->
         <div class="form-row">
-          <div class="form-group">
-            <label class="form-label" for="tx-account">Account</label>
+          <div class="form-group" id="group-account">
+            <label class="form-label" for="tx-account" id="label-account">Account / Source</label>
             <select id="tx-account" class="form-select" required>
               <option value="">Select Account...</option>
             </select>
           </div>
-          <div class="form-group">
+          <div class="form-group" id="group-category">
             <label class="form-label" for="tx-category">Category</label>
             <select id="tx-category" class="form-select">
               <option value="">Select Category...</option>
             </select>
           </div>
+          <div class="form-group" id="group-to-account" style="display: none;">
+            <label class="form-label" for="tx-to-account">Destination Account</label>
+            <select id="tx-to-account" class="form-select">
+              <option value="">Select Destination...</option>
+            </select>
+          </div>
         </div>
 
         <!-- Merchant / Payee -->
-        <div class="form-group">
+        <div class="form-group" id="group-merchant">
           <label class="form-label" for="tx-merchant">Merchant / Payee</label>
           <input type="text" id="tx-merchant" class="form-input" placeholder="e.g. Woolworths, Starbucks, City Rent" />
         </div>
@@ -177,7 +184,7 @@
         </div>
 
         <!-- Essentiality & Recurring -->
-        <div class="form-row">
+        <div class="form-row" id="group-essentiality">
           <div class="form-group">
             <label class="form-label" for="tx-essentiality">Essentiality</label>
             <select id="tx-essentiality" class="form-select">
