@@ -4,6 +4,8 @@ from app.backend.services.transfer_service import TransferService
 from app.backend.repositories.account_repo import AccountRepository
 from app.backend.repositories.category_repo import CategoryRepository
 from app.backend.services.import_service import ImportService
+from app.backend.services.backup_service import BackupService
+from app.backend import config
 
 
 def test_bug_001_duplicate_expense_succeeds(isolated_db):
@@ -279,5 +281,25 @@ def test_bug_003c_duplicate_detection_not_flagging_different_merchants(isolated_
 
     txs = TransactionRepository.get_all(account_id=acc_id)
     assert txs["total"] == 2 # 1 pre-existing Woolworths + 1 imported Chemist Warehouse
+
+
+def test_bug_004_restore_invalid_backup_preserves_root_exception(isolated_db):
+    import zipfile
+
+    acc_id = AccountRepository.create("Safe Acc", "checking", opening_balance=999.0)
+    config.BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+    corrupt_zip = config.BACKUPS_DIR / "corrupt_test.financebackup"
+
+    # Create a corrupted zip with empty dummy file instead of valid finance.db
+    with zipfile.ZipFile(corrupt_zip, "w") as zf:
+        zf.writestr("not_finance.db", b"garbage data")
+
+    # Restoring must raise ValueError, and critically MUST NOT throw NameError (unbound logger)
+    with pytest.raises(ValueError, match="Invalid backup archive: finance.db missing"):
+        BackupService.restore_backup(str(corrupt_zip))
+
+    # Live database must remain completely intact
+    bal = AccountRepository.get_balance(acc_id)
+    assert bal == 999.0
 
 

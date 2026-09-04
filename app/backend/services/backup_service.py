@@ -3,11 +3,14 @@ import json
 import zipfile
 import csv
 import sqlite3
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from app.backend import config
 from app.backend.database.connection import get_db_connection
+
+logger = logging.getLogger(__name__)
 
 class BackupService:
     @staticmethod
@@ -192,7 +195,7 @@ class BackupService:
             }
 
         except Exception as e:
-            logger.error("Restore failed: %s. Preserving original database.", e)
+            logger.exception("Restore failed: %s. Preserving original database.", e)
             raise
 
         finally:
