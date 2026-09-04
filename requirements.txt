@@ -1,3 +1,2 @@
 pywebview>=5.0
-bottle>=0.13
 typing_extensions>=4.0

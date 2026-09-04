@@ -693,7 +693,7 @@ def test_aud_008_post_restore_failure_rolls_back_live_database(isolated_db, monk
 
     # Invariant check: Live DB must have been restored to its safety snapshot
     # containing "Live Account Must Be Preserved"!
-    monkeypatch.undo()
+    monkeypatch.setattr("app.backend.services.backup_service.sqlite3.connect", real_connect)
     rolled_back_accs = AccountRepository.get_all()
     names = [a["name"] for a in rolled_back_accs]
     assert "Live Account Must Be Preserved" in names, "Live DB should have rolled back to safety backup state!"
@@ -920,6 +920,120 @@ def test_aud_012_fresh_migrated_schema_and_constraints(isolated_db):
                 transfer_role, source
             ) VALUES (?, 1000, '2026-09-01', 'expense', NULL, 'illegal_source')
         """, (acc_id,))
+
+
+def test_aud_013_recent_payees_uses_latest_transaction_metadata(isolated_db):
+    """
+    AUD-013: get_recent_payees must deterministically use metadata (category, account,
+    amount) from the latest transaction, not an arbitrary historical row.
+    """
+    from app.backend.services.merchant_service import MerchantService
+
+    acc_a = AccountRepository.create("Account A", "checking", opening_balance=1000.0)
+    acc_b = AccountRepository.create("Account B", "checking", opening_balance=1000.0)
+
+    cat_dining = CategoryRepository.create("Dining", "expense")
+    cat_coffee = CategoryRepository.create("Coffee", "expense")
+
+    # Older transaction in January: Starbucks, Account A, Dining, $5.00
+    TransactionRepository.create({
+        "account_id": acc_a,
+        "category_id": cat_dining,
+        "amount": 5.0,
+        "transaction_type": "expense",
+        "merchant_name": "Starbucks",
+        "transaction_date": "2026-01-10",
+        "transaction_time": "08:00"
+    })
+
+    # Newer transaction in September: Starbucks, Account B, Coffee, $7.50
+    TransactionRepository.create({
+        "account_id": acc_b,
+        "category_id": cat_coffee,
+        "amount": 7.5,
+        "transaction_type": "expense",
+        "merchant_name": "Starbucks",
+        "transaction_date": "2026-09-01",
+        "transaction_time": "14:30"
+    })
+
+    recent = MerchantService.get_recent_payees(limit=5)
+    assert len(recent) == 1
+    item = recent[0]
+
+    assert item["merchant_name"] == "Starbucks"
+    # Metadata MUST match the latest transaction (September)!
+    assert item["account_id"] == acc_b, "Recent payee account must be from latest transaction"
+    assert item["category_id"] == cat_coffee, "Recent payee category must be from latest transaction"
+    assert item["amount"] == 7.50, "Recent payee amount must be from latest transaction"
+    assert item["transaction_count"] == 2
+
+
+def test_aud_013_recent_payees_deterministic_tie_break(isolated_db):
+    """
+    AUD-013: When transactions share the same transaction_date,
+    the tie is broken deterministically by transaction_time and id.
+    """
+    from app.backend.services.merchant_service import MerchantService
+
+    acc_id = AccountRepository.create("Tie Acc", "checking", opening_balance=1000.0)
+    cat_lunch = CategoryRepository.create("Lunch", "expense")
+    cat_dinner = CategoryRepository.create("Dinner", "expense")
+
+    # Transaction 1: 12:00
+    TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_lunch,
+        "amount": 15.0,
+        "transaction_type": "expense",
+        "merchant_name": "Bistro X",
+        "transaction_date": "2026-09-01",
+        "transaction_time": "12:00"
+    })
+
+    # Transaction 2: 19:00 (later on same day)
+    TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_dinner,
+        "amount": 40.0,
+        "transaction_type": "expense",
+        "merchant_name": "Bistro X",
+        "transaction_date": "2026-09-01",
+        "transaction_time": "19:00"
+    })
+
+    recent = MerchantService.get_recent_payees(limit=5)
+    assert len(recent) == 1
+    assert recent[0]["category_id"] == cat_dinner
+    assert recent[0]["amount"] == 40.0
+
+
+def test_aud_014_router_stale_render_token():
+    """
+    AUD-014: Verify that router.js contains renderGeneration tracking.
+    """
+    from pathlib import Path
+    router_path = Path(__file__).resolve().parent.parent / "app" / "frontend" / "assets" / "js" / "router.js"
+    content = router_path.read_text(encoding="utf-8")
+    assert "renderGeneration" in content
+    assert "this.renderGeneration += 1" in content
+    assert "if (generation !== this.renderGeneration)" in content
+
+
+def test_aud_015_requirements_files_structure():
+    """
+    AUD-015: Verify runtime requirements.txt does not contain bottle,
+    and requirements-dev.txt declares pytest.
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    req_runtime = (root / "requirements.txt").read_text(encoding="utf-8")
+    req_dev = (root / "requirements-dev.txt").read_text(encoding="utf-8")
+
+    assert "bottle" not in req_runtime.lower()
+    assert "-r requirements.txt" in req_dev
+    assert "pytest" in req_dev
+
 
 
 

@@ -191,23 +191,43 @@ class MerchantService:
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
+                WITH ranked AS (
+                    SELECT 
+                        t.merchant_name,
+                        t.category_id,
+                        t.account_id,
+                        t.essentiality,
+                        t.amount_minor,
+                        t.transaction_date as last_used,
+                        t.id,
+                        COUNT(*) OVER (PARTITION BY t.merchant_name) as transaction_count,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY t.merchant_name
+                            ORDER BY
+                                t.transaction_date DESC,
+                                t.transaction_time DESC,
+                                t.id DESC
+                        ) AS rn
+                    FROM active_transactions t
+                    WHERE t.transaction_type = 'expense'
+                      AND t.merchant_name IS NOT NULL
+                      AND TRIM(t.merchant_name) != ''
+                )
                 SELECT 
-                    t.merchant_name,
-                    t.category_id,
-                    t.account_id,
-                    t.essentiality,
-                    t.amount_minor,
+                    r.merchant_name,
+                    r.category_id,
+                    r.account_id,
+                    r.essentiality,
+                    r.amount_minor,
+                    r.last_used,
+                    r.transaction_count,
                     c.name as category_name,
                     c.color as category_color,
-                    c.icon as category_icon,
-                    MAX(t.transaction_date) as last_used,
-                    COUNT(*) as transaction_count
-                FROM active_transactions t
-                JOIN categories c ON t.category_id = c.id
-                WHERE t.transaction_type = 'expense'
-                  AND t.merchant_name != ''
-                GROUP BY t.merchant_name
-                ORDER BY last_used DESC
+                    c.icon as category_icon
+                FROM ranked r
+                LEFT JOIN categories c ON r.category_id = c.id
+                WHERE r.rn = 1
+                ORDER BY r.last_used DESC, r.id DESC
                 LIMIT ?
             """, (limit,))
 

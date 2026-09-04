@@ -26,6 +26,7 @@ const routes = {
 
 export const router = {
   currentRoute: '#overview',
+  renderGeneration: 0,
 
   init() {
     window.addEventListener('hashchange', () => this.handleNavigation());
@@ -60,11 +61,28 @@ export const router = {
     this.renderCurrentView();
   },
 
-  renderCurrentView() {
+  async renderCurrentView() {
     const container = document.getElementById('page-container');
     const route = routes[this.currentRoute];
-    if (container && route) {
-      route.render(container);
+    if (!container || !route) return;
+
+    // AUD-014: Increment generation token on every navigation or state refresh
+    this.renderGeneration += 1;
+    const generation = this.renderGeneration;
+
+    try {
+      await route.render(container);
+    } catch (err) {
+      if (generation !== this.renderGeneration) {
+        // Rapid navigation occurred; ignore stale error
+        return;
+      }
+      console.error('Render error:', err);
+    }
+
+    if (generation !== this.renderGeneration) {
+      // Stale render from previous route navigation, discard
+      return;
     }
   }
 };
