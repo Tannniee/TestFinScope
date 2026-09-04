@@ -139,7 +139,17 @@ class ApiHandler:
     def resolve_review(self, tx_id: int, category_id: int, merchant_name: Optional[str] = None) -> bool:
         return TransactionRepository.resolve_review(tx_id, category_id, merchant_name)
 
-    # --- Analytics & BI ---
+    # --- Analytics & BI V2 ---
+    def get_analytics_context(
+        self,
+        month: Optional[str] = None,
+        account_id: Optional[int] = None,
+        category_id: Optional[int] = None,
+        merchant_id: Optional[int] = None,
+        comparison_mode: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return AnalyticsService.get_analytics_context(month, account_id, category_id, merchant_id, comparison_mode)
+
     def get_month_summary(self, month: str, account_id: Optional[int] = None) -> Dict[str, Any]:
         return AnalyticsService.get_month_summary(month, account_id)
 
@@ -149,23 +159,56 @@ class ApiHandler:
     def get_analytics_deep_dive(self, month: str, account_id: Optional[int] = None) -> Dict[str, Any]:
         return AnalyticsService.get_analytics_deep_dive(month, account_id)
 
-    def get_rolling_metrics(self, metric: str = "expense", category_id: Optional[int] = None, account_id: Optional[int] = None) -> Dict[str, Any]:
-        return AnalyticsService.get_rolling_metrics(metric, category_id, account_id)
+    def get_rolling_metrics(
+        self,
+        metric: str = "expense",
+        category_id: Optional[int] = None,
+        account_id: Optional[int] = None,
+        as_of_month: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return AnalyticsService.get_rolling_metrics(metric, category_id, account_id, as_of_month)
 
-    def get_what_changed(self, current_month: str, comparison_month: Optional[str] = None, account_id: Optional[int] = None, max_day: Optional[int] = None) -> Dict[str, Any]:
-        return AnalyticsService.get_what_changed(current_month, comparison_month, account_id, max_day)
+    def get_what_changed(
+        self,
+        current_month: str,
+        comparison_month: Optional[str] = None,
+        account_id: Optional[int] = None,
+        max_day: Optional[int] = None,
+        comparison_mode: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return AnalyticsService.get_what_changed(current_month, comparison_month, account_id, max_day, comparison_mode)
 
-    def get_spending_fingerprint(self, months_window: int = 6, account_id: Optional[int] = None) -> Dict[str, Any]:
-        return AnalyticsService.get_spending_fingerprint(months_window, account_id)
+    def get_merchant_drilldown(
+        self,
+        category_id: int,
+        current_month: Optional[str] = None,
+        account_id: Optional[int] = None,
+        comparison_mode: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        return AnalyticsService.get_merchant_drilldown(category_id, current_month, account_id, comparison_mode)
+
+    def get_spending_fingerprint(
+        self,
+        months_window: int = 6,
+        account_id: Optional[int] = None,
+        as_of_month: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return AnalyticsService.get_spending_fingerprint(months_window, account_id, as_of_month)
 
     def get_anomalies(self, month: str, account_id: Optional[int] = None, k_range: float = 2.5) -> List[Dict[str, Any]]:
         return AnalyticsService.get_anomalies(month, account_id, k_range)
+
+    def get_normal_ranges(self, account_id: Optional[int] = None, as_of_date: Optional[str] = None) -> List[Dict[str, Any]]:
+        return AnalyticsService.get_normal_ranges(account_id, as_of_date)
 
     def get_forecast(self, month: str, account_id: Optional[int] = None, as_of_date: Optional[str] = None) -> Dict[str, Any]:
         return AnalyticsService.get_forecast(month, account_id, as_of_date)
 
     def get_ranked_insights(self, month: str, account_id: Optional[int] = None, limit: int = 5) -> Dict[str, Any]:
         return AnalyticsService.get_ranked_insights(month, account_id, limit)
+
+    def dismiss_insight(self, insight_key: str) -> bool:
+        return AnalyticsService.dismiss_insight(insight_key)
 
     def get_backtest_evaluation(self, account_id: Optional[int] = None) -> Dict[str, Any]:
         return AnalyticsService.get_backtest_evaluation(account_id)

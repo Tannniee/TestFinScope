@@ -51,6 +51,7 @@ class DriverDecomposition:
     frequency_effect_minor: int
     ticket_effect_minor: int
     tag: str  # "NEW", "INCREASED_FREQUENCY", "HIGHER_TICKET", "ONE_OFF", "REDUCED", etc.
+    refund_effect_minor: int = 0
     details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -70,6 +71,8 @@ class DriverDecomposition:
             "frequency_effect": round(self.frequency_effect_minor / 100.0, 2),
             "ticket_effect_minor": self.ticket_effect_minor,
             "ticket_effect": round(self.ticket_effect_minor / 100.0, 2),
+            "refund_effect_minor": self.refund_effect_minor,
+            "refund_effect": round(self.refund_effect_minor / 100.0, 2),
             "tag": self.tag,
             "details": self.details
         }
@@ -235,10 +238,12 @@ class Insight:
     drilldown_filter: Dict[str, Any]
     evidence: Dict[str, Any]
     generated_at: str
+    insight_key: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
+            "insight_key": self.insight_key or self.id,
             "insight_type": self.insight_type,
             "title": self.title,
             "summary": self.summary,
@@ -252,6 +257,7 @@ class Insight:
             "severity": self.severity,
             "confidence": self.confidence,
             "impact_score": round(self.impact_score, 2),
+            "novelty_score": round(self.novelty_score, 2),
             "final_rank_score": round(self.final_rank_score, 2),
             "drilldown_filter": self.drilldown_filter,
             "evidence": self.evidence,

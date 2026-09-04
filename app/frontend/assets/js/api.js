@@ -79,7 +79,16 @@ export const api = {
     return this.call('resolve_review', { tx_id: txId, category_id: categoryId, merchant_name: merchantName });
   },
 
-  // Analytics & BI
+  // Analytics & BI V2
+  getAnalyticsContext(month = null, accountId = null, categoryId = null, merchantId = null, comparisonMode = null) {
+    return this.call('get_analytics_context', {
+      month,
+      account_id: accountId,
+      category_id: categoryId,
+      merchant_id: merchantId,
+      comparison_mode: comparisonMode
+    });
+  },
   getMonthSummary(month, accountId = null) {
     return this.call('get_month_summary', { month, account_id: accountId });
   },
@@ -89,23 +98,43 @@ export const api = {
   getAnalyticsDeepDive(month, accountId = null) {
     return this.call('get_analytics_deep_dive', { month, account_id: accountId });
   },
-  getRollingMetrics(metric = 'expense', categoryId = null, accountId = null) {
-    return this.call('get_rolling_metrics', { metric, category_id: categoryId, account_id: accountId });
+  getRollingMetrics(metric = 'expense', categoryId = null, accountId = null, asOfMonth = null) {
+    return this.call('get_rolling_metrics', { metric, category_id: categoryId, account_id: accountId, as_of_month: asOfMonth });
   },
-  getWhatChanged(currentMonth, comparisonMonth = null, accountId = null, maxDay = null) {
-    return this.call('get_what_changed', { current_month: currentMonth, comparison_month: comparisonMonth, account_id: accountId, max_day: maxDay });
+  getWhatChanged(currentMonth, comparisonMonth = null, accountId = null, maxDay = null, comparisonMode = null) {
+    return this.call('get_what_changed', {
+      current_month: currentMonth,
+      comparison_month: comparisonMonth,
+      account_id: accountId,
+      max_day: maxDay,
+      comparison_mode: comparisonMode
+    });
   },
-  getSpendingFingerprint(monthsWindow = 6, accountId = null) {
-    return this.call('get_spending_fingerprint', { months_window: monthsWindow, account_id: accountId });
+  getMerchantDrilldown(categoryId, currentMonth = null, accountId = null, comparisonMode = null) {
+    return this.call('get_merchant_drilldown', {
+      category_id: categoryId,
+      current_month: currentMonth,
+      account_id: accountId,
+      comparison_mode: comparisonMode
+    });
+  },
+  getSpendingFingerprint(monthsWindow = 6, accountId = null, asOfMonth = null) {
+    return this.call('get_spending_fingerprint', { months_window: monthsWindow, account_id: accountId, as_of_month: asOfMonth });
   },
   getAnomalies(month, accountId = null, kRange = 2.5) {
     return this.call('get_anomalies', { month, account_id: accountId, k_range: kRange });
+  },
+  getNormalRanges(accountId = null, asOfDate = null) {
+    return this.call('get_normal_ranges', { account_id: accountId, as_of_date: asOfDate });
   },
   getForecast(month, accountId = null, asOfDate = null) {
     return this.call('get_forecast', { month, account_id: accountId, as_of_date: asOfDate });
   },
   getRankedInsights(month, accountId = null, limit = 5) {
     return this.call('get_ranked_insights', { month, account_id: accountId, limit });
+  },
+  dismissInsight(insightKey) {
+    return this.call('dismiss_insight', { insight_key: insightKey });
   },
   getBacktestEvaluation(accountId = null) {
     return this.call('get_backtest_evaluation', { account_id: accountId });

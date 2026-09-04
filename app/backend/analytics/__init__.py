@@ -1,5 +1,5 @@
 """
-FinScope Analytics Package.
+FinScope Analytics Package V2.
 Modular, explainable, deterministic personal financial intelligence engine.
 """
 
@@ -19,6 +19,24 @@ from app.backend.analytics.semantics import (
     calculate_savings_rate,
     classify_transaction_pnl_effect
 )
+from app.backend.analytics.context import (
+    AnalyticsContext,
+    resolve_analytics_context
+)
+from app.backend.analytics.period_series import (
+    PeriodValue,
+    DataSufficiency,
+    calendar_month_series,
+    check_data_sufficiency
+)
+from app.backend.analytics.reconciliation import (
+    ReconciliationResult,
+    reconcile_period_totals,
+    reconcile_category_totals,
+    reconcile_change_decomposition,
+    reconcile_forecast_components
+)
+from app.backend.analytics.insight_history import InsightHistoryTracker
 from app.backend.analytics.aggregates import AggregateQueries
 from app.backend.analytics.rolling import RollingAnalyticsEngine
 from app.backend.analytics.changes import WhatChangedEngine
@@ -42,6 +60,18 @@ __all__ = [
     "calculate_savings",
     "calculate_savings_rate",
     "classify_transaction_pnl_effect",
+    "AnalyticsContext",
+    "resolve_analytics_context",
+    "PeriodValue",
+    "DataSufficiency",
+    "calendar_month_series",
+    "check_data_sufficiency",
+    "ReconciliationResult",
+    "reconcile_period_totals",
+    "reconcile_category_totals",
+    "reconcile_change_decomposition",
+    "reconcile_forecast_components",
+    "InsightHistoryTracker",
     "AggregateQueries",
     "RollingAnalyticsEngine",
     "WhatChangedEngine",

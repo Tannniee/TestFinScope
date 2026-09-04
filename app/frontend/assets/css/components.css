@@ -870,6 +870,65 @@
   color: #8E8E93;
 }
 
+.driver-tag.refund {
+  background-color: rgba(39, 213, 213, 0.18);
+  color: #27D5D5;
+}
+
+/* Analytics V2 Context Banner */
+.analytics-context-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(135deg, rgba(91, 140, 255, 0.08) 0%, rgba(39, 213, 213, 0.04) 100%);
+  border: 1px solid rgba(91, 140, 255, 0.22);
+  border-radius: var(--radius-md);
+  padding: 12px 18px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.context-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.context-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
+  font-weight: 600;
+  background: rgba(91, 140, 255, 0.18);
+  color: #5B8CFF;
+}
+
+.context-status-pill.mtd {
+  background: rgba(255, 159, 67, 0.18);
+  color: #FF9F43;
+}
+
+.table-row-clickable {
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.table-row-clickable:hover {
+  background-color: rgba(91, 140, 255, 0.08) !important;
+}
+
+.merchant-drilldown-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-top: 14px;
+}
+
 /* Normal Range Visual Bar */
 .normal-range-wrap {
   display: flex;

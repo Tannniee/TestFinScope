@@ -1,17 +1,18 @@
 """
-Candidate Insight Rules Generator for FinScope.
+Candidate Insight Rules Generator V2 for FinScope.
 Generates candidate insights from analytical modules:
-- What Changed? drivers (frequency vs ticket effects)
+- What Changed? drivers (frequency, ticket, refund effects)
 - Rolling historical norm deviations
 - Transaction & category anomalies
 - Budget & forecast risk projections
 - Positive financial achievements
+Integrates persistent insight keys and dynamic novelty scoring.
 """
 
-import uuid
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from app.backend.analytics.models import Insight
+from app.backend.analytics.insight_history import InsightHistoryTracker
 
 class InsightRulesGenerator:
     @staticmethod
@@ -34,39 +35,48 @@ class InsightRulesGenerator:
             share = d.get("share_of_increase", 0.0)
             name = d["name"]
             cid = d["entity_id"]
+            insight_key = f"category_change:{cid}"
+
+            if InsightHistoryTracker.is_dismissed(insight_key):
+                continue
 
             # Significant category increase
             if delta > 2000 and share >= 0.20:  # > $20 and >= 20% of increase
                 freq_eff = d.get("frequency_effect_minor", 0)
                 ticket_eff = d.get("ticket_effect_minor", 0)
+                ref_eff = d.get("refund_effect_minor", 0)
                 pct_share = round(share * 100)
 
                 driver_narrative = ""
-                if freq_eff > ticket_eff and freq_eff > 0:
+                if ref_eff < 0 and abs(ref_eff) > abs(freq_eff):
+                    driver_narrative = "partially offset by refunds"
+                elif freq_eff > ticket_eff and freq_eff > 0:
                     driver_narrative = "mainly driven by more frequent purchases"
                 elif ticket_eff > 0:
                     driver_narrative = "mainly driven by higher average purchase sizes"
                 else:
                     driver_narrative = "reflecting higher spending volume"
 
+                novelty = InsightHistoryTracker.compute_novelty_score(insight_key, delta)
+
                 candidates.append(Insight(
                     id=f"change_{cid}_{month}",
                     insight_type="CHANGE",
                     title=f"{name} drove {pct_share}% of spending increase",
-                    summary=f"{name} increased by {round(delta / 100.0, 2)}, {driver_narrative}.",
+                    summary=f"{name} increased by ${round(delta / 100.0, 2):.2f}, {driver_narrative}.",
                     metric="net_spending",
                     entity_type="category",
                     entity_id=cid,
                     current_value_minor=d["current_minor"],
                     baseline_value_minor=d["previous_minor"],
                     delta_value_minor=delta,
-                    delta_percent=round((delta / d["previous_minor"] * 100.0), 1) if d["previous_minor"] > 0 else 100.0,
+                    delta_percent=round((delta / float(d["previous_minor"]) * 100.0), 1) if d["previous_minor"] > 0 else 100.0,
                     severity="warning" if delta > 5000 else "info",
                     confidence="high",
-                    impact_score=min(1.0, (delta / max(1, total_curr_minor)) * 3.0),
+                    impact_score=min(1.0, (delta / float(max(1, total_curr_minor))) * 3.0),
                     unusualness_score=0.6,
                     actionability_score=0.85,
-                    novelty_score=0.8,
+                    novelty_score=novelty,
                     final_rank_score=0.0,
                     drilldown_filter={"category_id": cid, "month": month},
                     evidence={
@@ -76,205 +86,167 @@ class InsightRulesGenerator:
                         "delta": round(delta / 100.0, 2),
                         "share_of_increase": f"{pct_share}%",
                         "frequency_effect": round(freq_eff / 100.0, 2),
-                        "ticket_effect": round(ticket_eff / 100.0, 2)
+                        "ticket_effect": round(ticket_eff / 100.0, 2),
+                        "refund_effect": round(ref_eff / 100.0, 2)
                     },
-                    generated_at=now_str
+                    generated_at=now_str,
+                    insight_key=insight_key
                 ))
 
             # Significant reduction (achievement)
             elif delta < -3000:
-                pct_drop = round(abs(delta) / d["previous_minor"] * 100.0) if d["previous_minor"] > 0 else 0
-                candidates.append(Insight(
-                    id=f"achieve_{cid}_{month}",
-                    insight_type="ACHIEVEMENT",
-                    title=f"{name} spending dropped {pct_drop}%",
-                    summary=f"You reduced {name} spending by {round(abs(delta) / 100.0, 2)} compared to last month.",
-                    metric="net_spending",
-                    entity_type="category",
-                    entity_id=cid,
-                    current_value_minor=d["current_minor"],
-                    baseline_value_minor=d["previous_minor"],
-                    delta_value_minor=delta,
-                    delta_percent=-float(pct_drop),
-                    severity="success",
-                    confidence="high",
-                    impact_score=min(1.0, (abs(delta) / max(1, total_curr_minor)) * 2.5),
-                    unusualness_score=0.5,
-                    actionability_score=0.5,
-                    novelty_score=0.7,
-                    final_rank_score=0.0,
-                    drilldown_filter={"category_id": cid, "month": month},
-                    evidence={
-                        "category": name,
-                        "current": round(d["current_minor"] / 100.0, 2),
-                        "previous": round(d["previous_minor"] / 100.0, 2),
-                        "savings": round(abs(delta) / 100.0, 2)
-                    },
-                    generated_at=now_str
-                ))
+                achieve_key = f"achievement:{cid}"
+                if not InsightHistoryTracker.is_dismissed(achieve_key):
+                    pct_drop = round(abs(delta) / float(d["previous_minor"]) * 100.0) if d["previous_minor"] > 0 else 0
+                    novelty = InsightHistoryTracker.compute_novelty_score(achieve_key, abs(delta))
+                    candidates.append(Insight(
+                        id=f"achieve_{cid}_{month}",
+                        insight_type="ACHIEVEMENT",
+                        title=f"{name} spending dropped {pct_drop}%",
+                        summary=f"You reduced {name} spending by ${round(abs(delta) / 100.0, 2):.2f} compared to last month.",
+                        metric="net_spending",
+                        entity_type="category",
+                        entity_id=cid,
+                        current_value_minor=d["current_minor"],
+                        baseline_value_minor=d["previous_minor"],
+                        delta_value_minor=delta,
+                        delta_percent=-float(pct_drop),
+                        severity="success",
+                        confidence="high",
+                        impact_score=min(1.0, (abs(delta) / float(max(1, total_curr_minor))) * 2.5),
+                        unusualness_score=0.5,
+                        actionability_score=0.6,
+                        novelty_score=novelty,
+                        final_rank_score=0.0,
+                        drilldown_filter={"category_id": cid, "month": month},
+                        evidence={
+                            "category": name,
+                            "saved": round(abs(delta) / 100.0, 2),
+                            "drop_pct": f"{pct_drop}%"
+                        },
+                        generated_at=now_str,
+                        insight_key=achieve_key
+                    ))
 
-        # 2. Weekend Shift insight
-        weekend_delta = changes_data.get("weekend_delta_minor", 0)
-        if total_delta_minor > 0 and weekend_delta > 0:
-            weekend_share = (weekend_delta / total_delta_minor)
-            if weekend_share >= 0.50 and weekend_delta > 2000:
-                pct_w = round(weekend_share * 100)
-                candidates.append(Insight(
-                    id=f"weekend_shift_{month}",
-                    insight_type="BEHAVIOUR",
-                    title=f"{pct_w}% of spending increase occurred on weekends",
-                    summary=f"Weekend spending increased by {round(weekend_delta / 100.0, 2)}, outpacing weekday changes.",
-                    metric="weekend_spend",
-                    entity_type="overview",
-                    entity_id=None,
-                    current_value_minor=weekend_delta,
-                    baseline_value_minor=0,
-                    delta_value_minor=weekend_delta,
-                    delta_percent=float(pct_w),
-                    severity="info",
-                    confidence="moderate",
-                    impact_score=min(1.0, (weekend_delta / max(1, total_curr_minor)) * 2.0),
-                    unusualness_score=0.7,
-                    actionability_score=0.75,
-                    novelty_score=0.8,
-                    final_rank_score=0.0,
-                    drilldown_filter={"month": month},
-                    evidence={
-                        "weekend_increase": round(weekend_delta / 100.0, 2),
-                        "share_of_total_increase": f"{pct_w}%"
-                    },
-                    generated_at=now_str
-                ))
-
-        # 3. Rules from Anomalies
+        # 2. Rules from Anomalies
         for a in anomalies_data:
-            a_type = a.get("anomaly_type")
-            score = a.get("robust_score", 0.0)
-            amt = a.get("actual_minor", 0)
-            med = a.get("expected_median_minor", 0)
-            diff = amt - med
+            a_id = a.get("anomaly_id", "")
+            if InsightHistoryTracker.is_dismissed(a_id):
+                continue
 
-            if a_type == "transaction_amount":
-                candidates.append(Insight(
-                    id=f"anom_tx_{a['entity_id']}",
-                    insight_type="ANOMALY",
-                    title=a["title"],
-                    summary=a["explanation"],
-                    metric="transaction_amount",
-                    entity_type="transaction",
-                    entity_id=a["entity_id"],
-                    current_value_minor=amt,
-                    baseline_value_minor=med,
-                    delta_value_minor=diff,
-                    delta_percent=round((diff / med * 100.0), 1) if med > 0 else 0.0,
-                    severity="warning" if a["severity"] == "strong" else "info",
-                    confidence=a.get("confidence", "moderate"),
-                    impact_score=min(1.0, (diff / max(1, total_curr_minor)) * 3.5),
-                    unusualness_score=min(1.0, score / 5.0),
-                    actionability_score=0.7,
-                    novelty_score=0.9,
-                    final_rank_score=0.0,
-                    drilldown_filter=a.get("drilldown_filter", {}),
-                    evidence={
-                        "merchant_or_desc": a["entity_name"],
-                        "actual": a["actual"],
-                        "expected_median": a["expected_median"],
-                        "normal_range": f"{a['normal_range_lower']}–{a['normal_range_upper']}"
-                    },
-                    generated_at=now_str
-                ))
+            sev = a.get("severity", "moderate")
+            sev_map = {"strong": "critical", "moderate": "warning", "mild": "info"}
+            actual_m = a.get("actual_minor", 0)
+            expected_m = a.get("expected_median_minor", 0)
+            diff_m = max(0, actual_m - expected_m)
+            novelty = InsightHistoryTracker.compute_novelty_score(a_id, diff_m)
 
-            elif a_type == "recurring_jump":
-                candidates.append(Insight(
-                    id=f"anom_rec_{a['entity_id']}",
-                    insight_type="RECURRING",
-                    title=a["title"],
-                    summary=a["explanation"],
-                    metric="recurring_bill",
-                    entity_type="transaction",
-                    entity_id=a["entity_id"],
-                    current_value_minor=amt,
-                    baseline_value_minor=med,
-                    delta_value_minor=diff,
-                    delta_percent=round((diff / med * 100.0), 1) if med > 0 else 0.0,
-                    severity="warning",
-                    confidence="high",
-                    impact_score=min(1.0, (diff / max(1, total_curr_minor)) * 3.0),
-                    unusualness_score=0.85,
-                    actionability_score=0.95,
-                    novelty_score=0.9,
-                    final_rank_score=0.0,
-                    drilldown_filter=a.get("drilldown_filter", {}),
-                    evidence={
-                        "bill": a["entity_name"],
-                        "previous_rate": a["expected_median"],
-                        "new_rate": a["actual"],
-                        "difference": round(diff / 100.0, 2)
-                    },
-                    generated_at=now_str
-                ))
-
-            elif a_type == "category_monthly":
-                candidates.append(Insight(
-                    id=f"anom_cat_{a['entity_id']}_{month}",
-                    insight_type="ANOMALY",
-                    title=a["title"],
-                    summary=a["explanation"],
-                    metric="category_spend",
-                    entity_type="category",
-                    entity_id=a["entity_id"],
-                    current_value_minor=amt,
-                    baseline_value_minor=med,
-                    delta_value_minor=diff,
-                    delta_percent=round((diff / med * 100.0), 1) if med > 0 else 0.0,
-                    severity="warning",
-                    confidence=a.get("confidence", "moderate"),
-                    impact_score=min(1.0, (diff / max(1, total_curr_minor)) * 3.0),
-                    unusualness_score=min(1.0, score / 4.0),
-                    actionability_score=0.8,
-                    novelty_score=0.8,
-                    final_rank_score=0.0,
-                    drilldown_filter=a.get("drilldown_filter", {}),
-                    evidence={
-                        "category": a["entity_name"],
-                        "actual": a["actual"],
-                        "6m_median": a["expected_median"],
-                        "typical_range": f"{a['normal_range_lower']}–{a['normal_range_upper']}"
-                    },
-                    generated_at=now_str
-                ))
-
-        # 4. Rules from Forecasting & Budget Risk
-        proj_var = forecast_data.get("projected_variance_minor")
-        if proj_var and proj_var > 3000:  # Projected > $30 over budget
-            over_amt = round(proj_var / 100.0, 2)
             candidates.append(Insight(
-                id=f"forecast_budget_risk_{month}",
-                insight_type="BUDGET",
-                title=f"Projected to exceed budget by {over_amt}",
-                summary=f"At the current spending pace and upcoming bills, you are on track to spend {over_amt} over your budget.",
-                metric="projected_expense",
+                id=a_id,
+                insight_type="ANOMALY",
+                title=a.get("title", "Spending anomaly detected"),
+                summary=a.get("explanation", ""),
+                metric=a.get("anomaly_type", "anomaly"),
+                entity_type=a.get("entity_type", "transaction"),
+                entity_id=a.get("entity_id"),
+                current_value_minor=actual_m,
+                baseline_value_minor=expected_m,
+                delta_value_minor=diff_m,
+                delta_percent=round((diff_m / float(expected_m) * 100.0), 1) if expected_m > 0 else 0.0,
+                severity=sev_map.get(sev, "warning"),
+                confidence=a.get("confidence", "moderate"),
+                impact_score=min(1.0, (diff_m / float(max(1, total_curr_minor))) * 3.5),
+                unusualness_score=min(1.0, a.get("robust_score", 3.0) / 6.0),
+                actionability_score=0.9,
+                novelty_score=novelty,
+                final_rank_score=0.0,
+                drilldown_filter=a.get("drilldown_filter", {}),
+                evidence={
+                    "normal_range_lower": a.get("normal_range_lower", 0),
+                    "normal_range_upper": a.get("normal_range_upper", 0),
+                    "robust_score": a.get("robust_score", 0)
+                },
+                generated_at=now_str,
+                insight_key=a_id
+            ))
+
+        # 3. Rules from Forecast & Budgets
+        budget_m = forecast_data.get("budget_minor")
+        proj_m = forecast_data.get("projected_expense_minor", 0)
+        fc_key = f"forecast_risk:{month}"
+
+        if budget_m and proj_m > budget_m and not InsightHistoryTracker.is_dismissed(fc_key):
+            over_m = proj_m - budget_m
+            over_pct = round(over_m / float(budget_m) * 100.0, 1)
+            novelty = InsightHistoryTracker.compute_novelty_score(fc_key, over_m)
+
+            candidates.append(Insight(
+                id=f"forecast_overrun_{month}",
+                insight_type="FORECAST",
+                title=f"Projected to exceed budget by {over_pct}%",
+                summary=f"At current pace, projected spending is ${round(proj_m / 100.0, 2):.2f}, which is ${round(over_m / 100.0, 2):.2f} over your monthly budget.",
+                metric="budget_variance",
                 entity_type="budget",
                 entity_id=None,
-                current_value_minor=forecast_data.get("projected_expense_minor", 0),
-                baseline_value_minor=forecast_data.get("budget_minor", 0),
-                delta_value_minor=proj_var,
-                delta_percent=round(proj_var / max(1, forecast_data.get("budget_minor", 1)) * 100.0, 1),
-                severity="critical" if proj_var > 10000 else "warning",
+                current_value_minor=proj_m,
+                baseline_value_minor=budget_m,
+                delta_value_minor=over_m,
+                delta_percent=over_pct,
+                severity="critical" if over_pct > 15 else "warning",
                 confidence=forecast_data.get("confidence", "moderate"),
-                impact_score=min(1.0, (proj_var / max(1, total_curr_minor)) * 3.0),
+                impact_score=min(1.0, (over_m / float(budget_m)) * 2.5),
                 unusualness_score=0.7,
                 actionability_score=0.95,
-                novelty_score=0.85,
+                novelty_score=novelty,
                 final_rank_score=0.0,
-                drilldown_filter={"month": month},
+                drilldown_filter={"view": "forecast", "month": month},
                 evidence={
-                    "budget": forecast_data.get("budget"),
-                    "projected": forecast_data.get("projected_expense"),
-                    "overrun": over_amt,
-                    "likely_range": f"{forecast_data.get('lower_bound')}–{forecast_data.get('upper_bound')}"
+                    "projected": round(proj_m / 100.0, 2),
+                    "budget": round(budget_m / 100.0, 2),
+                    "overrun": round(over_m / 100.0, 2),
+                    "method": forecast_data.get("method")
                 },
-                generated_at=now_str
+                generated_at=now_str,
+                insight_key=fc_key
             ))
+
+        # 4. Rules from Category Budgets Overrun
+        for c in forecast_data.get("category_forecasts", []):
+            if c.get("is_over_budget"):
+                var_m = c.get("projected_variance_minor", 0)
+                cid = c.get("category_id")
+                c_name = c.get("name")
+                b_key = f"cat_budget_risk:{cid}"
+
+                if var_m > 1500 and not InsightHistoryTracker.is_dismissed(b_key):
+                    novelty = InsightHistoryTracker.compute_novelty_score(b_key, var_m)
+                    candidates.append(Insight(
+                        id=f"cat_overrun_{cid}_{month}",
+                        insight_type="BUDGET",
+                        title=f"{c_name} at risk of exceeding budget",
+                        summary=f"{c_name} is projected to reach ${c.get('projected'):.2f}, exceeding its ${c.get('budget'):.2f} budget.",
+                        metric="category_budget",
+                        entity_type="category",
+                        entity_id=cid,
+                        current_value_minor=c.get("projected_minor", 0),
+                        baseline_value_minor=c.get("budget_minor", 0),
+                        delta_value_minor=var_m,
+                        delta_percent=round(var_m / float(c.get("budget_minor", 1)) * 100.0, 1),
+                        severity="warning",
+                        confidence="moderate",
+                        impact_score=min(1.0, (var_m / float(max(1, total_curr_minor))) * 3.0),
+                        unusualness_score=0.6,
+                        actionability_score=0.9,
+                        novelty_score=novelty,
+                        final_rank_score=0.0,
+                        drilldown_filter={"category_id": cid, "month": month},
+                        evidence={
+                            "projected": c.get("projected"),
+                            "budget": c.get("budget"),
+                            "variance": c.get("projected_variance")
+                        },
+                        generated_at=now_str,
+                        insight_key=b_key
+                    ))
 
         return candidates

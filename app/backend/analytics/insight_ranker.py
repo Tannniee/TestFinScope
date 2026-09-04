@@ -1,12 +1,13 @@
 """
-Multi-Factor Insight Ranker & Deduplicator for FinScope.
+Multi-Factor Insight Ranker & Deduplicator V2 for FinScope.
 Scores candidate insights:
 Score = 0.30*Impact + 0.20*Unusualness + 0.15*Confidence + 0.15*Actionability + 0.10*Novelty + 0.10*Relevance
-Filters duplicates and returns top meaningful insights.
+Filters duplicates, records displayed history for novelty decay, and returns top meaningful insights.
 """
 
 from typing import Dict, Any, List, Optional
 from app.backend.analytics.models import Insight
+from app.backend.analytics.insight_history import InsightHistoryTracker
 
 CONFIDENCE_WEIGHTS = {
     "high": 1.0,
@@ -26,16 +27,18 @@ class InsightRanker:
     def rank_and_deduplicate(
         candidates: List[Insight],
         limit: int = 5,
+        month: Optional[str] = None,
         w_impact: float = 0.30,
         w_unusualness: float = 0.20,
         w_confidence: float = 0.15,
         w_actionability: float = 0.15,
         w_novelty: float = 0.10,
-        w_relevance: float = 0.10
+        w_relevance: float = 0.10,
+        persist: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Ranks candidate insights, eliminates redundant entity duplicates,
-        and returns the top `limit` results as dictionaries.
+        records displayed history in SQLite, and returns top `limit` items.
         """
         if not candidates:
             return []
@@ -75,4 +78,13 @@ class InsightRanker:
             if len(deduped) >= limit:
                 break
 
-        return [item.to_dict() for item in deduped]
+        result_dicts = [item.to_dict() for item in deduped]
+
+        # 4. Record displayed insights into persistent memory
+        if persist and month and result_dicts:
+            try:
+                InsightHistoryTracker.record_insights_shown(result_dicts, month)
+            except Exception:
+                pass
+
+        return result_dicts

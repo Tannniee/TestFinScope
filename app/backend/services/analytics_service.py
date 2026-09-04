@@ -488,57 +488,177 @@ class AnalyticsService:
             }
 
     @staticmethod
+    def get_analytics_context(
+        month: Optional[str] = None,
+        account_id: Optional[int] = None,
+        category_id: Optional[int] = None,
+        merchant_id: Optional[int] = None,
+        comparison_mode: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Resolves canonical temporal context and comparison period."""
+        from app.backend.analytics.context import resolve_analytics_context
+        ctx = resolve_analytics_context(
+            month=month,
+            account_id=account_id,
+            category_id=category_id,
+            merchant_id=merchant_id,
+            comparison_mode=comparison_mode
+        )
+        return ctx.to_dict()
+
+    @staticmethod
     def get_rolling_metrics(
         metric: str = "expense",
         category_id: Optional[int] = None,
-        account_id: Optional[int] = None
+        account_id: Optional[int] = None,
+        as_of_month: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Calculates 3M, 6M, 12M Mean, Median, MAD, and EWMA historical baselines."""
-        if category_id:
-            series_data = AggregateQueries.get_category_monthly_series(category_id, account_id)
-            values = [d["net_spending_minor"] for d in series_data]
-        else:
-            history = AggregateQueries.get_monthly_history(limit_months=24, account_id=account_id)
-            if metric == "income":
-                values = [d["income_minor"] for d in history]
+        """
+        Calculates 3M, 6M, 12M Mean, Median, MAD, and EWMA historical baselines
+        using zero-filled calendar month series (missing months treated as $0).
+        """
+        from app.backend.analytics.period_series import calendar_month_series, check_data_sufficiency
+
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            acc_clause = " AND account_id = ?" if account_id else ""
+            acc_params = [account_id] if account_id else []
+
+            # 1. Fetch earliest and latest month
+            cur.execute(f"""
+                SELECT MIN(transaction_date) as min_d, MAX(transaction_date) as max_d
+                FROM transactions
+                WHERE transaction_type IN ('income', 'expense', 'refund') {acc_clause}
+            """, acc_params)
+            row = cur.fetchone()
+            if not row or not row["min_d"]:
+                suff = check_data_sufficiency("rolling_3m", 0, 0)
+                return {
+                    "available": False,
+                    "data_sufficiency": suff.to_dict(),
+                    "current": 0.0,
+                    "mean_3": 0.0, "median_3": 0.0,
+                    "mean_6": 0.0, "median_6": 0.0,
+                    "mean_12": 0.0, "ewma_3": 0.0, "mad_6": 0.0,
+                    "sample_size_months": 0
+                }
+
+            earliest_m = row["min_d"][:7]
+            end_m = as_of_month or row["max_d"][:7]
+
+            if category_id:
+                cur.execute(f"""
+                    SELECT 
+                        strftime('%Y-%m', transaction_date) as m,
+                        SUM(
+                            CASE 
+                                WHEN transaction_type = 'expense' THEN amount_minor
+                                WHEN transaction_type = 'refund' THEN -amount_minor
+                                ELSE 0
+                            END
+                        ) as net_minor
+                    FROM transactions
+                    WHERE category_id = ?
+                      AND transaction_type IN ('expense', 'refund')
+                      AND strftime('%Y-%m', transaction_date) <= ? {acc_clause}
+                    GROUP BY m
+                    ORDER BY m ASC
+                """, [category_id, end_m] + acc_params)
+                raw_dict = {r["m"]: max(0, r["net_minor"]) for r in cur.fetchall()}
             else:
-                values = [d["net_spending_minor"] for d in history]
+                t_filter = "transaction_type = 'income'" if metric == "income" else "transaction_type IN ('expense', 'refund')"
+                cur.execute(f"""
+                    SELECT 
+                        strftime('%Y-%m', transaction_date) as m,
+                        SUM(
+                            CASE 
+                                WHEN transaction_type = 'income' THEN amount_minor
+                                WHEN transaction_type = 'expense' THEN amount_minor
+                                WHEN transaction_type = 'refund' THEN -amount_minor
+                                ELSE 0
+                            END
+                        ) as net_minor
+                    FROM transactions
+                    WHERE {t_filter}
+                      AND strftime('%Y-%m', transaction_date) <= ? {acc_clause}
+                    GROUP BY m
+                    ORDER BY m ASC
+                """, [end_m] + acc_params)
+                raw_dict = {r["m"]: max(0, r["net_minor"]) for r in cur.fetchall()}
 
-        if not values:
-            return {
-                "current": 0.0,
-                "mean_3": 0.0,
-                "median_3": 0.0,
-                "mean_6": 0.0,
-                "median_6": 0.0,
-                "mean_12": 0.0,
-                "ewma_3": 0.0,
-                "mad_6": 0.0,
-                "sample_size_months": 0
-            }
+            # Zero-fill series from earliest recorded month to end_m
+            series_objs = calendar_month_series(
+                start_month=earliest_m,
+                end_month=end_m,
+                raw_dict=raw_dict,
+                earliest_recorded_month=earliest_m
+            )
+            values = [s.value_minor for s in series_objs]
 
-        curr_val = values[-1]
-        hist = values[:-1]
-        return RollingAnalyticsEngine.compute_rolling_baselines(hist, curr_val)
+            if not values:
+                suff = check_data_sufficiency("rolling_3m", 0, 0)
+                return {
+                    "available": False,
+                    "data_sufficiency": suff.to_dict(),
+                    "current": 0.0,
+                    "mean_3": 0.0, "median_3": 0.0,
+                    "mean_6": 0.0, "median_6": 0.0,
+                    "mean_12": 0.0, "ewma_3": 0.0, "mad_6": 0.0,
+                    "sample_size_months": 0
+                }
+
+            curr_val = values[-1]
+            hist = values[:-1]
+            base_metrics = RollingAnalyticsEngine.compute_rolling_baselines(hist, curr_val)
+            suff = check_data_sufficiency("rolling_3m", len(hist), len(hist))
+
+            base_metrics["data_sufficiency"] = suff.to_dict()
+            base_metrics["available"] = (len(hist) >= 1)
+            base_metrics["zero_filled_series"] = [s.to_dict() for s in series_objs[-12:]]
+            return base_metrics
 
     @staticmethod
     def get_what_changed(
         current_month: str,
         comparison_month: Optional[str] = None,
         account_id: Optional[int] = None,
-        max_day: Optional[int] = None
+        max_day: Optional[int] = None,
+        comparison_mode: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Provides What Changed? v2 frequency vs ticket decomposition and waterfall data."""
-        comp_m = comparison_month or AnalyticsService._get_previous_month(current_month)
-        return WhatChangedEngine.analyze_changes(current_month, comp_m, account_id, max_day)
+        """Provides What Changed? v2.1 frequency, ticket, and refund decomposition."""
+        from app.backend.analytics.context import resolve_analytics_context
+        ctx = resolve_analytics_context(
+            month=current_month,
+            account_id=account_id,
+            comparison_mode=comparison_mode
+        )
+        return WhatChangedEngine.analyze_changes(current_month, comparison_month, account_id, max_day, context=ctx)
+
+    @staticmethod
+    def get_merchant_drilldown(
+        category_id: int,
+        current_month: Optional[str] = None,
+        account_id: Optional[int] = None,
+        comparison_mode: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Drills down into merchants within a specific category to show drivers of change."""
+        from app.backend.analytics.context import resolve_analytics_context
+        ctx = resolve_analytics_context(
+            month=current_month,
+            account_id=account_id,
+            category_id=category_id,
+            comparison_mode=comparison_mode
+        )
+        return WhatChangedEngine.get_merchant_drilldown(category_id, current_month, account_id, context=ctx)
 
     @staticmethod
     def get_spending_fingerprint(
         months_window: int = 6,
-        account_id: Optional[int] = None
+        account_id: Optional[int] = None,
+        as_of_month: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Computes spending fingerprint, percentiles, rhythm, diversity, and burstiness."""
-        return SpendingFingerprintEngine.generate_fingerprint(months_window, account_id)
+        """Computes spending fingerprint, percentiles, rhythm, diversity, and weekday spend."""
+        return SpendingFingerprintEngine.generate_fingerprint(months_window, account_id, as_of_month=as_of_month)
 
     @staticmethod
     def get_anomalies(
@@ -547,7 +667,17 @@ class AnalyticsService:
         k_range: float = 2.5
     ) -> List[Dict[str, Any]]:
         """Detects unusual transactions, category overruns, and recurring payment jumps."""
-        return AnomalyDetectionEngine.detect_anomalies(month, account_id, k_range)
+        from app.backend.analytics.context import resolve_analytics_context
+        ctx = resolve_analytics_context(month=month, account_id=account_id)
+        return AnomalyDetectionEngine.detect_anomalies(month, account_id, k_range, context=ctx)
+
+    @staticmethod
+    def get_normal_ranges(
+        account_id: Optional[int] = None,
+        as_of_date: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Computes typical normal ranges for all categories."""
+        return AnomalyDetectionEngine.get_category_normal_ranges(account_id, as_of_date)
 
     @staticmethod
     def get_forecast(
@@ -556,7 +686,9 @@ class AnalyticsService:
         as_of_date: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generates transparent, explainable month-end forecast with budget comparison."""
-        return ForecastingEngine.forecast_month(month, account_id, as_of_date)
+        from app.backend.analytics.context import resolve_analytics_context
+        ctx = resolve_analytics_context(month=month, account_id=account_id)
+        return ForecastingEngine.forecast_month(month, account_id, as_of_date, context=ctx)
 
     @staticmethod
     def get_ranked_insights(
@@ -565,18 +697,27 @@ class AnalyticsService:
         limit: int = 5
     ) -> Dict[str, Any]:
         """Synthesizes insights across all analytics modules and ranks them by absolute impact & unusualness."""
-        prev_m = AnalyticsService._get_previous_month(month)
-        changes = WhatChangedEngine.analyze_changes(month, prev_m, account_id)
-        anomalies = AnomalyDetectionEngine.detect_anomalies(month, account_id)
-        forecast = ForecastingEngine.forecast_month(month, account_id)
+        from app.backend.analytics.context import resolve_analytics_context
+        ctx = resolve_analytics_context(month=month, account_id=account_id)
+
+        changes = WhatChangedEngine.analyze_changes(month, context=ctx)
+        anomalies = AnomalyDetectionEngine.detect_anomalies(month, account_id, context=ctx)
+        forecast = ForecastingEngine.forecast_month(month, account_id, context=ctx)
 
         candidates = InsightRulesGenerator.generate_candidates(changes, anomalies, forecast, month)
-        ranked = InsightRanker.rank_and_deduplicate(candidates, limit=limit)
+        ranked = InsightRanker.rank_and_deduplicate(candidates, limit=limit, month=month, persist=True)
         return {
             "month": month,
+            "context": ctx.to_dict(),
             "insights": ranked,
             "total_candidates": len(candidates)
         }
+
+    @staticmethod
+    def dismiss_insight(insight_key: str) -> bool:
+        """Dismisses an insight so it will not reappear."""
+        from app.backend.analytics.insight_history import InsightHistoryTracker
+        return InsightHistoryTracker.dismiss_insight(insight_key)
 
     @staticmethod
     def get_backtest_evaluation(account_id: Optional[int] = None) -> Dict[str, Any]:

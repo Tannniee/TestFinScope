@@ -180,6 +180,31 @@ def migration_002_core_relationships_and_merchants(conn: sqlite3.Connection):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_is_deleted ON transactions(is_deleted);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_merchants_name ON merchants(name);")
 
+@migration(3, "analytics_v2_insight_history")
+def migration_003_analytics_v2_insight_history(conn: sqlite3.Connection):
+    """
+    Creates insight_history table to persist seen insights, novelty decay,
+    material change resets, and user dismissals.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS insight_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            insight_key TEXT UNIQUE NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            times_shown INTEGER NOT NULL DEFAULT 1,
+            last_value_minor INTEGER NOT NULL DEFAULT 0,
+            last_rank INTEGER NOT NULL DEFAULT 0,
+            dismissed INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_insight_key ON insight_history(insight_key);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_insight_dismissed ON insight_history(dismissed);")
+
 def run_migrations(conn: sqlite3.Connection):
     """Executes any pending migrations safely."""
     # Ensure migration table exists

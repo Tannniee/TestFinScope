@@ -210,6 +210,7 @@ function renderRankedInsights(insights) {
           <div class="insight-actions">
             ${evidenceHtml ? `<button class="btn btn-secondary btn-sm evidence-toggle-btn" data-target="${drawerId}" style="padding: 4px 10px; font-size: 11.5px;">Why?</button>` : ''}
             <button class="btn btn-primary btn-sm insight-explore-btn" data-insight-id="${ins.id}" data-entity-id="${ins.entity_id || ''}" style="padding: 4px 10px; font-size: 11.5px;">Explore</button>
+            <button class="btn btn-secondary btn-sm insight-dismiss-btn" data-key="${ins.insight_key || ins.id}" title="Dismiss insight" style="padding: 4px 8px; font-size: 11.5px;"><i data-lucide="x" style="width: 12px; height: 12px;"></i></button>
           </div>
         </div>
         ${evidenceHtml ? `<div id="${drawerId}" class="insight-evidence-drawer">${evidenceHtml}</div>` : ''}
@@ -227,6 +228,28 @@ function renderRankedInsights(insights) {
       if (drawer) {
         drawer.classList.toggle('open');
         btn.textContent = drawer.classList.contains('open') ? 'Hide Details' : 'Why?';
+      }
+    });
+  });
+
+  // Attach dismiss clicks
+  container.querySelectorAll('.insight-dismiss-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const key = btn.dataset.key;
+      if (!key) return;
+      try {
+        await api.dismissInsight(key);
+        const card = btn.closest('.insight-card');
+        if (card) {
+          card.style.opacity = '0';
+          card.style.transform = 'translateY(-10px)';
+          card.style.transition = 'all 0.25s ease';
+          setTimeout(() => card.remove(), 250);
+        }
+        showToast('Insight dismissed', 'info');
+      } catch (err) {
+        console.error('Error dismissing insight:', err);
       }
     });
   });

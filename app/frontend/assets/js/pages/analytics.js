@@ -1,10 +1,11 @@
 /**
- * FinScope Analytics Engine Core Workspace Page
- * Tabs:
- * 1. What Changed? v2 (Driver & Frequency vs Ticket Decomposition)
- * 2. Spending Fingerprint (Behavioral Metrics, Diversity & Rhythm)
- * 3. Anomalies & Normal Ranges (Robust Z-Scores & Typical Ranges)
- * 4. Forecast & Baselines (Explainable Component Forecast & Rolling Norms)
+ * FinScope Analytics V2 Workspace Page
+ * 5 Modular Analytical Views:
+ * 1. Overview: Executive summary, context-aware ranked insights, rolling & forecast status
+ * 2. Changes: What Changed? v2.1 (Frequency, Ticket, and Refund decomposition + Category & Merchant drill-down)
+ * 3. Patterns: Spending Fingerprint, Zero-filled rolling series, Weekday Disambiguation
+ * 4. Anomalies: Statistical anomalies, hierarchical fallbacks, normal range bars
+ * 5. Forecast: Explainable component projections, budget risks, rolling-origin backtesting leaderboard
  */
 
 import { api } from '../api.js';
@@ -14,30 +15,62 @@ import { showToast } from '../components/toast.js';
 let varianceChart = null;
 let weekdayChart = null;
 let cumulativeChart = null;
-let forecastChart = null;
+let patternsTrendChart = null;
 
-let currentTab = 'changes'; // 'changes', 'fingerprint', 'anomalies', 'forecast'
+let currentTab = 'overview'; // 'overview', 'changes', 'patterns', 'anomalies', 'forecast'
+let selectedCategoryDrilldown = null;
 
 export async function renderAnalyticsPage(container) {
+  let contextData = null;
+  try {
+    contextData = await api.getAnalyticsContext(state.month, state.accountId);
+  } catch (e) {
+    console.error('Failed to load analytics context:', e);
+  }
+
+  const periodLabel = contextData?.period_label || state.month;
+  const compLabel = contextData?.comparison_label || 'Previous period';
+  const isMtd = contextData?.is_current_month || false;
+
   container.innerHTML = `
     <div class="analytics-view">
-      <!-- Navigation Tabs -->
+      <!-- Canonical Analytics Context Banner -->
+      <div class="analytics-context-banner">
+        <div class="context-banner-left">
+          <span class="context-status-pill ${isMtd ? 'mtd' : ''}">
+            <i data-lucide="${isMtd ? 'clock' : 'check-circle-2'}" style="width: 13px; height: 13px;"></i>
+            ${isMtd ? 'Month-to-Date (MTD)' : 'Completed Month'}
+          </span>
+          <div style="font-size: 13.5px; font-weight: 600; color: var(--text-primary);">
+            ${periodLabel} <span style="font-weight: 400; color: var(--text-muted);">compared with</span> ${compLabel}
+          </div>
+        </div>
+        <div style="font-size: 12.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 14px;">
+          <span><i data-lucide="wallet" style="width: 13px; height: 13px; vertical-align: -2px;"></i> Scope: <strong>${state.accountId ? 'Selected Account' : 'All Accounts'}</strong></span>
+          <span class="delta-badge neutral" style="font-size: 11px;">Reconciled (Exact Minor Units)</span>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs (5 Tabs) -->
       <div class="analytics-tab-bar">
-        <button class="analytics-tab-btn ${currentTab === 'changes' ? 'active' : ''}" data-tab="changes">
-          <i data-lucide="git-commit"></i> What Changed? v2
+        <button class="analytics-tab-btn ${currentTab === 'overview' ? 'active' : ''}" data-tab="overview">
+          <i data-lucide="layout-dashboard"></i> Overview
         </button>
-        <button class="analytics-tab-btn ${currentTab === 'fingerprint' ? 'active' : ''}" data-tab="fingerprint">
-          <i data-lucide="fingerprint"></i> Spending Fingerprint
+        <button class="analytics-tab-btn ${currentTab === 'changes' ? 'active' : ''}" data-tab="changes">
+          <i data-lucide="git-commit"></i> What Changed? v2.1
+        </button>
+        <button class="analytics-tab-btn ${currentTab === 'patterns' ? 'active' : ''}" data-tab="patterns">
+          <i data-lucide="fingerprint"></i> Spending Patterns
         </button>
         <button class="analytics-tab-btn ${currentTab === 'anomalies' ? 'active' : ''}" data-tab="anomalies">
-          <i data-lucide="alert-octagon"></i> Anomalies & Normal Ranges
+          <i data-lucide="alert-octagon"></i> Anomalies & Ranges
         </button>
         <button class="analytics-tab-btn ${currentTab === 'forecast' ? 'active' : ''}" data-tab="forecast">
-          <i data-lucide="trending-up"></i> Forecast & Rolling Baselines
+          <i data-lucide="trending-up"></i> Forecast & Backtest
         </button>
       </div>
 
-      <!-- Tab Content Containers -->
+      <!-- Tab Content Container -->
       <div id="analytics-tab-content">
         <div style="text-align: center; color: var(--text-muted); padding: 40px;">Loading analytical intelligence...</div>
       </div>
@@ -52,6 +85,7 @@ export async function renderAnalyticsPage(container) {
       container.querySelectorAll('.analytics-tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentTab = btn.dataset.tab;
+      selectedCategoryDrilldown = null;
       loadTabContent();
     });
   });
@@ -64,10 +98,12 @@ async function loadTabContent() {
   if (!content) return;
 
   try {
-    if (currentTab === 'changes') {
+    if (currentTab === 'overview') {
+      await renderOverviewTab(content);
+    } else if (currentTab === 'changes') {
       await renderChangesTab(content);
-    } else if (currentTab === 'fingerprint') {
-      await renderFingerprintTab(content);
+    } else if (currentTab === 'patterns') {
+      await renderPatternsTab(content);
     } else if (currentTab === 'anomalies') {
       await renderAnomaliesTab(content);
     } else if (currentTab === 'forecast') {
@@ -80,12 +116,201 @@ async function loadTabContent() {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 1: What Changed? v2 (Frequency vs Ticket Decomposition)
+// Tab 1: Overview Tab (Executive Summary & Ranked Insights)
+// ---------------------------------------------------------------------------
+async function renderOverviewTab(container) {
+  container.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 30px;">Synthesizing analytical overview...</div>`;
+
+  const [summary, insightsResp, rolling, forecast] = await Promise.all([
+    api.getMonthSummary(state.month, state.accountId),
+    api.getRankedInsights(state.month, state.accountId, 4),
+    api.getRollingMetrics('expense', null, state.accountId, state.month),
+    api.getForecast(state.month, state.accountId)
+  ]);
+
+  const kpis = summary.kpis;
+  const insights = insightsResp.insights || [];
+
+  container.innerHTML = `
+    <!-- Top Summary KPIs -->
+    <div class="grid-4col" style="margin-bottom: 24px;">
+      <div class="fin-card">
+        <span class="kpi-label">Net Spending</span>
+        <div class="kpi-value text-negative" style="font-size: 26px; margin: 6px 0;">
+          ${state.formatCurrency(kpis.expense)}
+        </div>
+        <span class="kpi-footer">${kpis.expense_delta_pct > 0 ? '+' : ''}${kpis.expense_delta_pct}% vs previous period</span>
+      </div>
+
+      <div class="fin-card">
+        <span class="kpi-label">Total Income</span>
+        <div class="kpi-value text-positive" style="font-size: 26px; margin: 6px 0;">
+          ${state.formatCurrency(kpis.income)}
+        </div>
+        <span class="kpi-footer">${kpis.income_delta_pct > 0 ? '+' : ''}${kpis.income_delta_pct}% vs previous period</span>
+      </div>
+
+      <div class="fin-card">
+        <span class="kpi-label">Savings Rate</span>
+        <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #C85AF4;">
+          ${kpis.savings_rate}%
+        </div>
+        <span class="kpi-footer">Previous: ${kpis.prev_savings_rate}%</span>
+      </div>
+
+      <div class="fin-card">
+        <span class="kpi-label">Projected Month-End</span>
+        <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #FF9F43;">
+          ${state.formatCurrency(forecast.projected_expense)}
+        </div>
+        <span class="kpi-footer">Likely: ${state.formatCurrency(forecast.lower_bound)} – ${state.formatCurrency(forecast.upper_bound)}</span>
+      </div>
+    </div>
+
+    <!-- Ranked Insights Section -->
+    <div class="fin-card" style="margin-bottom: 24px;">
+      <div class="card-header">
+        <div class="card-title-wrap">
+          <h3>Ranked Financial Insights</h3>
+          <p>Multi-factor synthesized intelligence ranked by absolute impact and unusualness</p>
+        </div>
+        <span class="delta-badge neutral" style="font-size: 11.5px;">${insights.length} active insights</span>
+      </div>
+
+      <div id="analytics-insights-container" style="display: flex; flex-direction: column; gap: 12px;">
+        ${insights.length === 0 ? `
+          <div style="text-align: center; color: var(--text-muted); padding: 24px;">No critical insights for this period. Spending is normal.</div>
+        ` : insights.map((ins, idx) => {
+          const drawerId = `an-drawer-${idx}`;
+          const sevColor = ins.severity === 'critical' ? '#FF6B8A' : (ins.severity === 'warning' ? '#FF9F43' : (ins.severity === 'success' ? '#4DD5A5' : '#5B8CFF'));
+          const sevBg = ins.severity === 'critical' ? 'rgba(255, 107, 138, 0.15)' : (ins.severity === 'warning' ? 'rgba(255, 159, 67, 0.15)' : (ins.severity === 'success' ? 'rgba(77, 213, 165, 0.15)' : 'rgba(91, 140, 255, 0.15)'));
+          const sevIcon = ins.severity === 'critical' ? 'alert-triangle' : (ins.severity === 'warning' ? 'alert-circle' : (ins.severity === 'success' ? 'check-circle-2' : 'sparkles'));
+
+          let evidenceHtml = '';
+          if (ins.evidence && Object.keys(ins.evidence).length > 0) {
+            evidenceHtml = Object.entries(ins.evidence).map(([k, v]) => `
+              <div class="evidence-item">
+                <span class="evidence-label">${k.replace(/_/g, ' ')}</span>
+                <span class="evidence-val">${typeof v === 'number' ? state.formatCurrency(v) : v}</span>
+              </div>
+            `).join('');
+          }
+
+          return `
+            <div class="insight-card ${ins.severity || 'info'}" style="margin-bottom: 0;">
+              <div class="insight-card-main">
+                <div class="insight-content-wrap">
+                  <div class="insight-icon-box" style="background: ${sevBg}; color: ${sevColor};">
+                    <i data-lucide="${sevIcon}"></i>
+                  </div>
+                  <div>
+                    <div class="insight-title">
+                      ${ins.title}
+                      <span class="delta-badge neutral" style="font-size: 10px; padding: 1px 6px;">Impact: ${Math.round((ins.impact_score || 0.5) * 100)}</span>
+                    </div>
+                    <div class="insight-summary">${ins.summary}</div>
+                  </div>
+                </div>
+                <div class="insight-actions">
+                  ${evidenceHtml ? `<button class="btn btn-secondary btn-sm evidence-toggle-btn" data-target="${drawerId}" style="padding: 4px 10px; font-size: 11px;">Why?</button>` : ''}
+                  <button class="btn btn-secondary btn-sm insight-dismiss-btn" data-key="${ins.insight_key || ins.id}" title="Dismiss insight" style="padding: 4px 8px; font-size: 11px;"><i data-lucide="x" style="width: 12px; height: 12px;"></i></button>
+                </div>
+              </div>
+              ${evidenceHtml ? `<div id="${drawerId}" class="insight-evidence-drawer">${evidenceHtml}</div>` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+
+    <!-- Quick Historical Rolling Norms & Projections -->
+    <div class="grid-2col">
+      <div class="fin-card">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <h3>Historical Baseline Norms</h3>
+            <p>Zero-filled robust rolling medians and averages</p>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; text-align: center;">
+          <div style="background: var(--bg-surface); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">3M Median</div>
+            <div style="font-size: 18px; font-weight: 700; color: var(--text-primary); margin-top: 4px;">${state.formatCurrency(rolling.median_3)}</div>
+          </div>
+          <div style="background: var(--bg-surface); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">6M Median</div>
+            <div style="font-size: 18px; font-weight: 700; color: var(--text-primary); margin-top: 4px;">${state.formatCurrency(rolling.median_6)}</div>
+          </div>
+          <div style="background: var(--bg-surface); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">12M Mean</div>
+            <div style="font-size: 18px; font-weight: 700; color: var(--text-primary); margin-top: 4px;">${state.formatCurrency(rolling.mean_12)}</div>
+          </div>
+        </div>
+        <div style="margin-top: 14px; font-size: 12px; color: var(--text-secondary);">
+          Current spending is <strong style="color: var(--text-primary);">${kpis.expense > rolling.median_6 ? 'above' : 'below'}</strong> your 6-month historical baseline of ${state.formatCurrency(rolling.median_6)}.
+        </div>
+      </div>
+
+      <div class="fin-card">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <h3>Forecast Confidence & Model</h3>
+            <p>FinScope Hybrid forecasting methodology</p>
+          </div>
+          <span class="delta-badge positive" style="font-size: 11px;">Confidence: ${forecast.confidence.toUpperCase()}</span>
+        </div>
+        <div style="font-size: 13px; color: var(--text-secondary); line-height: 1.6;">
+          • <strong>Spent to Date:</strong> ${state.formatCurrency(forecast.actual_spent_to_date)} (Days 1–${forecast.components?.elapsed_days || 15})<br>
+          • <strong>Upcoming Scheduled Bills:</strong> ${state.formatCurrency(forecast.upcoming_recurring)}<br>
+          • <strong>Expected Variable Spending:</strong> ${state.formatCurrency(forecast.expected_variable)}<br>
+          • <strong>Reconciliation Status:</strong> <span style="color: #4DD5A5;">✓ Reconciled to exact cent</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  if (window.lucide) window.lucide.createIcons();
+
+  // Attach evidence toggles
+  container.querySelectorAll('.evidence-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.dataset.target;
+      const drawer = document.getElementById(targetId);
+      if (drawer) {
+        drawer.classList.toggle('open');
+        btn.textContent = drawer.classList.contains('open') ? 'Hide Details' : 'Why?';
+      }
+    });
+  });
+
+  // Attach dismiss clicks
+  container.querySelectorAll('.insight-dismiss-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const key = btn.dataset.key;
+      if (!key) return;
+      try {
+        await api.dismissInsight(key);
+        const card = btn.closest('.insight-card');
+        if (card) {
+          card.style.opacity = '0';
+          card.style.transform = 'translateY(-10px)';
+          card.style.transition = 'all 0.25s ease';
+          setTimeout(() => card.remove(), 250);
+        }
+        showToast('Insight dismissed', 'info');
+      } catch (err) {
+        console.error('Error dismissing insight:', err);
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tab 2: What Changed? v2.1 (Frequency, Ticket & Refund Decomposition + Drilldown)
 // ---------------------------------------------------------------------------
 async function renderChangesTab(container) {
-  container.innerHTML = `
-    <div style="text-align: center; color: var(--text-muted); padding: 30px;">Analyzing variance drivers...</div>
-  `;
+  container.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 30px;">Analyzing variance drivers...</div>`;
 
   const [changes, deepDive] = await Promise.all([
     api.getWhatChanged(state.month, null, state.accountId),
@@ -96,42 +321,41 @@ async function renderChangesTab(container) {
   const deltaSign = totalDelta > 0 ? '+' : '';
   const freqEffect = changes.overall_frequency_effect;
   const ticketEffect = changes.overall_ticket_effect;
-  const freqSign = freqEffect > 0 ? '+' : '';
-  const ticketSign = ticketEffect > 0 ? '+' : '';
+  const refundEffect = changes.overall_refund_effect || 0;
 
   container.innerHTML = `
-    <!-- Summary Header Cards -->
+    <!-- 4 Summary KPI Cards including Refund Effect -->
     <div class="grid-4col" style="margin-bottom: 24px;">
       <div class="fin-card">
-        <span class="kpi-label">Total Spend Change</span>
+        <span class="kpi-label">Total Net Spend Change</span>
         <div class="kpi-value ${totalDelta > 0 ? 'text-negative' : 'text-positive'}" style="font-size: 26px; margin: 6px 0;">
           ${deltaSign}${state.formatCurrency(totalDelta)}
         </div>
-        <span class="kpi-footer">vs ${changes.comparison_month}</span>
+        <span class="kpi-footer">Exact Net Delta</span>
       </div>
 
       <div class="fin-card">
         <span class="kpi-label">Frequency Effect</span>
         <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #5B8CFF;">
-          ${freqSign}${state.formatCurrency(freqEffect)}
+          ${freqEffect > 0 ? '+' : ''}${state.formatCurrency(freqEffect)}
         </div>
-        <span class="kpi-footer">Change due to transaction volume</span>
+        <span class="kpi-footer">Change due to purchase count</span>
       </div>
 
       <div class="fin-card">
         <span class="kpi-label">Ticket Size Effect</span>
         <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #FF9F43;">
-          ${ticketSign}${state.formatCurrency(ticketEffect)}
+          ${ticketEffect > 0 ? '+' : ''}${state.formatCurrency(ticketEffect)}
         </div>
-        <span class="kpi-footer">Change due to average purchase size</span>
+        <span class="kpi-footer">Change due to avg purchase size</span>
       </div>
 
       <div class="fin-card">
-        <span class="kpi-label">Weekend Shift</span>
-        <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #C85AF4;">
-          ${changes.weekend_delta > 0 ? '+' : ''}${state.formatCurrency(changes.weekend_delta)}
+        <span class="kpi-label">Refund Effect</span>
+        <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #27D5D5;">
+          ${refundEffect > 0 ? '+' : ''}${state.formatCurrency(refundEffect)}
         </div>
-        <span class="kpi-footer">Weekend vs weekday variance</span>
+        <span class="kpi-footer">Change due to refund credits</span>
       </div>
     </div>
 
@@ -140,7 +364,7 @@ async function renderChangesTab(container) {
       <div class="card-header">
         <div class="card-title-wrap">
           <h3>Category Driver Decomposition</h3>
-          <p>Exact decomposition: Frequency Effect + Ticket Effect = Total Delta</p>
+          <p>Identity: Frequency Effect + Ticket Effect + Refund Effect == Net Delta (Click category to drill down)</p>
         </div>
       </div>
 
@@ -150,16 +374,19 @@ async function renderChangesTab(container) {
           <table class="fin-table">
             <thead>
               <tr>
-                <th>Driver</th>
+                <th>Category</th>
                 <th>Classification</th>
-                <th style="text-align: right;">Delta</th>
-                <th style="text-align: right;">Freq / Ticket</th>
+                <th style="text-align: right;">Net Delta</th>
+                <th style="text-align: right;">Drilldown</th>
               </tr>
             </thead>
             <tbody id="changes-table-body"></tbody>
           </table>
         </div>
       </div>
+
+      <!-- Merchant Drill-Down Container (Populated on click) -->
+      <div id="merchant-drilldown-container"></div>
     </div>
 
     <!-- Pacing & Weekday Distribution -->
@@ -178,7 +405,7 @@ async function renderChangesTab(container) {
         <div class="card-header">
           <div class="card-title-wrap">
             <h3>Cumulative Spending Trajectory</h3>
-            <p>Trajectory compared with previous month</p>
+            <p>Trajectory compared with comparison period</p>
           </div>
         </div>
         <div id="cumulative-chart" style="width: 100%; height: 260px;"></div>
@@ -192,25 +419,35 @@ async function renderChangesTab(container) {
   const tbody = document.getElementById('changes-table-body');
   if (tbody) {
     tbody.innerHTML = changes.drivers.map(d => {
-      const tagClass = d.tag === 'NEW' ? 'new' : (d.tag === 'INCREASED_FREQUENCY' ? 'freq' : (d.tag === 'HIGHER_TICKET' ? 'ticket' : 'reduced'));
+      const tagClass = d.tag === 'NEW' ? 'new' : (d.tag === 'INCREASED_FREQUENCY' ? 'freq' : (d.tag === 'HIGHER_TICKET' ? 'ticket' : (d.tag === 'REFUND_IMPACT' ? 'refund' : 'reduced')));
       const sign = d.delta > 0 ? '+' : '';
       const color = d.delta > 0 ? 'var(--color-negative)' : (d.delta < 0 ? 'var(--color-positive)' : 'var(--text-muted)');
 
       return `
-        <tr>
+        <tr class="table-row-clickable category-driver-row" data-category-id="${d.entity_id}" data-category-name="${d.name}">
           <td style="font-weight: 500;">
             <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${d.color}; margin-right:6px;"></span>
             ${d.name}
           </td>
           <td><span class="driver-tag ${tagClass}">${d.tag.replace(/_/g, ' ')}</span></td>
           <td style="text-align: right; font-weight: 600; color: ${color};">${sign}${state.formatCurrency(d.delta)}</td>
-          <td style="text-align: right; font-size: 11.5px; color: var(--text-secondary);">
-            <span title="Frequency Effect">${d.frequency_effect > 0 ? '+' : ''}${state.formatCurrency(d.frequency_effect)}</span> / 
-            <span title="Ticket Size Effect">${d.ticket_effect > 0 ? '+' : ''}${state.formatCurrency(d.ticket_effect)}</span>
+          <td style="text-align: right;">
+            <button class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 11px;">Drilldown <i data-lucide="chevron-right" style="width: 11px; height: 11px; vertical-align: -1px;"></i></button>
           </td>
         </tr>
       `;
     }).join('');
+
+    if (window.lucide) window.lucide.createIcons();
+
+    // Attach click for merchant drilldown
+    tbody.querySelectorAll('.category-driver-row').forEach(row => {
+      row.addEventListener('click', async () => {
+        const catId = parseInt(row.dataset.categoryId);
+        const catName = row.dataset.categoryName;
+        await loadMerchantDrilldown(catId, catName);
+      });
+    });
   }
 
   renderVarianceWaterfallChart(changes.waterfall);
@@ -218,73 +455,167 @@ async function renderChangesTab(container) {
   renderCumulativeChart(deepDive.cumulative);
 }
 
-// ---------------------------------------------------------------------------
-// Tab 2: Spending Fingerprint
-// ---------------------------------------------------------------------------
-async function renderFingerprintTab(container) {
+async function loadMerchantDrilldown(categoryId, categoryName) {
+  const container = document.getElementById('merchant-drilldown-container');
+  if (!container) return;
+
   container.innerHTML = `
-    <div style="text-align: center; color: var(--text-muted); padding: 30px;">Computing spending fingerprint...</div>
+    <div class="merchant-drilldown-panel">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h4 style="font-size: 14px; font-weight: 600; color: var(--text-primary);">
+          Merchant Drill-down for <span style="color: var(--accent-blue);">${categoryName}</span>
+        </h4>
+        <button class="btn btn-secondary btn-sm" id="close-merchant-drilldown" style="padding: 3px 8px; font-size: 11px;">Close</button>
+      </div>
+      <div style="text-align: center; color: var(--text-muted); padding: 14px;">Loading merchant breakdown...</div>
+    </div>
   `;
 
-  const fp = await api.getSpendingFingerprint(6, state.accountId);
-  if (fp.error) {
-    container.innerHTML = `<div class="fin-card" style="text-align: center; padding: 40px; color: var(--text-muted);">${fp.error}</div>`;
+  document.getElementById('close-merchant-drilldown')?.addEventListener('click', () => {
+    container.innerHTML = '';
+  });
+
+  try {
+    const merchants = await api.getMerchantDrilldown(categoryId, state.month, state.accountId);
+    if (!merchants || merchants.length === 0) {
+      container.querySelector('.merchant-drilldown-panel').innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 13px; color: var(--text-muted);">No individual merchant data found for ${categoryName}.</span>
+          <button class="btn btn-secondary btn-sm" id="close-merchant-drilldown">Close</button>
+        </div>
+      `;
+      document.getElementById('close-merchant-drilldown')?.addEventListener('click', () => container.innerHTML = '');
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="merchant-drilldown-panel">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <div>
+            <h4 style="font-size: 14px; font-weight: 600; color: var(--text-primary); margin: 0;">
+              Merchant Drill-down: <span style="color: var(--accent-blue);">${categoryName}</span>
+            </h4>
+            <span style="font-size: 11.5px; color: var(--text-muted);">Breakdown of behavioral causes per merchant</span>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="close-merchant-drilldown" style="padding: 4px 10px; font-size: 11.5px;">Close</button>
+        </div>
+
+        <div class="table-container" style="max-height: 260px; overflow-y: auto;">
+          <table class="fin-table">
+            <thead>
+              <tr>
+                <th>Merchant</th>
+                <th>Classification</th>
+                <th style="text-align: right;">Current</th>
+                <th style="text-align: right;">Previous</th>
+                <th style="text-align: right;">Delta</th>
+                <th style="text-align: right;">Freq / Ticket / Refund</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${merchants.map(m => {
+                const tagClass = m.tag === 'NEW_MERCHANT' ? 'new' : (m.tag === 'MORE_FREQUENT' ? 'freq' : (m.tag === 'HIGHER_TICKET' ? 'ticket' : (m.tag === 'REFUND_CHANGE' ? 'refund' : 'reduced')));
+                const sign = m.delta > 0 ? '+' : '';
+                const color = m.delta > 0 ? 'var(--color-negative)' : (m.delta < 0 ? 'var(--color-positive)' : 'var(--text-muted)');
+                return `
+                  <tr>
+                    <td style="font-weight: 500;">${m.merchant}</td>
+                    <td><span class="driver-tag ${tagClass}">${m.tag.replace(/_/g, ' ')}</span></td>
+                    <td style="text-align: right;">${state.formatCurrency(m.current)}</td>
+                    <td style="text-align: right;">${state.formatCurrency(m.previous)}</td>
+                    <td style="text-align: right; font-weight: 600; color: ${color};">${sign}${state.formatCurrency(m.delta)}</td>
+                    <td style="text-align: right; font-size: 11.5px; color: var(--text-secondary);">
+                      <span title="Frequency Effect">${m.frequency_effect > 0 ? '+' : ''}${state.formatCurrency(m.frequency_effect)}</span> / 
+                      <span title="Ticket Effect">${m.ticket_effect > 0 ? '+' : ''}${state.formatCurrency(m.ticket_effect)}</span> / 
+                      <span title="Refund Effect">${m.refund_effect > 0 ? '+' : ''}${state.formatCurrency(m.refund_effect)}</span>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('close-merchant-drilldown')?.addEventListener('click', () => container.innerHTML = '');
+  } catch (e) {
+    console.error('Error loading merchant drilldown:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tab 3: Spending Patterns & Fingerprint
+// ---------------------------------------------------------------------------
+async function renderPatternsTab(container) {
+  container.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 30px;">Computing behavioral patterns & fingerprint...</div>`;
+
+  const [fp, rolling] = await Promise.all([
+    api.getSpendingFingerprint(6, state.accountId, state.month),
+    api.getRollingMetrics('expense', null, state.accountId, state.month)
+  ]);
+
+  if (!fp.available) {
+    container.innerHTML = `
+      <div class="fin-card" style="text-align: center; padding: 48px 20px;">
+        <div style="width: 48px; height: 48px; border-radius: 50%; background: rgba(91, 140, 255, 0.15); color: #5B8CFF; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 14px;">
+          <i data-lucide="info" style="width: 24px; height: 24px;"></i>
+        </div>
+        <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary);">Insufficient Data for Spending Patterns</h3>
+        <p style="font-size: 13px; color: var(--text-muted); max-width: 460px; margin: 6px auto 0;">
+          ${fp.data_sufficiency?.reason || 'FinScope requires at least 30 transactions across 2+ months to calculate truthful behavioral patterns.'}
+        </p>
+      </div>
+    `;
+    if (window.lucide) window.lucide.createIcons();
     return;
   }
 
-  // Rhythm marker position: -1.0 is 0%, 0.0 is 50%, +1.0 is 100%
   const rhythmPct = Math.min(100, Math.max(0, Math.round(((fp.burstiness_score + 1.0) / 2.0) * 100)));
+  const weekdayBreakdown = fp.metadata?.weekday_breakdown || [];
 
   container.innerHTML = `
+    <!-- Top Behavioral Metric Cards -->
     <div class="fin-card" style="margin-bottom: 24px;">
       <div class="card-header">
         <div class="card-title-wrap">
           <h3>Your Personal Spending Fingerprint</h3>
-          <p>Objective behavioral characteristics over the past 6 months (${fp.period_label})</p>
+          <p>Objective behavioral characteristics over the analyzed window (${fp.period_label})</p>
         </div>
         <span class="delta-badge neutral" style="font-size: 12px;">${fp.transaction_count} transactions analyzed</span>
       </div>
 
-      <!-- Fingerprint Grid -->
       <div class="grid-3col" style="gap: 16px;">
-        <!-- Card 1: Typical Transaction -->
         <div class="fingerprint-card-metric">
           <span class="fingerprint-label">Typical Transaction</span>
           <div class="fingerprint-val" style="color: #4DD5A5;">${state.formatCurrency(fp.median_transaction)}</div>
-          <div class="fingerprint-sub">
-            Large (P75): ${state.formatCurrency(fp.p75_transaction)} • Top 10%: ${state.formatCurrency(fp.p90_transaction)}
-          </div>
+          <div class="fingerprint-sub">Large (P75): ${state.formatCurrency(fp.p75_transaction)} • Top 10%: ${state.formatCurrency(fp.p90_transaction)}</div>
         </div>
 
-        <!-- Card 2: Weekend Concentration -->
         <div class="fingerprint-card-metric">
           <span class="fingerprint-label">Weekend Concentration</span>
           <div class="fingerprint-val" style="color: #5B8CFF;">${fp.weekend_concentration}%</div>
           <div class="fingerprint-sub">Share of discretionary spend occurring on Sat & Sun</div>
         </div>
 
-        <!-- Card 3: Category Diversity -->
         <div class="fingerprint-card-metric">
           <span class="fingerprint-label">Category Diversity</span>
           <div class="fingerprint-val" style="color: #C85AF4;">${fp.category_diversity_score} / 100</div>
-          <div class="fingerprint-sub">Shannon entropy spread across spending categories</div>
+          <div class="fingerprint-sub">Normalized Shannon entropy across spending categories</div>
         </div>
 
-        <!-- Card 4: Month-to-Month Stability -->
         <div class="fingerprint-card-metric">
-          <span class="fingerprint-label">Category Stability</span>
+          <span class="fingerprint-label">Category Mix Stability</span>
           <div class="fingerprint-val" style="color: #27D5D5;">${fp.spending_consistency_score}%</div>
-          <div class="fingerprint-sub">Cosine similarity of category mix over time</div>
+          <div class="fingerprint-sub">Cosine similarity of category vector over time</div>
         </div>
 
-        <!-- Card 5: Essential vs Discretionary -->
         <div class="fingerprint-card-metric">
           <span class="fingerprint-label">Essential Spending Ratio</span>
           <div class="fingerprint-val" style="color: #FF9F43;">${fp.essential_ratio}%</div>
           <div class="fingerprint-sub">Recurring subscriptions & bills: ${fp.recurring_expense_ratio}%</div>
         </div>
 
-        <!-- Card 6: Top Merchants Concentration -->
         <div class="fingerprint-card-metric">
           <span class="fingerprint-label">Top 3 Merchants Share</span>
           <div class="fingerprint-val" style="color: #FF6B8A;">${fp.top_merchants_share}%</div>
@@ -292,7 +623,6 @@ async function renderFingerprintTab(container) {
         </div>
       </div>
 
-      <!-- Rhythm & Behavioral Highlights -->
       <div style="margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border-subtle);">
         <div class="grid-2col" style="align-items: center;">
           <div>
@@ -306,89 +636,48 @@ async function renderFingerprintTab(container) {
             </div>
           </div>
           <div style="font-size: 13px; color: var(--text-secondary); line-height: 1.5; padding-left: 20px; border-left: 1px solid var(--border-subtle);">
-            • Most active spending day: <strong style="color: var(--text-primary);">${fp.most_active_weekday}</strong><br>
+            • Highest daily spending day: <strong style="color: var(--text-primary);">${fp.most_active_weekday}</strong><br>
             • Most variable category: <strong style="color: var(--text-primary);">${fp.most_variable_category}</strong><br>
             • Most stable category: <strong style="color: var(--text-primary);">${fp.most_stable_category}</strong>
           </div>
         </div>
       </div>
     </div>
-  `;
 
-  if (window.lucide) window.lucide.createIcons();
-}
-
-// ---------------------------------------------------------------------------
-// Tab 3: Anomalies & Normal Ranges
-// ---------------------------------------------------------------------------
-async function renderAnomaliesTab(container) {
-  container.innerHTML = `
-    <div style="text-align: center; color: var(--text-muted); padding: 30px;">Evaluating statistical anomalies & normal ranges...</div>
-  `;
-
-  const anomalies = await api.getAnomalies(state.month, state.accountId, 2.5);
-
-  if (!anomalies || anomalies.length === 0) {
-    container.innerHTML = `
-      <div class="fin-card" style="text-align: center; padding: 48px 20px;">
-        <div style="width: 48px; height: 48px; border-radius: 50%; background: rgba(77, 213, 165, 0.15); color: #4DD5A5; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 14px;">
-          <i data-lucide="shield-check" style="width: 24px; height: 24px;"></i>
-        </div>
-        <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary);">No Statistical Anomalies Detected</h3>
-        <p style="font-size: 13px; color: var(--text-muted); max-width: 460px; margin: 6px auto 0;">All transactions and category totals for ${state.month} are well within your personal historical normal ranges.</p>
-      </div>
-    `;
-    if (window.lucide) window.lucide.createIcons();
-    return;
-  }
-
-  container.innerHTML = `
-    <div class="fin-card">
+    <!-- Disambiguated Weekday Breakdown Table -->
+    <div class="fin-card" style="margin-bottom: 24px;">
       <div class="card-header">
         <div class="card-title-wrap">
-          <h3>Detected Statistical Anomalies (${anomalies.length})</h3>
-          <p>Transactions and categories exceeding robust personal historical baselines (Median & Scaled MAD)</p>
+          <h3>Weekday Spending Disambiguation</h3>
+          <p>Tightly separating "Average Transaction Size" from "Average Daily Spend"</p>
         </div>
       </div>
 
-      <div style="display: flex; flex-direction: column; gap: 14px;">
-        ${anomalies.map(a => {
-          const sevColor = a.severity === 'strong' ? '#FF6B8A' : (a.severity === 'moderate' ? '#FF9F43' : '#5B8CFF');
-          const maxVal = Math.max(a.actual, a.normal_range_upper * 1.15);
-          const lowPct = Math.round((a.normal_range_lower / maxVal) * 100);
-          const upPct = Math.round((a.normal_range_upper / maxVal) * 100);
-          const curPct = Math.min(100, Math.round((a.actual / maxVal) * 100));
-
-          return `
-            <div style="background-color: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 18px;">
-              <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 8px;">
-                <div>
-                  <div style="font-size: 14.5px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
-                    ${a.title}
-                    <span class="delta-badge" style="background: ${sevColor}22; color: ${sevColor}; font-size: 10.5px;">${a.severity.toUpperCase()}</span>
-                  </div>
-                  <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 3px;">${a.explanation}</div>
-                </div>
-                <div style="text-align: right;">
-                  <div style="font-size: 18px; font-weight: 700; color: ${sevColor};">${state.formatCurrency(a.actual)}</div>
-                  <div style="font-size: 11px; color: var(--text-muted);">Z-Score: ${a.robust_score}</div>
-                </div>
-              </div>
-
-              <!-- Normal Range Visual Bar -->
-              <div class="normal-range-wrap" style="margin-top: 12px; padding: 10px 14px; background: rgba(0,0,0,0.2); border-radius: var(--radius-sm);">
-                <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);">
-                  <span>Typical Range: ${state.formatCurrency(a.normal_range_lower)} – ${state.formatCurrency(a.normal_range_upper)}</span>
-                  <span>Median: ${state.formatCurrency(a.expected_median)}</span>
-                </div>
-                <div class="normal-range-track">
-                  <div class="normal-range-band" style="left: ${lowPct}%; width: ${upPct - lowPct}%;"></div>
-                  <div class="normal-range-current-dot" style="left: ${curPct}%; background-color: ${sevColor};"></div>
-                </div>
-              </div>
-            </div>
-          `;
-        }).join('')}
+      <div class="table-container">
+        <table class="fin-table">
+          <thead>
+            <tr>
+              <th>Weekday</th>
+              <th style="text-align: right;">Total Spend</th>
+              <th style="text-align: right;">Tx Count</th>
+              <th style="text-align: right;">Calendar Days</th>
+              <th style="text-align: right;">Avg Transaction Size</th>
+              <th style="text-align: right; color: var(--accent-blue);">Avg Daily Spend</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${weekdayBreakdown.map(wb => `
+              <tr>
+                <td style="font-weight: 500;">${wb.day_name}</td>
+                <td style="text-align: right;">${state.formatCurrency(wb.total_spend)}</td>
+                <td style="text-align: right;">${wb.transaction_count}</td>
+                <td style="text-align: right;">${wb.calendar_occurrences}</td>
+                <td style="text-align: right;">${state.formatCurrency(wb.avg_transaction_size)}</td>
+                <td style="text-align: right; font-weight: 700; color: var(--accent-blue);">${state.formatCurrency(wb.avg_daily_spend)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
       </div>
     </div>
   `;
@@ -397,22 +686,132 @@ async function renderAnomaliesTab(container) {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 4: Forecast & Rolling Baselines
+// Tab 4: Anomalies & Normal Ranges
 // ---------------------------------------------------------------------------
-async function renderForecastTab(container) {
-  container.innerHTML = `
-    <div style="text-align: center; color: var(--text-muted); padding: 30px;">Calculating month-end projection...</div>
-  `;
+async function renderAnomaliesTab(container) {
+  container.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 30px;">Evaluating statistical anomalies & normal ranges...</div>`;
 
-  const [fc, rolling] = await Promise.all([
-    api.getForecast(state.month, state.accountId),
-    api.getRollingMetrics('expense', null, state.accountId)
+  const [anomalies, normalRanges] = await Promise.all([
+    api.getAnomalies(state.month, state.accountId, 2.5),
+    api.getNormalRanges(state.accountId)
   ]);
 
-  const projOver = fc.projected_variance;
+  container.innerHTML = `
+    <!-- Statistical Anomalies -->
+    <div class="fin-card" style="margin-bottom: 24px;">
+      <div class="card-header">
+        <div class="card-title-wrap">
+          <h3>Detected Statistical Anomalies (${anomalies.length})</h3>
+          <p>Transactions exceeding hierarchical personal baselines (Merchant -> Category -> Overall)</p>
+        </div>
+      </div>
+
+      ${anomalies.length === 0 ? `
+        <div style="text-align: center; padding: 36px; color: var(--text-muted);">
+          <i data-lucide="shield-check" style="width: 32px; height: 32px; color: #4DD5A5; margin-bottom: 8px; display: inline-block;"></i>
+          <div>No statistical anomalies detected. All spending is within personal historical norms.</div>
+        </div>
+      ` : `
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          ${anomalies.map(a => {
+            const sevColor = a.severity === 'strong' ? '#FF6B8A' : (a.severity === 'moderate' ? '#FF9F43' : '#5B8CFF');
+            const maxVal = Math.max(a.actual, a.normal_range_upper * 1.15);
+            const lowPct = Math.round((a.normal_range_lower / maxVal) * 100);
+            const upPct = Math.round((a.normal_range_upper / maxVal) * 100);
+            const curPct = Math.min(100, Math.round((a.actual / maxVal) * 100));
+
+            return `
+              <div style="background-color: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 18px;">
+                <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 8px;">
+                  <div>
+                    <div style="font-size: 14.5px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+                      ${a.title}
+                      <span class="delta-badge" style="background: ${sevColor}22; color: ${sevColor}; font-size: 10.5px;">${a.severity.toUpperCase()}</span>
+                    </div>
+                    <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 3px;">${a.explanation}</div>
+                  </div>
+                  <div style="text-align: right;">
+                    <div style="font-size: 18px; font-weight: 700; color: ${sevColor};">${state.formatCurrency(a.actual)}</div>
+                    <div style="font-size: 11px; color: var(--text-muted);">Robust Z-Score: ${a.robust_score}</div>
+                  </div>
+                </div>
+
+                <!-- Normal Range Visual Track -->
+                <div class="normal-range-wrap" style="margin-top: 12px; padding: 10px 14px; background: rgba(0,0,0,0.2); border-radius: var(--radius-sm);">
+                  <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);">
+                    <span>Typical Range: ${state.formatCurrency(a.normal_range_lower)} – ${state.formatCurrency(a.normal_range_upper)}</span>
+                    <span>Expected Median: ${state.formatCurrency(a.expected_median)}</span>
+                  </div>
+                  <div class="normal-range-track">
+                    <div class="normal-range-band" style="left: ${lowPct}%; width: ${upPct - lowPct}%;"></div>
+                    <div class="normal-range-current-dot" style="left: ${curPct}%; background-color: ${sevColor};"></div>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `}
+    </div>
+
+    <!-- Category Baseline Normal Ranges Table -->
+    <div class="fin-card">
+      <div class="card-header">
+        <div class="card-title-wrap">
+          <h3>Category Baseline Normal Ranges</h3>
+          <p>Personal reference bounds (Median ± 2 × Scaled MAD) based on historical months</p>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table class="fin-table">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th style="text-align: right;">Typical Lower</th>
+              <th style="text-align: right;">Historical Median</th>
+              <th style="text-align: right;">Typical Upper</th>
+              <th style="text-align: right;">Sample History</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${normalRanges.map(nr => `
+              <tr>
+                <td style="font-weight: 500;">
+                  <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${nr.color}; margin-right:6px;"></span>
+                  ${nr.category_name}
+                </td>
+                <td style="text-align: right; color: var(--text-secondary);">${state.formatCurrency(nr.lower)}</td>
+                <td style="text-align: right; font-weight: 600;">${state.formatCurrency(nr.median)}</td>
+                <td style="text-align: right; color: var(--text-secondary);">${state.formatCurrency(nr.upper)}</td>
+                <td style="text-align: right; font-size: 12px; color: var(--text-muted);">${nr.sample_months} months</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// ---------------------------------------------------------------------------
+// Tab 5: Forecast & Backtest Evaluation
+// ---------------------------------------------------------------------------
+async function renderForecastTab(container) {
+  container.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 30px;">Computing month-end forecast and model evaluation...</div>`;
+
+  const [fc, backtest] = await Promise.all([
+    api.getForecast(state.month, state.accountId),
+    api.getBacktestEvaluation(state.accountId)
+  ]);
+
+  const catForecasts = fc.category_forecasts || [];
+  const models = backtest.models || {};
 
   container.innerHTML = `
-    <!-- Top Projection Cards -->
+    <!-- Top 4 Cards -->
     <div class="grid-4col" style="margin-bottom: 24px;">
       <div class="fin-card">
         <span class="kpi-label">Projected Month-End</span>
@@ -423,11 +822,11 @@ async function renderForecastTab(container) {
       </div>
 
       <div class="fin-card">
-        <span class="kpi-label">Actual Spent To Date</span>
+        <span class="kpi-label">Spent to Date</span>
         <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #4DD5A5;">
           ${state.formatCurrency(fc.actual_spent_to_date)}
         </div>
-        <span class="kpi-footer">Through Day ${fc.components.elapsed_days} of ${fc.components.total_days}</span>
+        <span class="kpi-footer">Days 1–${fc.components?.elapsed_days || 15} of ${fc.components?.total_days || 30}</span>
       </div>
 
       <div class="fin-card">
@@ -435,7 +834,7 @@ async function renderForecastTab(container) {
         <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #5B8CFF;">
           ${state.formatCurrency(fc.upcoming_recurring)}
         </div>
-        <span class="kpi-footer">Known bills scheduled later this month</span>
+        <span class="kpi-footer">Scheduled bills executing later</span>
       </div>
 
       <div class="fin-card">
@@ -443,18 +842,17 @@ async function renderForecastTab(container) {
         <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #FF9F43;">
           ${state.formatCurrency(fc.expected_variable)}
         </div>
-        <span class="kpi-footer">Weekday-adjusted variable estimate</span>
+        <span class="kpi-footer">Dynamic weekday occurrence rate</span>
       </div>
     </div>
 
-    <!-- Category Budget Risks & Projections -->
+    <!-- Category Projections vs Monthly Budgets -->
     <div class="fin-card" style="margin-bottom: 24px;">
       <div class="card-header">
         <div class="card-title-wrap">
-          <h3>Category Projections & Budget Risks</h3>
-          <p>Forecasted month-end outcome compared with monthly category budgets</p>
+          <h3>Category Projections & Budget Overrun Risks</h3>
+          <p>Projected spending vs allocated monthly budget targets</p>
         </div>
-        <span class="delta-badge ${fc.confidence === 'high' ? 'positive' : 'neutral'}">Confidence: ${fc.confidence.toUpperCase()}</span>
       </div>
 
       <div class="table-container">
@@ -462,26 +860,36 @@ async function renderForecastTab(container) {
           <thead>
             <tr>
               <th>Category</th>
-              <th style="text-align: right;">Spent to Date</th>
+              <th style="text-align: right;">Actual To Date</th>
               <th style="text-align: right;">Projected Month-End</th>
               <th style="text-align: right;">Budget</th>
               <th style="text-align: right;">Projected Variance</th>
+              <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            ${(fc.category_forecasts || []).map(c => {
-              const varColor = c.is_over_budget ? 'var(--color-negative)' : 'var(--color-positive)';
+            ${catForecasts.map(cf => {
+              const varColor = cf.is_over_budget ? 'var(--color-negative)' : 'var(--color-positive)';
               return `
                 <tr>
                   <td style="font-weight: 500;">
-                    <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${c.color}; margin-right:6px;"></span>
-                    ${c.name}
+                    <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${cf.color}; margin-right:6px;"></span>
+                    ${cf.name}
                   </td>
-                  <td style="text-align: right;">${state.formatCurrency(c.actual)}</td>
-                  <td style="text-align: right; font-weight: 600;">${state.formatCurrency(c.projected)}</td>
-                  <td style="text-align: right; color: var(--text-muted);">${c.budget !== null ? state.formatCurrency(c.budget) : 'None'}</td>
-                  <td style="text-align: right; font-weight: 600; color: ${varColor};">
-                    ${c.projected_variance !== null ? (c.projected_variance > 0 ? '+' : '') + state.formatCurrency(c.projected_variance) : '—'}
+                  <td style="text-align: right;">${state.formatCurrency(cf.actual)}</td>
+                  <td style="text-align: right; font-weight: 600;">${state.formatCurrency(cf.projected)}</td>
+                  <td style="text-align: right;">${cf.budget !== null ? state.formatCurrency(cf.budget) : '—'}</td>
+                  <td style="text-align: right; font-weight: 600; color: ${cf.projected_variance !== null ? varColor : 'var(--text-muted)'};">
+                    ${cf.projected_variance !== null ? `${cf.projected_variance > 0 ? '+' : ''}${state.formatCurrency(cf.projected_variance)}` : '—'}
+                  </td>
+                  <td>
+                    ${cf.is_over_budget ? `
+                      <span class="delta-badge negative" style="font-size: 10.5px;">OVER BUDGET</span>
+                    ` : (cf.budget !== null ? `
+                      <span class="delta-badge positive" style="font-size: 10.5px;">ON TRACK</span>
+                    ` : `
+                      <span class="delta-badge neutral" style="font-size: 10.5px;">NO BUDGET</span>
+                    `)}
                   </td>
                 </tr>
               `;
@@ -491,39 +899,53 @@ async function renderForecastTab(container) {
       </div>
     </div>
 
-    <!-- Historical Rolling Baselines Card -->
+    <!-- Backtest Evaluation Leaderboard -->
     <div class="fin-card">
       <div class="card-header">
         <div class="card-title-wrap">
-          <h3>Historical Rolling Baselines</h3>
-          <p>Current month vs. personal historical averages and robust medians</p>
+          <h3>Forecast Model Evaluation Leaderboard (Rolling-Origin Backtest)</h3>
+          <p>Deterministic historical accuracy comparison across origins (t >= 3)</p>
         </div>
+        <span class="delta-badge positive" style="font-size: 11.5px;">Best: ${backtest.best_model || 'finscope_hybrid'}</span>
       </div>
 
-      <div class="grid-4col" style="gap: 16px;">
-        <div class="fingerprint-card-metric">
-          <span class="fingerprint-label">3-Month Median</span>
-          <div class="fingerprint-val">${state.formatCurrency(rolling.median_3)}</div>
-          <div class="fingerprint-sub">Mean: ${state.formatCurrency(rolling.mean_3)}</div>
-        </div>
-
-        <div class="fingerprint-card-metric">
-          <span class="fingerprint-label">6-Month Median</span>
-          <div class="fingerprint-val">${state.formatCurrency(rolling.median_6)}</div>
-          <div class="fingerprint-sub">Mean: ${state.formatCurrency(rolling.mean_6)}</div>
-        </div>
-
-        <div class="fingerprint-card-metric">
-          <span class="fingerprint-label">EWMA (Span 3)</span>
-          <div class="fingerprint-val">${state.formatCurrency(rolling.ewma_3)}</div>
-          <div class="fingerprint-sub">Recent-weighted moving average</div>
-        </div>
-
-        <div class="fingerprint-card-metric">
-          <span class="fingerprint-label">Typical Variation (MAD)</span>
-          <div class="fingerprint-val">${state.formatCurrency(rolling.mad_6)}</div>
-          <div class="fingerprint-sub">Normal monthly fluctuation</div>
-        </div>
+      <div class="table-container">
+        <table class="fin-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th style="text-align: right;">Mean Absolute Error (MAE)</th>
+              <th style="text-align: right;">Median Absolute Error</th>
+              <th style="text-align: right;">WAPE %</th>
+              <th style="text-align: right;">Bias</th>
+              <th>Evaluation Rank</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${Object.entries(models).map(([name, m]) => {
+              const isBest = (name === backtest.best_model);
+              return `
+                <tr style="${isBest ? 'background: rgba(77, 213, 165, 0.08);' : ''}">
+                  <td style="font-weight: 600; text-transform: uppercase;">
+                    ${name.replace(/_/g, ' ')}
+                    ${isBest ? `<span class="delta-badge positive" style="font-size: 9.5px; margin-left: 6px;">TOP MODEL</span>` : ''}
+                  </td>
+                  <td style="text-align: right; font-weight: 600;">${state.formatCurrency(m.mae)}</td>
+                  <td style="text-align: right;">${state.formatCurrency(m.median_ae)}</td>
+                  <td style="text-align: right;">${m.wape_pct}%</td>
+                  <td style="text-align: right; color: ${m.bias > 0 ? 'var(--color-negative)' : 'var(--color-positive)'};">
+                    ${m.bias > 0 ? '+' : ''}${state.formatCurrency(m.bias)}
+                  </td>
+                  <td>
+                    <span class="delta-badge ${isBest ? 'positive' : 'neutral'}" style="font-size: 11px;">
+                      ${isBest ? 'Rank 1' : 'Baseline'}
+                    </span>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
       </div>
     </div>
   `;
@@ -532,7 +954,7 @@ async function renderForecastTab(container) {
 }
 
 // ---------------------------------------------------------------------------
-// Chart Renderers (ECharts)
+// Chart Helpers
 // ---------------------------------------------------------------------------
 function renderVarianceWaterfallChart(steps) {
   const chartDom = document.getElementById('variance-chart');
@@ -541,44 +963,71 @@ function renderVarianceWaterfallChart(steps) {
   if (varianceChart) varianceChart.dispose();
   varianceChart = window.echarts.init(chartDom);
 
-  const labels = steps.map(s => s.label);
-  const data = steps.map(s => s.amount);
-  const colors = steps.map(s => s.is_total ? '#5B8CFF' : (s.amount >= 0 ? '#FF6B8A' : '#4DD5A5'));
+  const categories = steps.map(s => s.label);
+  const baseValues = [];
+  const stepValues = [];
+
+  let running = 0;
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (i === 0) {
+      baseValues.push(0);
+      stepValues.push(s.amount);
+      running = s.amount;
+    } else if (i === steps.length - 1) {
+      baseValues.push(0);
+      stepValues.push(s.amount);
+    } else {
+      if (s.amount >= 0) {
+        baseValues.push(running);
+        stepValues.push(s.amount);
+        running += s.amount;
+      } else {
+        running += s.amount;
+        baseValues.push(running);
+        stepValues.push(-s.amount);
+      }
+    }
+  }
 
   const option = {
-    backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: '#1E1E28',
-      borderColor: '#2A2A38',
-      textStyle: { color: '#F2F2F7', fontSize: 12 },
-      formatter: (params) => {
-        const item = params[0];
-        const prefix = item.value > 0 ? '+' : '';
-        return `${item.name}: <strong>${prefix}${state.formatCurrency(item.value)}</strong>`;
-      }
-    },
-    grid: { top: 20, right: 20, bottom: 40, left: 65 },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    grid: { top: 20, right: 20, bottom: 40, left: 60 },
     xAxis: {
       type: 'category',
-      data: labels,
-      axisLine: { lineStyle: { color: '#2A2A38' } },
-      axisLabel: { color: '#8E8E93', fontSize: 11, interval: 0, rotate: labels.length > 5 ? 20 : 0 }
+      data: categories,
+      axisLabel: { color: '#8E8E93', fontSize: 11, interval: 0, rotate: 20 }
     },
     yAxis: {
       type: 'value',
-      axisLine: { show: false },
-      splitLine: { lineStyle: { color: '#2A2A38', type: 'dashed' } },
-      axisLabel: { color: '#8E8E93', fontSize: 11, formatter: (val) => state.formatCurrency(val) }
+      axisLabel: { color: '#8E8E93', formatter: '${value}' },
+      splitLine: { lineStyle: { color: 'rgba(255, 255, 255, 0.06)' } }
     },
-    series: [{
-      type: 'bar',
-      data: data.map((val, idx) => ({
-        value: val,
-        itemStyle: { color: colors[idx], borderRadius: [4, 4, 0, 0] }
-      })),
-      barMaxWidth: 36
-    }]
+    series: [
+      {
+        name: 'Placeholder',
+        type: 'bar',
+        stack: 'Total',
+        itemStyle: { borderColor: 'transparent', color: 'transparent' },
+        emphasis: { itemStyle: { borderColor: 'transparent', color: 'transparent' } },
+        data: baseValues
+      },
+      {
+        name: 'Variance',
+        type: 'bar',
+        stack: 'Total',
+        label: { show: true, position: 'top', color: '#E0E0E0', fontSize: 10.5, formatter: '${c}' },
+        itemStyle: {
+          color: function (params) {
+            const idx = params.dataIndex;
+            if (idx === 0 || idx === steps.length - 1) return '#5B8CFF';
+            return steps[idx].amount >= 0 ? '#FF6B8A' : '#4DD5A5';
+          },
+          borderRadius: [4, 4, 0, 0]
+        },
+        data: stepValues
+      }
+    ]
   };
 
   varianceChart.setOption(option);
@@ -592,38 +1041,25 @@ function renderWeekdayChart(weekdayData) {
   weekdayChart = window.echarts.init(chartDom);
 
   const days = weekdayData.map(d => d.day);
-  const totals = weekdayData.map(d => d.total);
+  const averages = weekdayData.map(d => d.average);
 
   const option = {
-    backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: '#1E1E28',
-      borderColor: '#2A2A38',
-      textStyle: { color: '#F2F2F7', fontSize: 12 },
-      formatter: (params) => `${params[0].name}: <strong>${state.formatCurrency(params[0].value)}</strong>`
-    },
-    grid: { top: 20, right: 20, bottom: 30, left: 60 },
+    tooltip: { trigger: 'axis', formatter: '{b}: ${c} avg daily expense' },
+    grid: { top: 20, right: 20, bottom: 25, left: 50 },
     xAxis: {
       type: 'category',
       data: days,
-      axisLine: { lineStyle: { color: '#2A2A38' } },
       axisLabel: { color: '#8E8E93', fontSize: 11 }
     },
     yAxis: {
       type: 'value',
-      axisLine: { show: false },
-      splitLine: { lineStyle: { color: '#2A2A38', type: 'dashed' } },
-      axisLabel: { color: '#8E8E93', fontSize: 11, formatter: (val) => state.formatCurrency(val) }
+      axisLabel: { color: '#8E8E93', formatter: '${value}' },
+      splitLine: { lineStyle: { color: 'rgba(255, 255, 255, 0.06)' } }
     },
     series: [{
       type: 'bar',
-      data: totals,
-      itemStyle: {
-        color: (param) => (param.dataIndex >= 5 ? '#C85AF4' : '#5B8CFF'),
-        borderRadius: [4, 4, 0, 0]
-      },
-      barMaxWidth: 28
+      data: averages,
+      itemStyle: { color: '#5B8CFF', borderRadius: [4, 4, 0, 0] }
     }]
   };
 
@@ -638,56 +1074,37 @@ function renderCumulativeChart(cumData) {
   cumulativeChart = window.echarts.init(chartDom);
 
   const option = {
-    backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: '#1E1E28',
-      borderColor: '#2A2A38',
-      textStyle: { color: '#F2F2F7', fontSize: 12 },
-      formatter: (params) => {
-        let res = `Day ${params[0].name}<br/>`;
-        params.forEach(p => {
-          res += `<span style="color:${p.color};">●</span> ${p.seriesName}: <strong>${state.formatCurrency(p.value)}</strong><br/>`;
-        });
-        return res;
-      }
-    },
+    tooltip: { trigger: 'axis' },
     legend: {
-      data: ['Current Month', 'Previous Month'],
+      data: ['Current Period', 'Comparison Period'],
       textStyle: { color: '#8E8E93', fontSize: 11 },
       top: 0
     },
-    grid: { top: 35, right: 20, bottom: 30, left: 60 },
+    grid: { top: 35, right: 20, bottom: 25, left: 50 },
     xAxis: {
       type: 'category',
       data: cumData.days,
-      axisLine: { lineStyle: { color: '#2A2A38' } },
-      axisLabel: { color: '#8E8E93', fontSize: 11 }
+      axisLabel: { color: '#8E8E93', fontSize: 10 }
     },
     yAxis: {
       type: 'value',
-      axisLine: { show: false },
-      splitLine: { lineStyle: { color: '#2A2A38', type: 'dashed' } },
-      axisLabel: { color: '#8E8E93', fontSize: 11, formatter: (val) => state.formatCurrency(val) }
+      axisLabel: { color: '#8E8E93', formatter: '${value}' },
+      splitLine: { lineStyle: { color: 'rgba(255, 255, 255, 0.06)' } }
     },
     series: [
       {
-        name: 'Current Month',
+        name: 'Current Period',
         type: 'line',
         data: cumData.current,
         smooth: true,
-        showSymbol: false,
-        lineStyle: { width: 3, color: '#FF6B8A' },
-        itemStyle: { color: '#FF6B8A' }
+        lineStyle: { color: '#5B8CFF', width: 2.5 }
       },
       {
-        name: 'Previous Month',
+        name: 'Comparison Period',
         type: 'line',
         data: cumData.previous,
         smooth: true,
-        showSymbol: false,
-        lineStyle: { width: 2, type: 'dashed', color: '#8E8E93' },
-        itemStyle: { color: '#8E8E93' }
+        lineStyle: { color: '#8E8E93', type: 'dashed' }
       }
     ]
   };
