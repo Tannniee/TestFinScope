@@ -596,8 +596,12 @@ export const modals = {
 
       const type = txData.transaction_type || 'expense';
       document.getElementById('tx-type').value = type;
+      const isSpecial = type === 'transfer' || type === 'refund';
       modalOverlay.querySelectorAll('.segmented-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.type === type);
+        btn.disabled = isSpecial;
+        btn.style.pointerEvents = isSpecial ? 'none' : 'auto';
+        btn.style.opacity = isSpecial ? (btn.dataset.type === type ? '1' : '0.4') : '1';
       });
       this.updateFormFieldsForType(type);
       document.getElementById('tx-category').value = txData.category_id || '';
@@ -623,6 +627,9 @@ export const modals = {
       document.getElementById('tx-type').value = 'expense';
       modalOverlay.querySelectorAll('.segmented-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.type === 'expense');
+        btn.disabled = false;
+        btn.style.pointerEvents = 'auto';
+        btn.style.opacity = '1';
       });
       const defaultAcc = (state.accountId && state.accounts.some(a => a.id === state.accountId))
         ? state.accountId

@@ -343,13 +343,12 @@ class TransactionRepository:
         if account_id is not None:
             update_payload["account_id"] = account_id
 
-        return TransactionRepository.update(tx_id, update_payload)
+        return TransactionRepository._update_fields(tx_id, update_payload)
 
     @staticmethod
-    def update(tx_id: int, data: Dict[str, Any]) -> bool:
+    def _update_fields(tx_id: int, data: Dict[str, Any]) -> bool:
         """
-        Updates an existing transaction.
-        Correctly handles amount-only updates by normalizing amount before empty-check.
+        Low-level persistence method for updating transaction fields in SQLite.
         """
         allowed = {
             "account_id", "category_id", "merchant_name", "transaction_type",
@@ -386,6 +385,31 @@ class TransactionRepository:
             cur.execute(f"UPDATE transactions SET {set_clause} WHERE id = ?", values)
             conn.commit()
             return cur.rowcount > 0
+
+    @staticmethod
+    def update(tx_id: int, data: Dict[str, Any]) -> bool:
+        """
+        Public generic transaction update.
+        Enforces domain invariants:
+        - Transfers must be updated through TransferService.update_transfer()
+        - Refunds must be updated through TransactionRepository.update_refund()
+        - Prevents converting standard transactions to/from specialised types (transfer, refund)
+        """
+        existing = TransactionRepository.get_by_id(tx_id)
+        if not existing:
+            return False
+
+        existing_type = existing.get("transaction_type")
+        if existing_type == "transfer":
+            raise ValueError("Transfers must be updated through TransferService.update_transfer().")
+        if existing_type == "refund":
+            raise ValueError("Refunds must be updated through TransactionRepository.update_refund().")
+
+        new_type = data.get("transaction_type")
+        if new_type in ("transfer", "refund"):
+            raise ValueError(f"Cannot convert a standard transaction into a specialised {new_type}.")
+
+        return TransactionRepository._update_fields(tx_id, data)
 
     @staticmethod
     def delete(tx_id: int, hard: bool = False) -> bool:
