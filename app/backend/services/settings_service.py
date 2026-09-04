@@ -31,6 +31,11 @@ class SettingsService:
 
     @staticmethod
     def update_settings(settings: Dict[str, str], force: bool = False):
+        from app.backend.domain.validators import validate_currency_code
+        if "currency" in settings:
+            clean_curr = validate_currency_code(settings["currency"])
+            settings["currency"] = clean_curr
+
         new_curr = settings.get("currency")
         with get_db_connection() as conn:
             cur = conn.cursor()

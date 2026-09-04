@@ -5,6 +5,8 @@ from typing import Union
 HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
+SUPPORTED_CURRENCIES = {"USD", "VND", "AUD", "EUR", "GBP", "JPY", "SGD", "CAD"}
+
 VALID_TRANSACTION_TYPES = {"income", "expense", "transfer", "refund", "adjustment"}
 VALID_RECURRING_FREQUENCIES = {"daily", "weekly", "biweekly", "monthly", "quarterly", "yearly"}
 
@@ -53,9 +55,10 @@ def validate_transaction_type(tx_type: str) -> str:
     return normalized
 
 
-def validate_currency_code(currency: str) -> str:
+def validate_currency_code(currency: str, check_supported: bool = True) -> str:
     """
     Validates that currency is an ISO 4217 3-letter uppercase code.
+    If check_supported is True, validates against FinScope supported currencies.
     """
     if not currency or not isinstance(currency, str):
         raise ValueError("Currency code is required.")
@@ -63,6 +66,9 @@ def validate_currency_code(currency: str) -> str:
     code = currency.strip().upper()
     if not CURRENCY_RE.fullmatch(code):
         raise ValueError(f"Invalid currency code: '{currency}'. Must be 3 uppercase letters (e.g. USD).")
+
+    if check_supported and code not in SUPPORTED_CURRENCIES:
+        raise ValueError(f"Unsupported currency: '{code}'. Supported currencies: {', '.join(sorted(SUPPORTED_CURRENCIES))}")
 
     return code
 
