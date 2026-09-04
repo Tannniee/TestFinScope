@@ -359,6 +359,7 @@ function renderTableRows(items, isReviewQueueView = false) {
     `;
 
     const canRefund = tx.transaction_type === 'expense' && !tx.refund_of_transaction_id;
+    const canDuplicate = tx.transaction_type !== 'transfer' && tx.transaction_type !== 'refund';
 
     return `
       <tr data-id="${tx.id}">
@@ -400,9 +401,11 @@ function renderTableRows(items, isReviewQueueView = false) {
             <button class="btn btn-secondary btn-icon btn-sm action-edit" data-id="${tx.id}" title="Edit">
               <i data-lucide="edit-2" style="width: 14px; height: 14px;"></i>
             </button>
-            <button class="btn btn-secondary btn-icon btn-sm action-duplicate" data-id="${tx.id}" title="Duplicate">
-              <i data-lucide="copy" style="width: 14px; height: 14px;"></i>
-            </button>
+            ${canDuplicate ? `
+              <button class="btn btn-secondary btn-icon btn-sm action-duplicate" data-id="${tx.id}" title="Duplicate">
+                <i data-lucide="copy" style="width: 14px; height: 14px;"></i>
+              </button>
+            ` : ''}
             <button class="btn btn-danger btn-icon btn-sm action-delete" data-id="${tx.id}" title="Delete (5s Undo Window)">
               <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
             </button>

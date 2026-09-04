@@ -126,8 +126,11 @@ class TransactionRepository:
 
     @staticmethod
     def create(data: Dict[str, Any]) -> int:
-        amount_minor = int(round(float(data["amount"]) * 100))
         tx_type = data["transaction_type"]
+        if tx_type == "transfer":
+            raise ValueError("Transfers must be created through TransferService.")
+
+        amount_minor = int(round(float(data["amount"]) * 100))
         category_id = data.get("category_id")
         raw_merchant = data.get("merchant_name", "")
         clean_merchant = normalize_merchant_name(raw_merchant)
@@ -486,6 +489,10 @@ class TransactionRepository:
         original = TransactionRepository.get_by_id(tx_id)
         if not original:
             return None
+        if original.get("transaction_type") == "transfer":
+            raise ValueError("Transfer transactions cannot be duplicated individually.")
+        if original.get("transaction_type") == "refund":
+            raise ValueError("Refund transactions cannot be duplicated individually.")
         clone = dict(original)
         clone.pop("id", None)
         clone.pop("created_at", None)
