@@ -114,7 +114,7 @@ class WhatChangedEngine:
                     COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN t.amount_minor ELSE 0 END), 0) as refund_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
                 FROM categories c
-                LEFT JOIN transactions t ON t.category_id = c.id
+                LEFT JOIN active_transactions t ON t.category_id = c.id
                     AND t.transaction_type IN ('expense', 'refund')
                     AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
                 WHERE c.type = 'expense' AND c.is_archived = 0
@@ -144,7 +144,7 @@ class WhatChangedEngine:
                     COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN t.amount_minor ELSE 0 END), 0) as refund_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
                 FROM categories c
-                LEFT JOIN transactions t ON t.category_id = c.id
+                LEFT JOIN active_transactions t ON t.category_id = c.id
                     AND t.transaction_type IN ('expense', 'refund')
                     AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
                 WHERE c.type = 'expense' AND c.is_archived = 0
@@ -259,9 +259,9 @@ class WhatChangedEngine:
                             ELSE 0
                         END
                     ) as net_minor
-                FROM active_transactions
-                WHERE transaction_type IN ('expense', 'refund')
-                  AND transaction_date >= ? AND transaction_date <= ? {acc_clause}
+                FROM active_transactions t
+                WHERE t.transaction_type IN ('expense', 'refund')
+                  AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
                 GROUP BY wday
             """, [curr_start, curr_end] + acc_params)
             curr_wd = {int(row["wday"]): row["net_minor"] for row in cur.fetchall()}
@@ -276,9 +276,9 @@ class WhatChangedEngine:
                             ELSE 0
                         END
                     ) as net_minor
-                FROM active_transactions
-                WHERE transaction_type IN ('expense', 'refund')
-                  AND transaction_date >= ? AND transaction_date <= ? {acc_clause}
+                FROM active_transactions t
+                WHERE t.transaction_type IN ('expense', 'refund')
+                  AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
                 GROUP BY wday
             """, [comp_start, comp_end] + acc_params)
             prev_wd = {int(row["wday"]): row["net_minor"] for row in cur.fetchall()}

@@ -278,7 +278,7 @@ class AnomalyDetectionEngine:
                         END
                     ) as monthly_net
                 FROM categories c
-                JOIN transactions t ON t.category_id = c.id
+                JOIN active_transactions t ON t.category_id = c.id
                 WHERE t.transaction_type IN ('expense', 'refund')
                   AND t.transaction_date < ?
                   AND t.transaction_date >= date(?, '-6 months') {acc_clause}
@@ -305,7 +305,7 @@ class AnomalyDetectionEngine:
                         END
                     ) as current_net
                 FROM categories c
-                JOIN transactions t ON t.category_id = c.id
+                JOIN active_transactions t ON t.category_id = c.id
                 WHERE t.transaction_type IN ('expense', 'refund')
                   AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
                 GROUP BY c.id
