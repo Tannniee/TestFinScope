@@ -1,5 +1,13 @@
+import re
 from typing import List, Dict, Any, Optional
 from app.backend.database.connection import get_db_connection
+
+COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+def validate_category_color(color: str) -> str:
+    if not color or not isinstance(color, str) or not COLOR_RE.fullmatch(color.strip()):
+        raise ValueError("Invalid category colour. Expected format: #RRGGBB")
+    return color.strip()
 
 class CategoryRepository:
     @staticmethod
@@ -35,6 +43,7 @@ class CategoryRepository:
 
     @staticmethod
     def create(name: str, cat_type: str = "expense", icon: str = "tag", color: str = "#5B8CFF", parent_category_id: Optional[int] = None) -> int:
+        clean_color = validate_category_color(color)
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute(
@@ -42,7 +51,7 @@ class CategoryRepository:
                 INSERT INTO categories (name, type, icon, color, parent_category_id)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (name, cat_type, icon, color, parent_category_id)
+                (name, cat_type, icon, clean_color, parent_category_id)
             )
             conn.commit()
             return cur.lastrowid
@@ -53,6 +62,9 @@ class CategoryRepository:
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return False
+
+        if "color" in updates:
+            updates["color"] = validate_category_color(updates["color"])
 
         set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
         values = list(updates.values()) + [category_id]

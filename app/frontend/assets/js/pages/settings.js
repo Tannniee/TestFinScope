@@ -403,9 +403,11 @@ async function loadCategoriesTable() {
       return;
     }
 
+    const hexRegex = /^#[0-9A-Fa-f]{6}$/;
     tbody.innerHTML = cats.map(c => {
       const isArchived = Boolean(c.is_archived);
-      const catColor = c.color || '#5B8CFF';
+      const rawColor = (c.color || '').trim();
+      const catColor = hexRegex.test(rawColor) ? rawColor : '#5B8CFF';
       return `
         <tr style="${isArchived ? 'opacity: 0.6; background: rgba(0,0,0,0.1);' : ''}">
           <td>
@@ -543,6 +545,11 @@ function promptCategoryModal(category = null) {
 
   const color = prompt('Color Hex Code (e.g. #5B8CFF, #FF6B8A, #4DD5A5):', category?.color || '#5B8CFF');
   if (color === null) return;
+  const hexRegex = /^#[0-9A-Fa-f]{6}$/;
+  if (!hexRegex.test(color.trim())) {
+    showToast('Invalid color format. Please use #RRGGBB (e.g. #5B8CFF)', 'error');
+    return;
+  }
 
   (async () => {
     try {

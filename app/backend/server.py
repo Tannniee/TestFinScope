@@ -132,9 +132,19 @@ class FinScopeHTTPHandler(SimpleHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if not origin:
             return True  # Native desktop / same-origin without Origin header
-        parsed = urlparse(origin)
-        hostname = (parsed.hostname or "").lower()
-        return hostname in ("127.0.0.1", "localhost")
+        try:
+            parsed = urlparse(origin)
+            hostname = (parsed.hostname or "").lower()
+            if hostname not in ("127.0.0.1", "localhost"):
+                return False
+            # AUD-010: Enforce scheme and port match actual FinScope listening port
+            if parsed.scheme not in ("http", "https"):
+                return False
+            expected_port = self.server.server_address[1]
+            origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            return origin_port == expected_port
+        except Exception:
+            return False
 
     def _send_json_error(self, status_code: int, code: str, message: str):
         payload = {
@@ -286,6 +296,12 @@ class FinScopeHTTPHandler(SimpleHTTPRequestHandler):
         if token != CURRENT_SESSION_TOKEN:
             self._send_json_error(403, "UNAUTHORIZED", "Missing or invalid session token")
             return
+
+        # AUD-010: Capability enforcement
+        if route.capability == "PRIVILEGED_DESKTOP":
+            if not self._is_allowed_host() or not self._is_allowed_origin():
+                self._send_json_error(403, "FORBIDDEN_CAPABILITY", "Privileged desktop operations are restricted to direct local client.")
+                return
 
         # 5. Payload size cap
         content_len = int(self.headers.get("Content-Length", 0))

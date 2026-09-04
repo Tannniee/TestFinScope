@@ -699,3 +699,71 @@ def test_aud_008_post_restore_failure_rolls_back_live_database(isolated_db, monk
     assert "Live Account Must Be Preserved" in names, "Live DB should have rolled back to safety backup state!"
     assert len(rolled_back_accs) == 2
 
+
+def test_aud_009_category_color_regex(isolated_db):
+    """
+    AUD-009: Category colour must strictly match ^#[0-9A-Fa-f]{6}$.
+    XSS payloads, quote-breaking strings, or malformed hex codes must be rejected.
+    """
+    # 1. Invalid hex on create
+    with pytest.raises(ValueError, match="Invalid category colour"):
+        CategoryRepository.create("Malicious", color='red" onmouseover="alert(1)')
+
+    with pytest.raises(ValueError, match="Invalid category colour"):
+        CategoryRepository.create("Too short", color="#FFF")
+
+    with pytest.raises(ValueError, match="Invalid category colour"):
+        CategoryRepository.create("Invalid chars", color="#ZZZZZZ")
+
+    # 2. Valid hex on create
+    cat_id = CategoryRepository.create("Valid Category", color="#5B8CFF")
+    assert cat_id > 0
+    cat = CategoryRepository.get_by_id(cat_id)
+    assert cat["color"] == "#5B8CFF"
+
+    # 3. Invalid hex on update
+    with pytest.raises(ValueError, match="Invalid category colour"):
+        CategoryRepository.update(cat_id, color="<script>alert(1)</script>")
+
+    # 4. Valid hex on update
+    ok = CategoryRepository.update(cat_id, color="#FF6B8A")
+    assert ok is True
+    cat = CategoryRepository.get_by_id(cat_id)
+    assert cat["color"] == "#FF6B8A"
+
+
+def test_aud_010_server_rejects_mismatched_port_origin():
+    """
+    AUD-010: Server origin validation must verify host AND port.
+    Unrelated localhost ports (e.g. http://localhost:3000) must be rejected.
+    """
+    from unittest.mock import MagicMock
+    from app.backend.server import FinScopeHTTPHandler
+
+    handler = FinScopeHTTPHandler.__new__(FinScopeHTTPHandler)
+    handler.server = MagicMock()
+    handler.server.server_address = ("127.0.0.1", 8088)
+
+    # 1. Matching host and port -> Allowed
+    handler.headers = {"Origin": "http://localhost:8088"}
+    assert handler._is_allowed_origin() is True
+
+    handler.headers = {"Origin": "http://127.0.0.1:8088"}
+    assert handler._is_allowed_origin() is True
+
+    # 2. Matching host but mismatched port -> Rejected!
+    handler.headers = {"Origin": "http://localhost:3000"}
+    assert handler._is_allowed_origin() is False
+
+    handler.headers = {"Origin": "http://127.0.0.1:5173"}
+    assert handler._is_allowed_origin() is False
+
+    # 3. Remote untrusted host -> Rejected!
+    handler.headers = {"Origin": "http://malicious.local:8088"}
+    assert handler._is_allowed_origin() is False
+
+    # 4. Same-origin or native desktop (missing Origin header) -> Allowed
+    handler.headers = {}
+    assert handler._is_allowed_origin() is True
+
+
