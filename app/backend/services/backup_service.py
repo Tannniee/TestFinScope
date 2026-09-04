@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from app.backend.config import DB_PATH, BACKUPS_DIR, EXPORTS_DIR, DATA_DIR
+from app.backend import config
 from app.backend.database.connection import get_db_connection
 
 class BackupService:
@@ -19,9 +19,9 @@ class BackupService:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         prefix = "Safety_PreRestore_" if is_safety_snapshot else "FinScope_Backup_"
         backup_filename = f"{prefix}{timestamp}.financebackup"
-        BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
-        backup_filepath = BACKUPS_DIR / backup_filename
-        temp_db_path = BACKUPS_DIR / f"temp_snapshot_{timestamp}.db"
+        config.BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+        backup_filepath = config.BACKUPS_DIR / backup_filename
+        temp_db_path = config.BACKUPS_DIR / f"temp_snapshot_{timestamp}.db"
 
         try:
             # 1. Open source and destination connections, perform SQLite live backup
@@ -82,7 +82,7 @@ class BackupService:
     @staticmethod
     def list_backups() -> List[Dict[str, Any]]:
         backups = []
-        for file in BACKUPS_DIR.glob("*.financebackup"):
+        for file in config.BACKUPS_DIR.glob("*.financebackup"):
             try:
                 # Read metadata if possible
                 created_at = datetime.fromtimestamp(file.stat().st_mtime).isoformat()
@@ -120,7 +120,7 @@ class BackupService:
         # 1. Create safety backup snapshot using proper backup archive format
         safety_res = BackupService.create_backup(is_safety_snapshot=True)
 
-        temp_extract_db = BACKUPS_DIR / f"temp_restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        temp_extract_db = config.BACKUPS_DIR / f"temp_restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
         try:
             # 2. Verify zip structure
             with zipfile.ZipFile(backup_file, "r") as zf:
@@ -141,8 +141,8 @@ class BackupService:
                 check_conn.close()
 
             # 4. Remove active WAL and SHM files to avoid state collision
-            wal_file = DB_PATH.parent / f"{DB_PATH.name}-wal"
-            shm_file = DB_PATH.parent / f"{DB_PATH.name}-shm"
+            wal_file = config.DB_PATH.parent / f"{config.DB_PATH.name}-wal"
+            shm_file = config.DB_PATH.parent / f"{config.DB_PATH.name}-shm"
             if wal_file.exists():
                 try:
                     os.remove(wal_file)
@@ -155,7 +155,7 @@ class BackupService:
                     pass
 
             # 5. Overwrite live DB file
-            with open(temp_extract_db, "rb") as src, open(DB_PATH, "wb") as dst:
+            with open(temp_extract_db, "rb") as src, open(config.DB_PATH, "wb") as dst:
                 dst.write(src.read())
 
             return {
@@ -175,8 +175,8 @@ class BackupService:
     def export_csv() -> str:
         """Exports all transactions to a CSV file in exports directory."""
         filename = f"FinScope_Transactions_{datetime.now().strftime('%Y-%m-%d')}.csv"
-        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        filepath = EXPORTS_DIR / filename
+        config.EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        filepath = config.EXPORTS_DIR / filename
 
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -221,13 +221,13 @@ class BackupService:
             cur.execute("SELECT COUNT(*) FROM categories")
             cat_count = cur.fetchone()[0]
 
-        db_size = os.path.getsize(DB_PATH) if DB_PATH.exists() else 0
+        db_size = os.path.getsize(config.DB_PATH) if config.DB_PATH.exists() else 0
         backups = BackupService.list_backups()
         last_backup = backups[0]["created_at"] if backups else "Never"
 
         return {
-            "db_path": str(DB_PATH),
-            "data_dir": str(DATA_DIR),
+            "db_path": str(config.DB_PATH),
+            "data_dir": str(config.DATA_DIR),
             "db_size_bytes": db_size,
             "db_size_formatted": f"{db_size / (1024 * 1024):.2f} MB" if db_size >= 1024 * 1024 else f"{db_size / 1024:.1f} KB",
             "transaction_count": tx_count or 0,

@@ -10,6 +10,7 @@ from app.backend.services.budget_service import BudgetService
 from app.backend.services.backup_service import BackupService
 from app.backend.services.sample_data import seed_sample_data
 from app.backend.services.settings_service import SettingsService
+from app.backend.services.merchant_service import MerchantService
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +73,9 @@ class ApiHandler:
     def get_transaction(self, tx_id: int) -> Optional[Dict[str, Any]]:
         return TransactionRepository.get_by_id(tx_id)
 
-    def create_transaction(self, data: Dict[str, Any]) -> int:
-        return TransactionRepository.create(data)
+    def create_transaction(self, data: Optional[Dict[str, Any]] = None, **kwargs) -> int:
+        payload = data if isinstance(data, dict) and data else kwargs
+        return TransactionRepository.create(payload)
 
     def create_transfer(
         self,
@@ -95,14 +97,47 @@ class ApiHandler:
             note=note
         )
 
-    def update_transaction(self, tx_id: int, data: Dict[str, Any]) -> bool:
-        return TransactionRepository.update(tx_id, data)
+    def create_refund(
+        self,
+        original_tx_id: Optional[int] = None,
+        original_transaction_id: Optional[int] = None,
+        amount: float = 0.0,
+        transaction_date: str = "",
+        account_id: Optional[int] = None,
+        note: str = "",
+        **kwargs
+    ) -> int:
+        orig_id = original_tx_id or original_transaction_id or kwargs.get("original_tx_id")
+        if not orig_id:
+            raise ValueError("original_tx_id or original_transaction_id is required for a linked refund.")
+        return TransactionRepository.create_refund(orig_id, amount, transaction_date, account_id, note)
+
+    def update_transaction(self, tx_id: int, data: Optional[Dict[str, Any]] = None, **kwargs) -> bool:
+        payload = data if isinstance(data, dict) and data else kwargs
+        return TransactionRepository.update(tx_id, payload)
 
     def delete_transaction(self, tx_id: int) -> bool:
         return TransactionRepository.delete(tx_id)
 
+    def undo_delete_transaction(self, tx_id: int) -> bool:
+        return TransactionRepository.undo_delete(tx_id)
+
     def duplicate_transaction(self, tx_id: int) -> Optional[int]:
         return TransactionRepository.duplicate(tx_id)
+
+    # --- Merchant Intelligence & Suggestions ---
+    def get_merchant_suggestions(self, query: str, limit: int = 6) -> List[Dict[str, Any]]:
+        return MerchantService.suggest_merchants(query, limit)
+
+    def get_recent_payees(self, limit: int = 5) -> List[Dict[str, Any]]:
+        return MerchantService.get_recent_payees(limit)
+
+    # --- Review Queue & Data Quality ---
+    def get_review_queue(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        return TransactionRepository.get_review_queue(limit, offset)
+
+    def resolve_review(self, tx_id: int, category_id: int, merchant_name: Optional[str] = None) -> bool:
+        return TransactionRepository.resolve_review(tx_id, category_id, merchant_name)
 
     # --- Analytics & BI ---
     def get_month_summary(self, month: str, account_id: Optional[int] = None) -> Dict[str, Any]:

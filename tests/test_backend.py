@@ -17,6 +17,7 @@ from app.backend.repositories.transaction_repo import TransactionRepository
 from app.backend.repositories.budget_repo import BudgetRepository
 from app.backend.services.analytics_service import AnalyticsService
 from app.backend.services.budget_service import BudgetService
+import shutil
 from app.backend.services.backup_service import BackupService
 from app.backend.services.sample_data import seed_sample_data
 from app.backend.api.handler import ApiHandler
@@ -24,6 +25,11 @@ from app.backend.api.handler import ApiHandler
 class TestFinScopeBackend(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        test_dir = PROJECT_ROOT / "data_test"
+        os.environ["FINSCOPE_DATA_DIR"] = str(test_dir)
+        if test_dir.exists():
+            shutil.rmtree(test_dir, ignore_errors=True)
+        test_dir.mkdir(parents=True, exist_ok=True)
         init_db()
 
     def test_01_default_accounts_and_categories(self):

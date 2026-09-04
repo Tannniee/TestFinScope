@@ -1,9 +1,10 @@
+import os
 import sqlite3
 import logging
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Generator
-from app.backend.config import DB_PATH
+from app.backend import config
 from app.backend.database.migrations_runner import run_migrations
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,11 @@ DEFAULT_SETTINGS = {
 
 @contextmanager
 def get_db_connection() -> Generator[sqlite3.Connection, None, None]:
-    conn = sqlite3.connect(str(DB_PATH), timeout=20.0)
+    env_dir = os.environ.get("FINSCOPE_DATA_DIR")
+    if env_dir and Path(env_dir) != config.DATA_DIR:
+        config.set_data_dir(Path(env_dir))
+
+    conn = sqlite3.connect(str(config.DB_PATH), timeout=20.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
@@ -59,7 +64,11 @@ def get_db_connection() -> Generator[sqlite3.Connection, None, None]:
 
 def init_db():
     """Initializes the database schema and default records safely using migrations."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    env_dir = os.environ.get("FINSCOPE_DATA_DIR")
+    if env_dir and Path(env_dir) != config.DATA_DIR:
+        config.set_data_dir(Path(env_dir))
+
+    config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     with get_db_connection() as conn:
         # 1. Run migrations safely
@@ -87,14 +96,14 @@ def init_db():
                 )
 
         # 4. Seed default categories if none exist
-        cur.execute("SELECT COUNT(*) FROM categories")
+        cur.execute("SELECT COUNT(*) FROM categories WHERE name != 'Uncategorized'")
         if cur.fetchone()[0] == 0:
             for cat in DEFAULT_CATEGORIES:
                 conn.execute(
-                    "INSERT INTO categories (name, type, icon, color) VALUES (?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO categories (name, type, icon, color) VALUES (?, ?, ?, ?)",
                     (cat["name"], cat["type"], cat["icon"], cat["color"])
                 )
 
         conn.commit()
 
-    logger.info("Database initialized successfully at %s", DB_PATH)
+    logger.info("Database initialized successfully at %s", config.DB_PATH)

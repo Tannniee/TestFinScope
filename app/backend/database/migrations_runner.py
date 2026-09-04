@@ -123,6 +123,63 @@ def migration_001_initial_schema(conn: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS idx_budgets_period ON budgets(start_date, category_id);
     """)
 
+@migration(2, "core_relationships_and_merchants")
+def migration_002_core_relationships_and_merchants(conn: sqlite3.Connection):
+    """
+    Extends transactions with transfer_role, refund_of_transaction_id, source,
+    needs_review, and soft-delete support for non-blocking Undo.
+    Extends merchants with preferred_account_id, default_essentiality, and merchant_rules.
+    Ensures Uncategorized system category exists.
+    """
+    # Helper to check if column exists before altering
+    def column_exists(table: str, col: str) -> bool:
+        cur = conn.execute(f"PRAGMA table_info({table})")
+        return any(row[1] == col for row in cur.fetchall())
+
+    # 1. Update transactions columns
+    if not column_exists("transactions", "transfer_role"):
+        conn.execute("ALTER TABLE transactions ADD COLUMN transfer_role TEXT DEFAULT NULL;")
+    if not column_exists("transactions", "refund_of_transaction_id"):
+        conn.execute("ALTER TABLE transactions ADD COLUMN refund_of_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL;")
+    if not column_exists("transactions", "source"):
+        conn.execute("ALTER TABLE transactions ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';")
+    if not column_exists("transactions", "needs_review"):
+        conn.execute("ALTER TABLE transactions ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0;")
+    if not column_exists("transactions", "is_deleted"):
+        conn.execute("ALTER TABLE transactions ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;")
+
+    # 2. Update merchants columns
+    if not column_exists("merchants", "preferred_account_id"):
+        conn.execute("ALTER TABLE merchants ADD COLUMN preferred_account_id INTEGER DEFAULT NULL REFERENCES accounts(id) ON DELETE SET NULL;")
+    if not column_exists("merchants", "default_essentiality"):
+        conn.execute("ALTER TABLE merchants ADD COLUMN default_essentiality TEXT DEFAULT 'discretionary';")
+
+    # 3. Create merchant_rules table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS merchant_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern TEXT NOT NULL UNIQUE,
+            merchant_id INTEGER REFERENCES merchants(id) ON DELETE CASCADE,
+            category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    # 4. Create Uncategorized system category
+    cur = conn.execute("SELECT id FROM categories WHERE name = 'Uncategorized'")
+    if not cur.fetchone():
+        conn.execute("""
+            INSERT INTO categories (name, type, icon, color)
+            VALUES ('Uncategorized', 'expense', 'help-circle', '#8E8E93')
+        """)
+
+    # 5. Indexes
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_review ON transactions(needs_review);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_refund_of ON transactions(refund_of_transaction_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_is_deleted ON transactions(is_deleted);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_merchants_name ON merchants(name);")
+
 def run_migrations(conn: sqlite3.Connection):
     """Executes any pending migrations safely."""
     # Ensure migration table exists

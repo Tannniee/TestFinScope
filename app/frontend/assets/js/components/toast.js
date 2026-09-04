@@ -2,7 +2,7 @@
  * FinScope Toast Notification System
  */
 
-export function showToast(message, type = 'success', duration = 3500) {
+export function showToast(message, type = 'success', duration = 3500, action = null) {
   let container = document.getElementById('toast-container');
   if (!container) {
     container = document.createElement('div');
@@ -16,8 +16,21 @@ export function showToast(message, type = 'success', duration = 3500) {
   const iconName = type === 'success' ? 'check-circle' : type === 'error' ? 'alert-circle' : 'info';
   toast.innerHTML = `
     <i data-lucide="${iconName}"></i>
-    <span>${message}</span>
+    <span style="flex: 1;">${message}</span>
   `;
+
+  if (action && action.label && action.onClick) {
+    const actBtn = document.createElement('button');
+    actBtn.type = 'button';
+    actBtn.className = 'toast-action-btn';
+    actBtn.textContent = action.label;
+    actBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toast.remove();
+      action.onClick();
+    });
+    toast.appendChild(actBtn);
+  }
 
   container.appendChild(toast);
 

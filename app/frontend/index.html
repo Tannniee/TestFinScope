@@ -131,30 +131,31 @@
           </div>
         </div>
 
-        <!-- Amount & Date -->
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label" for="tx-amount">Amount</label>
-            <input type="number" id="tx-amount" class="form-input" placeholder="0.00" step="0.01" min="0.01" required />
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="tx-date">Date</label>
-            <input type="date" id="tx-date" class="form-input" required />
-          </div>
+        <!-- Hero Amount Input -->
+        <div class="hero-amount-wrapper">
+          <span class="hero-currency-symbol">$</span>
+          <input type="number" id="tx-amount" class="hero-amount-input" placeholder="0.00" step="0.01" min="0.01" required autocomplete="off" />
         </div>
 
-        <!-- Account & Category -->
+        <!-- Payee / Merchant with Autocomplete -->
+        <div class="form-group" id="group-merchant" style="position: relative;">
+          <label class="form-label" for="tx-merchant">Payee / Merchant</label>
+          <input type="text" id="tx-merchant" class="form-input" placeholder="e.g. Woolworths, Starbucks, City Rent" autocomplete="off" />
+          <div id="payee-autocomplete-box" class="payee-autocomplete-box"></div>
+        </div>
+
+        <!-- Category & Account / Destination -->
         <div class="form-row">
-          <div class="form-group" id="group-account">
-            <label class="form-label" for="tx-account" id="label-account">Account / Source</label>
-            <select id="tx-account" class="form-select" required>
-              <option value="">Select Account...</option>
-            </select>
-          </div>
           <div class="form-group" id="group-category">
             <label class="form-label" for="tx-category">Category</label>
             <select id="tx-category" class="form-select">
               <option value="">Select Category...</option>
+            </select>
+          </div>
+          <div class="form-group" id="group-account">
+            <label class="form-label" for="tx-account" id="label-account">Account / Source</label>
+            <select id="tx-account" class="form-select" required>
+              <option value="">Select Account...</option>
             </select>
           </div>
           <div class="form-group" id="group-to-account" style="display: none;">
@@ -165,52 +166,68 @@
           </div>
         </div>
 
-        <!-- Merchant / Payee -->
-        <div class="form-group" id="group-merchant">
-          <label class="form-label" for="tx-merchant">Merchant / Payee</label>
-          <input type="text" id="tx-merchant" class="form-input" placeholder="e.g. Woolworths, Starbucks, City Rent" />
+        <!-- Refund Link Reference (for refund type) -->
+        <div class="form-group" id="group-refund-ref" style="display: none;">
+          <label class="form-label" for="tx-refund-id">Original Transaction ID (Optional)</label>
+          <input type="number" id="tx-refund-id" class="form-input" placeholder="e.g. 104" />
+          <span style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">Linking this refund will associate it with the original purchase record</span>
         </div>
 
-        <!-- Description & Time -->
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label" for="tx-description">Description</label>
-            <input type="text" id="tx-description" class="form-input" placeholder="e.g. Grocery restock" />
+        <!-- Quick Date Picker & More Details Button -->
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px; margin-bottom: 6px;">
+          <div class="quick-date-pills">
+            <button type="button" class="quick-date-btn active" data-date="today">Today</button>
+            <button type="button" class="quick-date-btn" data-date="yesterday">Yesterday</button>
+            <button type="button" class="quick-date-btn" data-date="pick">Pick Date</button>
+            <input type="date" id="tx-date" class="form-input" style="display: none; width: auto; padding: 3px 8px; font-size: 11.5px;" required />
           </div>
-          <div class="form-group">
-            <label class="form-label" for="tx-time">Time</label>
-            <input type="time" id="tx-time" class="form-input" value="12:00" />
-          </div>
+          <button type="button" id="more-details-toggle" class="more-details-toggle">
+            <span>More Details</span>
+            <i data-lucide="chevron-down" style="width: 14px; height: 14px;"></i>
+          </button>
         </div>
 
-        <!-- Essentiality & Recurring -->
-        <div class="form-row" id="group-essentiality">
-          <div class="form-group">
-            <label class="form-label" for="tx-essentiality">Essentiality</label>
-            <select id="tx-essentiality" class="form-select">
-              <option value="discretionary">Discretionary (Lifestyle)</option>
-              <option value="essential">Essential (Needs)</option>
-              <option value="savings">Savings / Investment</option>
-            </select>
+        <!-- Progressive Disclosure Section -->
+        <div id="more-details-body" class="more-details-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="tx-description">Description / Memo</label>
+              <input type="text" id="tx-description" class="form-input" placeholder="e.g. Weekly grocery restock" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="tx-time">Time</label>
+              <input type="time" id="tx-time" class="form-input" value="12:00" />
+            </div>
           </div>
-          <div class="form-group" style="justify-content: flex-end; padding-bottom: 8px;">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--text-secondary);">
-              <input type="checkbox" id="tx-recurring" style="accent-color: var(--accent-blue);" />
-              <span>Recurring payment (Subscription)</span>
-            </label>
-          </div>
-        </div>
 
-        <!-- Note -->
-        <div class="form-group">
-          <label class="form-label" for="tx-note">Personal Note</label>
-          <input type="text" id="tx-note" class="form-input" placeholder="Optional details, tag #reimbursable, etc." />
+          <div class="form-row" id="group-essentiality">
+            <div class="form-group">
+              <label class="form-label" for="tx-essentiality">Essentiality</label>
+              <select id="tx-essentiality" class="form-select">
+                <option value="discretionary">Discretionary (Lifestyle)</option>
+                <option value="essential">Essential (Needs)</option>
+                <option value="savings">Savings / Investment</option>
+              </select>
+            </div>
+            <div class="form-group" style="justify-content: flex-end; padding-bottom: 8px;">
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--text-secondary);">
+                <input type="checkbox" id="tx-recurring" style="accent-color: var(--accent-blue);" />
+                <span>Recurring payment (Subscription)</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="tx-note">Personal Note</label>
+            <input type="text" id="tx-note" class="form-input" placeholder="Optional notes, tag #reimbursable, etc." />
+          </div>
         </div>
 
         <!-- Modal Actions -->
         <div class="modal-actions">
           <button type="button" id="tx-modal-cancel" class="btn btn-secondary">Cancel</button>
-          <button type="submit" class="btn btn-primary">Save Transaction</button>
+          <button type="button" id="tx-modal-save-add" class="btn btn-secondary" title="Save & Add Another (Ctrl+Shift+Enter)">Save & Add Another</button>
+          <button type="submit" id="tx-modal-save" class="btn btn-primary" title="Save Transaction (Ctrl+Enter)">Save Transaction</button>
         </div>
       </form>
     </div>
@@ -309,14 +326,6 @@
       // Quick Add Button in Sidebar
       document.getElementById('sidebar-quick-add')?.addEventListener('click', () => {
         modals.openTransactionModal();
-      });
-
-      // Global Keyboard Shortcut: Ctrl + N -> Add Transaction
-      window.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
-          e.preventDefault();
-          modals.openTransactionModal();
-        }
       });
 
       // 4. Start Router

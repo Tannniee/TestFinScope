@@ -19,14 +19,14 @@ class AccountRepository:
                                     WHEN t.transaction_type = 'income' THEN CAST(t.amount_minor AS REAL) / 100.0
                                     WHEN t.transaction_type = 'expense' THEN -CAST(t.amount_minor AS REAL) / 100.0
                                     WHEN t.transaction_type = 'refund' THEN CAST(t.amount_minor AS REAL) / 100.0
-                                    WHEN t.transaction_type = 'transfer' AND t.description LIKE '%(Received)%' THEN CAST(t.amount_minor AS REAL) / 100.0
+                                    WHEN t.transaction_type = 'transfer' AND (t.transfer_role = 'destination' OR t.description LIKE '%(Received)%') THEN CAST(t.amount_minor AS REAL) / 100.0
                                     WHEN t.transaction_type = 'transfer' THEN -CAST(t.amount_minor AS REAL) / 100.0
                                     WHEN t.transaction_type = 'adjustment' THEN CAST(t.amount_minor AS REAL) / 100.0
                                     ELSE 0.0
                                 END
                             )
                             FROM transactions t
-                            WHERE t.account_id = a.id
+                            WHERE t.account_id = a.id AND t.is_deleted = 0
                         ), 0.0)
                     ) as current_balance
                 FROM accounts a
@@ -53,6 +53,14 @@ class AccountRepository:
             """, (account_id,))
             row = cur.fetchone()
             return dict(row) if row else None
+
+    @staticmethod
+    def get_balance(account_id: int) -> float:
+        accounts = AccountRepository.get_all(include_archived=True)
+        for acc in accounts:
+            if acc["id"] == account_id:
+                return float(acc["current_balance"])
+        return 0.0
 
     @staticmethod
     def create(name: str, account_type: str, institution: str = "", opening_balance: float = 0.0, currency: str = "USD") -> int:

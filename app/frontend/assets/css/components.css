@@ -597,9 +597,75 @@
   }
   to {
     opacity: 1;
-    transform: translateX(0);
-  }
 }
+}
+
+.toast-action-btn {
+  margin-left: 12px;
+  background: rgba(91, 140, 255, 0.2);
+  border: 1px solid var(--accent-blue);
+  color: var(--accent-blue);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.toast-action-btn:hover {
+  background: var(--accent-blue);
+  color: #FFFFFF;
+}
+
+/* Review Queue Badge & Button */
+.btn-review-queue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 179, 64, 0.12);
+  border: 1px solid rgba(255, 179, 64, 0.35);
+  color: #FFB340;
+  padding: 6px 13px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-review-queue:hover, .btn-review-queue.active {
+  background: rgba(255, 179, 64, 0.25);
+  border-color: #FFB340;
+}
+
+.badge-count {
+  background: #FFB340;
+  color: #12151E;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.review-needed-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 179, 64, 0.15);
+  color: #FFB340;
+  border: 1px solid rgba(255, 179, 64, 0.4);
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.review-needed-tag:hover {
+  background: rgba(255, 179, 64, 0.3);
+}
+
 
 /* ==========================================================================
    FinScope Analytics Engine Core Components
@@ -902,4 +968,169 @@
   background-color: #FFFFFF;
   border-radius: 50%;
   box-shadow: 0 0 4px rgba(0,0,0,0.6);
+}
+
+/* ==========================================================================
+   FinScope CORE — Smart Transaction Capture
+   Hero Amount Input, Payee Autocomplete, Quick Date Pills, Progressive Disclosure
+   ========================================================================== */
+
+.hero-amount-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-surface);
+  border: 2px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  padding: 10px 18px;
+  transition: all var(--transition-fast);
+}
+
+.hero-amount-wrapper:focus-within {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.2);
+}
+
+.currency-symbol-label {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-right: 8px;
+}
+
+.hero-amount-input {
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  outline: none;
+  width: 100%;
+  max-width: 240px;
+  text-align: left;
+  letter-spacing: -0.02em;
+}
+
+.field-error-msg {
+  font-size: 11.5px;
+  color: var(--color-negative);
+  margin-top: 4px;
+  min-height: 16px;
+}
+
+/* Payee Autocomplete */
+.payee-autocomplete-box {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 150;
+  max-height: 200px;
+  overflow-y: auto;
+  display: none;
+  margin-top: 4px;
+}
+
+.payee-autocomplete-box.open {
+  display: block;
+}
+
+.payee-suggestion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px;
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.payee-suggestion-item:last-child {
+  border-bottom: none;
+}
+
+.payee-suggestion-item:hover,
+.payee-suggestion-item.selected {
+  background-color: var(--bg-surface);
+}
+
+.payee-name-badge {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.payee-cat-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Quick Date Pills */
+.quick-date-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.quick-date-btn {
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.quick-date-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-medium);
+}
+
+.quick-date-btn.active {
+  background-color: var(--accent-blue);
+  color: #FFFFFF;
+  border-color: var(--accent-blue);
+}
+
+/* Progressive Disclosure "More Details" */
+.more-details-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: var(--accent-blue);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 0;
+  margin-top: 4px;
+}
+
+.more-details-toggle:hover {
+  text-decoration: underline;
+}
+
+.more-details-body {
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-subtle);
+  margin-top: 8px;
+}
+
+.more-details-body.open {
+  display: flex;
 }

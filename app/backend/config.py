@@ -32,10 +32,20 @@ EXPORTS_DIR = DATA_DIR / "exports"
 ATTACHMENTS_DIR = DATA_DIR / "attachments"
 LOGS_DIR = DATA_DIR / "logs"
 
-BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
-EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
+def set_data_dir(new_path: Path):
+    global DATA_DIR, DB_PATH, SETTINGS_PATH, BACKUPS_DIR, EXPORTS_DIR, ATTACHMENTS_DIR, LOGS_DIR
+    DATA_DIR = Path(new_path)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DB_PATH = DATA_DIR / "finance.db"
+    SETTINGS_PATH = DATA_DIR / "settings.json"
+    BACKUPS_DIR = DATA_DIR / "backups"
+    EXPORTS_DIR = DATA_DIR / "exports"
+    ATTACHMENTS_DIR = DATA_DIR / "attachments"
+    LOGS_DIR = DATA_DIR / "logs"
+    BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Frontend directory
 FRONTEND_DIR = PROJECT_ROOT / "app" / "frontend"

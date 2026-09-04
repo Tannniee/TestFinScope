@@ -31,6 +31,7 @@ data/exports/
 data_test/
 data_safety_test/
 tests/analytics_test_data/
+tests/core_test_data/
 
 # IDE / OS
 .vscode/

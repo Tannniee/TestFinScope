@@ -26,6 +26,14 @@ class CategoryRepository:
             return dict(row) if row else None
 
     @staticmethod
+    def get_by_name(name: str) -> Optional[Dict[str, Any]]:
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM categories WHERE name = ? COLLATE NOCASE", (name,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
     def create(name: str, cat_type: str = "expense", icon: str = "tag", color: str = "#5B8CFF", parent_category_id: Optional[int] = None) -> int:
         with get_db_connection() as conn:
             cur = conn.cursor()

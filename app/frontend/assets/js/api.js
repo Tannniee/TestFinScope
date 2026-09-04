@@ -60,8 +60,23 @@ export const api = {
   deleteTransaction(id) {
     return this.call('delete_transaction', { tx_id: id });
   },
-  duplicateTransaction(id) {
-    return this.call('duplicate_transaction', { tx_id: id });
+  createRefund(params) {
+    return this.call('create_refund', params);
+  },
+  undoDeleteTransaction(id) {
+    return this.call('undo_delete_transaction', { tx_id: id });
+  },
+  getMerchantSuggestions(query, limit = 6) {
+    return this.call('get_merchant_suggestions', { query, limit });
+  },
+  getRecentPayees(limit = 5) {
+    return this.call('get_recent_payees', { limit });
+  },
+  getReviewQueue(limit = 50, offset = 0) {
+    return this.call('get_review_queue', { limit, offset });
+  },
+  resolveReview(txId, categoryId, merchantName = null) {
+    return this.call('resolve_review', { tx_id: txId, category_id: categoryId, merchant_name: merchantName });
   },
 
   // Analytics & BI

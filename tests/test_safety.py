@@ -21,9 +21,14 @@ from app.backend.services.analytics_service import AnalyticsService
 from app.backend.services.backup_service import BackupService
 from app.backend.services.settings_service import SettingsService
 
+import shutil
+
 class TestFinScopeSafety(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        os.environ["FINSCOPE_DATA_DIR"] = str(TEST_DATA_DIR)
+        if TEST_DATA_DIR.exists():
+            shutil.rmtree(TEST_DATA_DIR, ignore_errors=True)
         TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
         init_db()
 

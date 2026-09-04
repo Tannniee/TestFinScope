@@ -1,5 +1,6 @@
 /**
  * FinScope Transactions Management Page
+ * With Review Queue, Quick Refund Linking, and Non-blocking 5s Undo Delete
  */
 
 import { api } from '../api.js';
@@ -9,6 +10,9 @@ import { showToast } from '../components/toast.js';
 
 let currentOffset = 0;
 const PAGE_SIZE = 25;
+let isReviewQueueActive = false;
+let reviewQueueCount = 0;
+
 let activeFilters = {
   search: '',
   category_id: null,
@@ -45,6 +49,7 @@ export async function renderTransactionsPage(container) {
               <option value="expense">Expense</option>
               <option value="income">Income</option>
               <option value="transfer">Transfer</option>
+              <option value="refund">Refund</option>
             </select>
 
             <select id="filter-essentiality" class="form-select" style="min-width: 140px;">
@@ -54,6 +59,12 @@ export async function renderTransactionsPage(container) {
               <option value="savings">Savings</option>
             </select>
 
+            <button id="btn-review-queue" class="btn-review-queue" title="View transactions requiring categorization review">
+              <i data-lucide="help-circle" style="width: 15px; height: 15px;"></i>
+              <span>Review Queue</span>
+              <span id="review-queue-badge" class="badge-count" style="display: none;">0</span>
+            </button>
+
             <button id="btn-reset-filters" class="btn btn-secondary btn-sm" title="Clear filters">
               <i data-lucide="rotate-ccw"></i> Reset
             </button>
@@ -61,7 +72,7 @@ export async function renderTransactionsPage(container) {
 
           <!-- Right: Action Button -->
           <div>
-            <button id="btn-add-tx" class="btn btn-primary">
+            <button id="btn-add-tx" class="btn btn-primary" title="Record transaction (Shortcut: Ctrl+N)">
               <i data-lucide="plus"></i> Add Transaction
             </button>
           </div>
@@ -72,11 +83,11 @@ export async function renderTransactionsPage(container) {
       <div class="fin-card">
         <div class="card-header" style="margin-bottom: 12px;">
           <div class="card-title-wrap">
-            <h3>Transaction Records</h3>
+            <h3 id="tx-table-title">Transaction Records</h3>
             <p id="tx-results-count">Loading transactions...</p>
           </div>
           <!-- Pagination Controls -->
-          <div style="display: flex; align-items: center; gap: 8px;">
+          <div id="tx-pagination-wrap" style="display: flex; align-items: center; gap: 8px;">
             <button id="btn-prev-page" class="btn btn-secondary btn-sm" disabled>
               <i data-lucide="chevron-left"></i> Previous
             </button>
@@ -97,7 +108,7 @@ export async function renderTransactionsPage(container) {
                 <th>Account</th>
                 <th>Essentiality</th>
                 <th style="text-align: right;">Amount</th>
-                <th style="text-align: right; width: 110px;">Actions</th>
+                <th style="text-align: right; width: 140px;">Actions</th>
               </tr>
             </thead>
             <tbody id="transactions-full-body">
@@ -112,7 +123,26 @@ export async function renderTransactionsPage(container) {
   if (window.lucide) window.lucide.createIcons();
 
   setupEventListeners();
+  await updateReviewQueueBadge();
   await loadTransactions();
+}
+
+async function updateReviewQueueBadge() {
+  try {
+    const queue = await api.getReviewQueue();
+    reviewQueueCount = queue?.total ?? (Array.isArray(queue) ? queue.length : queue?.items?.length || 0);
+    const badge = document.getElementById('review-queue-badge');
+    if (badge) {
+      if (reviewQueueCount > 0) {
+        badge.textContent = reviewQueueCount;
+        badge.style.display = 'inline-block';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to fetch review queue count:', err);
+  }
 }
 
 function setupEventListeners() {
@@ -120,7 +150,27 @@ function setupEventListeners() {
     modals.openTransactionModal();
   });
 
-  // Filters
+  // Review Queue Toggle Button
+  const reviewBtn = document.getElementById('btn-review-queue');
+  reviewBtn?.addEventListener('click', () => {
+    isReviewQueueActive = !isReviewQueueActive;
+    reviewBtn.classList.toggle('active', isReviewQueueActive);
+    currentOffset = 0;
+    const pagination = document.getElementById('tx-pagination-wrap');
+    const title = document.getElementById('tx-table-title');
+
+    if (isReviewQueueActive) {
+      if (pagination) pagination.style.display = 'none';
+      if (title) title.textContent = 'Review Queue (Unconfirmed / Needs Attention)';
+      loadReviewQueueItems();
+    } else {
+      if (pagination) pagination.style.display = 'flex';
+      if (title) title.textContent = 'Transaction Records';
+      loadTransactions();
+    }
+  });
+
+  // Search filter
   const searchInput = document.getElementById('filter-search');
   let debounceTimeout = null;
   searchInput?.addEventListener('input', (e) => {
@@ -128,32 +178,32 @@ function setupEventListeners() {
     debounceTimeout = setTimeout(() => {
       activeFilters.search = e.target.value.trim();
       currentOffset = 0;
-      loadTransactions();
+      if (!isReviewQueueActive) loadTransactions();
     }, 300);
   });
 
   document.getElementById('filter-category')?.addEventListener('change', (e) => {
     activeFilters.category_id = e.target.value ? parseInt(e.target.value) : null;
     currentOffset = 0;
-    loadTransactions();
+    if (!isReviewQueueActive) loadTransactions();
   });
 
   document.getElementById('filter-account')?.addEventListener('change', (e) => {
     activeFilters.account_id = e.target.value ? parseInt(e.target.value) : null;
     currentOffset = 0;
-    loadTransactions();
+    if (!isReviewQueueActive) loadTransactions();
   });
 
   document.getElementById('filter-type')?.addEventListener('change', (e) => {
     activeFilters.transaction_type = e.target.value || null;
     currentOffset = 0;
-    loadTransactions();
+    if (!isReviewQueueActive) loadTransactions();
   });
 
   document.getElementById('filter-essentiality')?.addEventListener('change', (e) => {
     activeFilters.essentiality = e.target.value || null;
     currentOffset = 0;
-    loadTransactions();
+    if (!isReviewQueueActive) loadTransactions();
   });
 
   document.getElementById('btn-reset-filters')?.addEventListener('click', () => {
@@ -163,6 +213,10 @@ function setupEventListeners() {
     document.getElementById('filter-account').value = '';
     document.getElementById('filter-type').value = '';
     document.getElementById('filter-essentiality').value = '';
+    isReviewQueueActive = false;
+    document.getElementById('btn-review-queue')?.classList.remove('active');
+    document.getElementById('tx-pagination-wrap').style.display = 'flex';
+    document.getElementById('tx-table-title').textContent = 'Transaction Records';
     currentOffset = 0;
     loadTransactions();
   });
@@ -179,6 +233,36 @@ function setupEventListeners() {
     currentOffset += PAGE_SIZE;
     loadTransactions();
   });
+}
+
+async function loadReviewQueueItems() {
+  try {
+    const res = await api.getReviewQueue();
+    const items = res?.items || (Array.isArray(res) ? res : []);
+    const total = res?.total ?? items.length;
+    const tbody = document.getElementById('transactions-full-body');
+    const countLabel = document.getElementById('tx-results-count');
+    if (!tbody) return;
+
+    countLabel.textContent = `${total} transactions needing categorization review`;
+
+    if (!items || items.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 40px;">
+            <div style="font-size: 15px; margin-bottom: 6px; color: var(--color-positive);">🎉 Review Queue is clear!</div>
+            <div style="font-size: 12px;">All transactions have confirmed categories.</div>
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    renderTableRows(items, true);
+  } catch (err) {
+    console.error('Failed to load review queue:', err);
+    showToast('Failed to load review queue', 'error');
+  }
 }
 
 async function loadTransactions() {
@@ -234,11 +318,34 @@ function renderTable(items, total) {
     return;
   }
 
+  renderTableRows(items, false);
+}
+
+function renderTableRows(items, isReviewQueueView = false) {
+  const tbody = document.getElementById('transactions-full-body');
+  if (!tbody) return;
+
   tbody.innerHTML = items.map(tx => {
     const isIncome = tx.transaction_type === 'income';
-    const sign = isIncome ? '+' : '-';
-    const amtClass = isIncome ? 'income' : 'expense';
+    const isRefund = tx.transaction_type === 'refund';
+    const isTransfer = tx.transaction_type === 'transfer';
+    const sign = isIncome || isRefund ? '+' : '-';
+    const amtClass = isIncome || isRefund ? 'income' : 'expense';
     const catColor = tx.category_color || '#5B8CFF';
+    const needsReview = Boolean(tx.needs_review);
+
+    const categoryCell = needsReview ? `
+      <span class="review-needed-tag action-quick-resolve" data-id="${tx.id}" title="Click to assign confirmed category">
+        <i data-lucide="alert-circle" style="width: 12px; height: 12px;"></i>
+        Needs Review
+      </span>
+    ` : `
+      <span class="tag-pill" style="background: ${catColor}20; color: ${catColor}; border: 1px solid ${catColor}40;">
+        ${tx.category_name || (isTransfer ? 'Transfer' : 'Uncategorized')}
+      </span>
+    `;
+
+    const canRefund = tx.transaction_type === 'expense' && !tx.refund_of_transaction_id;
 
     return `
       <tr data-id="${tx.id}">
@@ -247,16 +354,18 @@ function renderTable(items, total) {
           <div style="font-size: 11px; color: var(--text-muted);">${tx.transaction_time || ''}</div>
         </td>
         <td>
-          <div style="font-weight: 600; color: var(--text-primary);">${tx.merchant_name || tx.description || 'Transaction'}</div>
+          <div style="font-weight: 600; color: var(--text-primary);">
+            ${tx.merchant_name || tx.description || 'Transaction'}
+            ${tx.refund_of_transaction_id ? `<span style="font-size: 10.5px; color: var(--color-positive); margin-left: 6px;">(Refund for #${tx.refund_of_transaction_id})</span>` : ''}
+          </div>
           ${tx.note ? `<div style="font-size: 11.5px; color: var(--text-secondary);">${tx.note}</div>` : ''}
         </td>
         <td>
-          <span class="tag-pill" style="background: ${catColor}20; color: ${catColor}; border: 1px solid ${catColor}40;">
-            ${tx.category_name || 'Uncategorized'}
-          </span>
+          ${categoryCell}
         </td>
         <td>
           <span style="font-size: 12.5px; color: var(--text-secondary);">${tx.account_name || 'Everyday'}</span>
+          ${tx.transfer_role ? `<span style="font-size: 10px; color: var(--accent-blue); text-transform: uppercase; margin-left: 4px;">(${tx.transfer_role})</span>` : ''}
         </td>
         <td>
           <span class="tag-pill" style="background: rgba(255,255,255,0.06); color: var(--text-secondary); text-transform: capitalize;">
@@ -270,13 +379,18 @@ function renderTable(items, total) {
         </td>
         <td style="text-align: right;">
           <div style="display: inline-flex; align-items: center; gap: 4px;">
+            ${canRefund ? `
+              <button class="btn btn-secondary btn-icon btn-sm action-refund" data-id="${tx.id}" title="Record Refund for this purchase">
+                <i data-lucide="corner-down-left" style="width: 14px; height: 14px;"></i>
+              </button>
+            ` : ''}
             <button class="btn btn-secondary btn-icon btn-sm action-edit" data-id="${tx.id}" title="Edit">
               <i data-lucide="edit-2" style="width: 14px; height: 14px;"></i>
             </button>
             <button class="btn btn-secondary btn-icon btn-sm action-duplicate" data-id="${tx.id}" title="Duplicate">
               <i data-lucide="copy" style="width: 14px; height: 14px;"></i>
             </button>
-            <button class="btn btn-danger btn-icon btn-sm action-delete" data-id="${tx.id}" title="Delete">
+            <button class="btn btn-danger btn-icon btn-sm action-delete" data-id="${tx.id}" title="Delete (5s Undo Window)">
               <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
             </button>
           </div>
@@ -289,9 +403,23 @@ function renderTable(items, total) {
 
   // Attach row action listeners
   tbody.querySelectorAll('.action-edit').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       const tx = items.find(t => t.id === parseInt(btn.dataset.id));
       if (tx) modals.openTransactionModal(tx);
+    });
+  });
+
+  tbody.querySelectorAll('.action-quick-resolve').forEach(el => {
+    el.addEventListener('click', () => {
+      const tx = items.find(t => t.id === parseInt(el.dataset.id));
+      if (tx) modals.openTransactionModal(tx);
+    });
+  });
+
+  tbody.querySelectorAll('.action-refund').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tx = items.find(t => t.id === parseInt(btn.dataset.id));
+      if (tx) modals.openRefundModal(tx);
     });
   });
 
@@ -301,22 +429,52 @@ function renderTable(items, total) {
         await api.duplicateTransaction(parseInt(btn.dataset.id));
         showToast('Transaction duplicated', 'success');
         state.notify({ type: 'data_changed' });
+        if (isReviewQueueActive) {
+          loadReviewQueueItems();
+        } else {
+          loadTransactions();
+        }
       } catch (err) {
         showToast(`Duplicate failed: ${err.message}`, 'error');
       }
     });
   });
 
+  // Non-blocking 5-Second Undo Delete Window
   tbody.querySelectorAll('.action-delete').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (confirm('Are you sure you want to delete this transaction?')) {
-        try {
-          await api.deleteTransaction(parseInt(btn.dataset.id));
-          showToast('Transaction deleted', 'success');
-          state.notify({ type: 'data_changed' });
-        } catch (err) {
-          showToast(`Delete failed: ${err.message}`, 'error');
+      const txId = parseInt(btn.dataset.id);
+      try {
+        await api.deleteTransaction(txId);
+        // Refresh display immediately
+        if (isReviewQueueActive) {
+          loadReviewQueueItems();
+        } else {
+          loadTransactions();
         }
+        await updateReviewQueueBadge();
+
+        // 5-second non-blocking undo window toast
+        showToast('Transaction deleted', 'info', 5000, {
+          label: 'Undo',
+          onClick: async () => {
+            try {
+              await api.undoDeleteTransaction(txId);
+              showToast('Transaction restored', 'success');
+              state.notify({ type: 'data_changed' });
+              if (isReviewQueueActive) {
+                loadReviewQueueItems();
+              } else {
+                loadTransactions();
+              }
+              await updateReviewQueueBadge();
+            } catch (uErr) {
+              showToast(`Undo failed: ${uErr.message}`, 'error');
+            }
+          }
+        });
+      } catch (err) {
+        showToast(`Delete failed: ${err.message}`, 'error');
       }
     });
   });

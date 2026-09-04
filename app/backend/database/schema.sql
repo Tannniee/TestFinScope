@@ -61,7 +61,12 @@ CREATE TABLE IF NOT EXISTS transactions (
     payment_method TEXT DEFAULT 'Card',
     essentiality TEXT NOT NULL DEFAULT 'discretionary' CHECK (essentiality IN ('essential', 'discretionary', 'savings')),
     transfer_group_id TEXT DEFAULT NULL, -- Links legs of double-entry transfers
+    transfer_role TEXT CHECK (transfer_role IN ('source', 'destination')),
     linked_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
+    refund_of_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
+    source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'csv_import', 'recurring_generated', 'adjustment')),
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    is_deleted INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
