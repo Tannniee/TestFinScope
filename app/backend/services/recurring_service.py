@@ -36,6 +36,19 @@ class RecurringService:
             cur.execute(query, params)
             return [dict(row) for row in cur.fetchall()]
 
+    @classmethod
+    def create(cls, data: Dict[str, Any]) -> int:
+        """Convenience method accepting dictionary payload for rule creation."""
+        return cls.create_rule(
+            name=data["name"],
+            amount=data["amount"],
+            transaction_type=data.get("transaction_type", "expense"),
+            category_id=data.get("category_id"),
+            account_id=data.get("account_id"),
+            frequency=data.get("frequency", "monthly"),
+            next_due_date=data.get("next_due_date")
+        )
+
     @staticmethod
     def create_rule(
         name: str,
@@ -114,9 +127,9 @@ class RecurringService:
 
         with get_db_connection() as conn:
             cur = conn.cursor()
-            # Fetch expenses/income in this month to check if bill has been paid
+            # Fetch active transactions in this month to check if bill has been paid
             cur.execute("""
-                SELECT merchant_name, description, amount_minor, transaction_date, category_id
+                SELECT merchant_name, description, amount_minor, transaction_date, category_id, account_id, transaction_type
                 FROM active_transactions
                 WHERE transaction_date LIKE ?
             """, (f"{month}%",))
@@ -126,11 +139,20 @@ class RecurringService:
         for r in rules:
             rule_name = r["name"].lower()
             amt_minor = r["amount_minor"]
+            rule_acc = r.get("account_id")
+            rule_type = r.get("transaction_type") or "expense"
 
-            # Match by name or category + amount similarity
+            # Match by name or category + amount similarity, strictly enforcing type and account (AUD-005)
             is_paid = False
             paid_date = None
             for tx in month_txs:
+                # Invariant 1: Transaction type must match rule type (e.g. refund/income cannot pay expense rule)
+                if tx["transaction_type"] != rule_type:
+                    continue
+                # Invariant 2: Account must match if rule is scoped to an account
+                if rule_acc is not None and tx["account_id"] != rule_acc:
+                    continue
+
                 tx_desc = (tx["merchant_name"] or tx["description"] or "").lower()
                 if (rule_name in tx_desc or tx_desc in rule_name) or (tx["amount_minor"] == amt_minor and tx["category_id"] == r["category_id"]):
                     is_paid = True
@@ -166,3 +188,7 @@ class RecurringService:
             })
 
         return bills
+
+    # Convenience alias
+    get_upcoming_bills = get_upcoming_bills_for_month
+

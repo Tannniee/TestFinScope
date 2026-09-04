@@ -426,5 +426,182 @@ def test_aud_004c_same_merchant_different_description_not_duplicate(isolated_db)
     assert preview["duplicate_count"] == 1
 
 
+def test_aud_005_recurring_match_strictly_enforces_account_and_type(isolated_db):
+    """
+    AUD-005: Recurring rule paid status must strictly match:
+    1. Transaction type (income/refund cannot mark an expense rule as paid).
+    2. Account ID (transactions on a different account cannot mark the rule as paid).
+    3. Soft-deleted transactions must not mark the rule as paid.
+    """
+    from app.backend.services.recurring_service import RecurringService
+
+    acc_card = AccountRepository.create("Credit Card", "credit", opening_balance=0.0)
+    acc_everyday = AccountRepository.create("Everyday Acc", "checking", opening_balance=1000.0)
+    cat_sub = CategoryRepository.create("Subscriptions", "expense", icon="film", color="#9B59B6")
+
+    # Recurring rule: Netflix on Credit Card, $19.99/mo expense
+    rule_id = RecurringService.create({
+        "name": "Netflix",
+        "transaction_type": "expense",
+        "amount": 19.99,
+        "category_id": cat_sub,
+        "account_id": acc_card,
+        "frequency": "monthly",
+        "next_due_date": "2026-09-20"
+    })
+
+    # Case 1: An income on Everyday account with merchant "Netflix"
+    TransactionRepository.create({
+        "account_id": acc_everyday,
+        "category_id": cat_sub,
+        "amount": 19.99,
+        "transaction_type": "income",
+        "merchant_name": "Netflix",
+        "transaction_date": "2026-09-05"
+    })
+    bills = RecurringService.get_upcoming_bills("2026-09")
+    rule_bill = next(b for b in bills if b["rule_id"] == rule_id)
+    assert rule_bill["is_paid"] is False, "Income must not mark expense rule as paid"
+
+    # Case 2: A refund on Credit Card with merchant "Netflix"
+    TransactionRepository.create({
+        "account_id": acc_card,
+        "category_id": cat_sub,
+        "amount": 19.99,
+        "transaction_type": "refund",
+        "merchant_name": "Netflix",
+        "transaction_date": "2026-09-06"
+    })
+    bills = RecurringService.get_upcoming_bills("2026-09")
+    rule_bill = next(b for b in bills if b["rule_id"] == rule_id)
+    assert rule_bill["is_paid"] is False, "Refund must not mark expense rule as paid"
+
+    # Case 3: An expense on Everyday account (wrong account)
+    TransactionRepository.create({
+        "account_id": acc_everyday,
+        "category_id": cat_sub,
+        "amount": 19.99,
+        "transaction_type": "expense",
+        "merchant_name": "Netflix",
+        "transaction_date": "2026-09-07"
+    })
+    bills = RecurringService.get_upcoming_bills("2026-09")
+    rule_bill = next(b for b in bills if b["rule_id"] == rule_id)
+    assert rule_bill["is_paid"] is False, "Expense on wrong account must not mark rule as paid"
+
+    # Case 4: Proper expense on Credit Card (correct account and type)
+    correct_tx = TransactionRepository.create({
+        "account_id": acc_card,
+        "category_id": cat_sub,
+        "amount": 19.99,
+        "transaction_type": "expense",
+        "merchant_name": "Netflix",
+        "transaction_date": "2026-09-10"
+    })
+    bills = RecurringService.get_upcoming_bills("2026-09")
+    rule_bill = next(b for b in bills if b["rule_id"] == rule_id)
+    assert rule_bill["is_paid"] is True, "Valid matching expense must mark rule as paid"
+    assert rule_bill["paid_date"] == "2026-09-10"
+
+    # Case 5: Soft delete the transaction -> rule status returns to unpaid/upcoming
+    TransactionRepository.delete(correct_tx)
+    bills = RecurringService.get_upcoming_bills("2026-09")
+    rule_bill = next(b for b in bills if b["rule_id"] == rule_id)
+    assert rule_bill["is_paid"] is False, "Soft-deleted transaction must not mark rule as paid"
+
+
+def test_aud_006a_forecast_no_double_counting_case_variants(isolated_db):
+    """
+    AUD-006A: Case-insensitive and whitespace normalization of recurring obligation names
+    prevents double-counting when history and explicit rules share the same obligation.
+    """
+    from app.backend.services.recurring_service import RecurringService
+    from app.backend.analytics.forecasting import ForecastingEngine
+
+    acc_id = AccountRepository.create("Primary Forecast Acc", "checking", opening_balance=2000.0)
+    cat_id = CategoryRepository.create("Streaming Services", "expense", icon="tv", color="#3498DB")
+
+    # 1. Historical recurring transaction in previous month (August) with Title Case "Netflix"
+    TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_id,
+        "amount": 20.0,
+        "transaction_type": "expense",
+        "merchant_name": "Netflix",
+        "transaction_date": "2026-08-25",
+        "is_recurring": 1
+    })
+
+    # 2. Active explicit recurring rule with lowercase "netflix"
+    RecurringService.create({
+        "name": "netflix",
+        "transaction_type": "expense",
+        "amount": 20.0,
+        "category_id": cat_id,
+        "account_id": acc_id,
+        "frequency": "monthly",
+        "next_due_date": "2026-09-25"
+    })
+
+    # Run forecast for September (as_of_date: 2026-09-01, elapsed_day: 1)
+    res = ForecastingEngine.forecast_month(month="2026-09", account_id=acc_id)
+
+    # Invariant: Upcoming recurring bills must contain exactly 2000 minor ($20.00), NOT 4000 minor ($40.00)
+    assert res["upcoming_recurring_minor"] == 2000, f"Expected 2000 minor, got {res['upcoming_recurring_minor']}"
+
+
+def test_aud_006b_forecast_uses_deterministic_recurring_history(isolated_db):
+    """
+    AUD-006B: When multiple historical recurring transactions exist,
+    the latest transaction is deterministically selected for forecasting.
+    """
+    from app.backend.analytics.forecasting import ForecastingEngine
+
+    acc_id = AccountRepository.create("Hist Forecast Acc", "checking", opening_balance=2000.0)
+    cat_id = CategoryRepository.create("Cloud Storage", "expense", icon="cloud", color="#2ECC71")
+
+    # Oldest recurring tx (June): $15
+    TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_id,
+        "amount": 15.0,
+        "transaction_type": "expense",
+        "merchant_name": "Dropbox Cloud",
+        "transaction_date": "2026-06-25",
+        "is_recurring": 1
+    })
+
+    # Middle recurring tx (July): $18
+    TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_id,
+        "amount": 18.0,
+        "transaction_type": "expense",
+        "merchant_name": "Dropbox Cloud",
+        "transaction_date": "2026-07-25",
+        "is_recurring": 1
+    })
+
+    # Latest recurring tx (August): $22
+    TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_id,
+        "amount": 22.0,
+        "transaction_type": "expense",
+        "merchant_name": "Dropbox Cloud",
+        "transaction_date": "2026-08-25",
+        "is_recurring": 1
+    })
+
+    # Run forecast for September
+    res1 = ForecastingEngine.forecast_month(month="2026-09", account_id=acc_id)
+    res2 = ForecastingEngine.forecast_month(month="2026-09", account_id=acc_id)
+
+    # Must select latest amount: $22 (2200 minor) deterministically across repeated runs
+    assert res1["upcoming_recurring_minor"] == 2200
+    assert res2["upcoming_recurring_minor"] == 2200
+
+
+
 
 
