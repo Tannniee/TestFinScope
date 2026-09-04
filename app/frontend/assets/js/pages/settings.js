@@ -224,10 +224,16 @@ function setupSettingsHandlers() {
   if (currSelect) {
     currSelect.value = state.currency || 'USD';
     currSelect.addEventListener('change', async (e) => {
+      const previousCurrency = state.currency || 'USD';
       const newCurr = e.target.value;
-      await state.setCurrency(newCurr);
-      showToast(`Currency changed to ${newCurr}`, 'success');
-      state.notify({ type: 'data_changed' });
+      try {
+        await state.setCurrency(newCurr);
+        showToast(`Currency changed to ${newCurr}`, 'success');
+        state.notify({ type: 'data_changed' });
+      } catch (err) {
+        currSelect.value = previousCurrency;
+        showToast(err.message || 'Unable to change currency', 'error');
+      }
     });
   }
 

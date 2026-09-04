@@ -63,13 +63,9 @@ export const state = {
   },
 
   async setCurrency(currencyCode) {
+    await api.updateSettings({ currency: currencyCode });
     this.currency = currencyCode;
-    try {
-      await api.updateSettings({ currency: currencyCode });
-      this.notify({ type: 'currency_changed', currency: currencyCode });
-    } catch (err) {
-      console.error('Failed to update currency setting:', err);
-    }
+    this.notify({ type: 'currency_changed', currency: currencyCode });
   },
 
   togglePrivacyMode() {
