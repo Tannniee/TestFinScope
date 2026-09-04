@@ -803,19 +803,23 @@ async function renderAnomaliesTab(container) {
 async function renderForecastTab(container) {
   container.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 30px;">Computing month-end forecast and model evaluation...</div>`;
 
-  const [fc, backtest] = await Promise.all([
+  const [fc, backtest, upcomingBills] = await Promise.all([
     api.getForecast(state.month, state.accountId),
-    api.getBacktestEvaluation(state.accountId)
+    api.getBacktestEvaluation(state.accountId),
+    api.getUpcomingBills(state.month, state.accountId)
   ]);
 
   const catForecasts = fc.category_forecasts || [];
   const models = backtest.models || {};
+  const bills = upcomingBills || [];
+
+  const netColor = (fc.projected_net_flow || 0) >= 0 ? 'var(--color-positive)' : 'var(--color-negative)';
 
   container.innerHTML = `
     <!-- Top 4 Cards -->
     <div class="grid-4col" style="margin-bottom: 24px;">
       <div class="fin-card">
-        <span class="kpi-label">Projected Month-End</span>
+        <span class="kpi-label">Projected Month-End Spend</span>
         <div class="kpi-value" style="font-size: 28px; margin: 6px 0; color: var(--text-primary);">
           ${state.formatCurrency(fc.projected_expense)}
         </div>
@@ -844,6 +848,39 @@ async function renderForecastTab(container) {
           ${state.formatCurrency(fc.expected_variable)}
         </div>
         <span class="kpi-footer">Dynamic weekday occurrence rate</span>
+      </div>
+    </div>
+
+    <!-- Projected Cash Flow Summary Banner -->
+    <div class="fin-card" style="margin-bottom: 24px; padding: 20px 24px; background: var(--bg-card-subtle);">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;">
+        <div>
+          <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600;">Month-End Net Flow Projection</span>
+          <div style="font-size: 24px; font-weight: 800; color: ${netColor}; margin-top: 4px;">
+            ${(fc.projected_net_flow || 0) >= 0 ? '+' : ''}${state.formatCurrency(fc.projected_net_flow || 0)}
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 24px;">
+          <div>
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Projected Income</div>
+            <div style="font-size: 16px; font-weight: 700; color: var(--color-positive); margin-top: 2px;">
+              ${state.formatCurrency(fc.projected_income || 0)}
+            </div>
+          </div>
+          <div>
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Projected Spend</div>
+            <div style="font-size: 16px; font-weight: 700; color: var(--color-negative); margin-top: 2px;">
+              ${state.formatCurrency(fc.projected_expense)}
+            </div>
+          </div>
+          <div>
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Projected Savings Rate</div>
+            <div style="font-size: 16px; font-weight: 700; color: var(--accent-purple); margin-top: 2px;">
+              ${fc.projected_savings_rate || 0}%
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -899,6 +936,57 @@ async function renderForecastTab(container) {
         </table>
       </div>
     </div>
+
+    <!-- Scheduled Recurring Bills Table -->
+    ${bills.length > 0 ? `
+      <div class="fin-card" style="margin-bottom: 24px;">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <h3>Active Recurring Bills & Commitments</h3>
+            <p>Monitored subscriptions and scheduled recurring commitments for ${state.formatMonthLabel(state.month)}</p>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="fin-table">
+            <thead>
+              <tr>
+                <th>Bill / Payee</th>
+                <th>Due Date</th>
+                <th>Category</th>
+                <th>Account</th>
+                <th style="text-align: right;">Amount</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${bills.map(b => `
+                <tr>
+                  <td style="font-weight: 600;">${escapeHtml(b.name)}</td>
+                  <td>${escapeHtml(b.due_date)}</td>
+                  <td>
+                    ${b.category_name ? `
+                      <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${escapeHtml(b.category_color || '#888')}; margin-right:6px;"></span>
+                      ${escapeHtml(b.category_name)}
+                    ` : '—'}
+                  </td>
+                  <td>${escapeHtml(b.account_name || '—')}</td>
+                  <td style="text-align: right; font-weight: 700; font-family: monospace;">
+                    ${state.formatCurrency(b.amount)}
+                  </td>
+                  <td>
+                    ${b.status === 'paid' ? '<span class="tag-pill" style="background: rgba(77,213,165,0.15); color: #4DD5A5;">Paid</span>'
+                      : (b.status === 'upcoming' ? '<span class="tag-pill" style="background: rgba(91,140,255,0.15); color: #5B8CFF;">Upcoming</span>'
+                      : '<span class="tag-pill" style="background: rgba(255,107,138,0.15); color: #FF6B8A;">Overdue</span>')
+                    }
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    ` : ''}
 
     <!-- Backtest Evaluation Leaderboard -->
     <div class="fin-card">

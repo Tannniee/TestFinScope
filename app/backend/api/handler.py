@@ -112,6 +112,49 @@ class ApiHandler:
             raise ValueError("original_tx_id or original_transaction_id is required for a linked refund.")
         return TransactionRepository.create_refund(orig_id, amount, transaction_date, account_id, note)
 
+    def update_transfer(
+        self,
+        transfer_group_id: Optional[str] = None,
+        tx_id: Optional[int] = None,
+        from_account_id: Optional[int] = None,
+        to_account_id: Optional[int] = None,
+        amount: Optional[float] = None,
+        transaction_date: Optional[str] = None,
+        transaction_time: Optional[str] = None,
+        description: Optional[str] = None,
+        note: Optional[str] = None,
+        **kwargs
+    ) -> bool:
+        from app.backend.services.transfer_service import TransferService
+        return TransferService.update_transfer(
+            transfer_group_id=transfer_group_id or kwargs.get("transfer_group_id"),
+            tx_id=tx_id or kwargs.get("tx_id"),
+            from_account_id=from_account_id or kwargs.get("from_account_id"),
+            to_account_id=to_account_id or kwargs.get("to_account_id"),
+            amount=amount if amount is not None else kwargs.get("amount"),
+            transaction_date=transaction_date or kwargs.get("transaction_date"),
+            transaction_time=transaction_time or kwargs.get("transaction_time"),
+            description=description or kwargs.get("description"),
+            note=note if note is not None else kwargs.get("note")
+        )
+
+    def update_refund(
+        self,
+        tx_id: int,
+        amount: Optional[float] = None,
+        transaction_date: Optional[str] = None,
+        note: Optional[str] = None,
+        account_id: Optional[int] = None,
+        **kwargs
+    ) -> bool:
+        return TransactionRepository.update_refund(
+            tx_id=tx_id,
+            amount=amount if amount is not None else kwargs.get("amount"),
+            transaction_date=transaction_date or kwargs.get("transaction_date"),
+            note=note if note is not None else kwargs.get("note"),
+            account_id=account_id or kwargs.get("account_id")
+        )
+
     def update_transaction(self, tx_id: int, data: Optional[Dict[str, Any]] = None, **kwargs) -> bool:
         payload = data if isinstance(data, dict) and data else kwargs
         return TransactionRepository.update(tx_id, payload)
@@ -214,8 +257,9 @@ class ApiHandler:
         return AnalyticsService.get_backtest_evaluation(account_id)
 
     # --- Budgets ---
-    def get_monthly_budget(self, month: str) -> Dict[str, Any]:
-        return BudgetService.get_monthly_budget_status(month)
+    def get_monthly_budget(self, month: str, account_id: Optional[int] = None, **kwargs) -> Dict[str, Any]:
+        acc_id = account_id if account_id is not None else kwargs.get("account_id")
+        return BudgetService.get_monthly_budget_status(month, account_id=acc_id)
 
     def set_category_budget(self, category_id: int, month: str, amount: float) -> int:
         return BudgetRepository.set_budget(category_id, month, amount)
@@ -230,11 +274,103 @@ class ApiHandler:
     def restore_backup(self, filepath: str) -> Dict[str, Any]:
         return BackupService.restore_backup(filepath)
 
-    def export_csv(self) -> str:
-        return BackupService.export_csv()
+    def export_csv(
+        self,
+        month: Optional[str] = None,
+        account_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        return BackupService.export_csv(
+            month=month or kwargs.get("month"),
+            account_id=account_id if account_id is not None else kwargs.get("account_id"),
+            start_date=start_date or kwargs.get("start_date"),
+            end_date=end_date or kwargs.get("end_date")
+        )
 
     def get_storage_health(self) -> Dict[str, Any]:
         return BackupService.get_storage_health()
+
+    # --- Bank CSV Import Wizard ---
+    def preview_csv_import(
+        self,
+        csv_content: str,
+        mapping: Optional[Dict[str, str]] = None,
+        account_id: Optional[int] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        from app.backend.services.import_service import ImportService
+        return ImportService.preview_csv(
+            csv_content=csv_content,
+            mapping=mapping or kwargs.get("mapping"),
+            account_id=account_id or kwargs.get("account_id")
+        )
+
+    def commit_csv_import(
+        self,
+        csv_content: str,
+        mapping: Optional[Dict[str, str]] = None,
+        account_id: Optional[int] = None,
+        deduplicate: bool = True,
+        **kwargs
+    ) -> Dict[str, Any]:
+        from app.backend.services.import_service import ImportService
+        acc_id = account_id or kwargs.get("account_id")
+        if not acc_id:
+            raise ValueError("account_id is required to import bank transactions.")
+        return ImportService.commit_import(
+            csv_content=csv_content,
+            mapping=mapping or kwargs.get("mapping", {}),
+            account_id=acc_id,
+            deduplicate=deduplicate if deduplicate is not None else kwargs.get("deduplicate", True)
+        )
+
+    # --- Recurring Rules & Bills ---
+    def get_recurring_rules(self, account_id: Optional[int] = None, active_only: bool = False, **kwargs) -> List[Dict[str, Any]]:
+        from app.backend.services.recurring_service import RecurringService
+        return RecurringService.get_all(
+            account_id=account_id or kwargs.get("account_id"),
+            active_only=active_only or kwargs.get("active_only", False)
+        )
+
+    def create_recurring_rule(
+        self,
+        name: str,
+        amount: float,
+        transaction_type: str = "expense",
+        category_id: Optional[int] = None,
+        account_id: Optional[int] = None,
+        frequency: str = "monthly",
+        next_due_date: Optional[str] = None,
+        **kwargs
+    ) -> int:
+        from app.backend.services.recurring_service import RecurringService
+        return RecurringService.create_rule(
+            name=name,
+            amount=amount,
+            transaction_type=transaction_type,
+            category_id=category_id,
+            account_id=account_id,
+            frequency=frequency,
+            next_due_date=next_due_date
+        )
+
+    def update_recurring_rule(self, rule_id: int, **fields) -> bool:
+        from app.backend.services.recurring_service import RecurringService
+        return RecurringService.update_rule(rule_id, **fields)
+
+    def delete_recurring_rule(self, rule_id: int, **kwargs) -> bool:
+        from app.backend.services.recurring_service import RecurringService
+        r_id = rule_id or kwargs.get("rule_id")
+        return RecurringService.delete_rule(r_id)
+
+    def get_upcoming_bills(self, month: str, account_id: Optional[int] = None, **kwargs) -> List[Dict[str, Any]]:
+        from app.backend.services.recurring_service import RecurringService
+        return RecurringService.get_upcoming_bills_for_month(
+            month=month,
+            account_id=account_id or kwargs.get("account_id")
+        )
 
     def seed_demo_data(self, clear_existing: bool = False) -> Dict[str, Any]:
         return seed_sample_data(clear_existing=clear_existing)

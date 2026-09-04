@@ -19,8 +19,11 @@ export async function renderReportsPage(container) {
           </div>
 
           <div style="display: flex; align-items: center; gap: 10px;">
-            <button id="btn-export-csv" class="btn btn-secondary">
-              <i data-lucide="download"></i> Export CSV
+            <button id="btn-export-current-csv" class="btn btn-secondary">
+              <i data-lucide="download"></i> Export Current Month CSV
+            </button>
+            <button id="btn-export-full-csv" class="btn btn-secondary">
+              <i data-lucide="database"></i> Export All CSV
             </button>
             <button id="btn-print-report" class="btn btn-primary">
               <i data-lucide="printer"></i> Print / PDF
@@ -105,10 +108,17 @@ export async function renderReportsPage(container) {
 }
 
 function setupReportHandlers() {
-  document.getElementById('btn-export-csv')?.addEventListener('click', async () => {
+  document.getElementById('btn-export-current-csv')?.addEventListener('click', async () => {
+    const token = await api.getSessionToken();
+    const accQuery = state.accountId ? `&account_id=${state.accountId}` : '';
+    window.location.href = `/api/export_csv?token=${encodeURIComponent(token || '')}&month=${encodeURIComponent(state.month || '')}${accQuery}`;
+    showToast(`Exporting ${state.month} CSV statement...`, 'info');
+  });
+
+  document.getElementById('btn-export-full-csv')?.addEventListener('click', async () => {
     const token = await api.getSessionToken();
     window.location.href = `/api/export_csv?token=${encodeURIComponent(token || '')}`;
-    showToast('Exporting CSV statement...', 'info');
+    showToast('Exporting complete database CSV archive...', 'info');
   });
 
   document.getElementById('btn-print-report')?.addEventListener('click', () => {

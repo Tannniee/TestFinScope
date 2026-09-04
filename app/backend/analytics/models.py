@@ -136,6 +136,10 @@ class ForecastResult:
     projected_variance_minor: Optional[int] = None
     category_forecasts: List[Dict[str, Any]] = field(default_factory=list)
     components: Dict[str, Any] = field(default_factory=dict)
+    projected_income_minor: Optional[int] = None
+    projected_net_flow_minor: Optional[int] = None
+    projected_savings_rate: Optional[float] = None
+    actual_income_to_date_minor: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -161,7 +165,14 @@ class ForecastResult:
             "projected_variance_minor": self.projected_variance_minor,
             "projected_variance": round(self.projected_variance_minor / 100.0, 2) if self.projected_variance_minor is not None else None,
             "category_forecasts": self.category_forecasts,
-            "components": self.components
+            "components": self.components,
+            "projected_income_minor": self.projected_income_minor,
+            "projected_income": round(self.projected_income_minor / 100.0, 2) if self.projected_income_minor is not None else None,
+            "projected_net_flow_minor": self.projected_net_flow_minor,
+            "projected_net_flow": round(self.projected_net_flow_minor / 100.0, 2) if self.projected_net_flow_minor is not None else None,
+            "projected_savings_rate": self.projected_savings_rate,
+            "actual_income_to_date_minor": self.actual_income_to_date_minor,
+            "actual_income_to_date": round(self.actual_income_to_date_minor / 100.0, 2) if self.actual_income_to_date_minor is not None else None
         }
 
 @dataclass

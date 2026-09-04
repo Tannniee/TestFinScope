@@ -149,7 +149,7 @@ class AggregateQueries:
                     c.name,
                     c.color,
                     c.icon,
-                    c.essentiality,
+                    COALESCE(MAX(t.essentiality), 'discretionary') as essentiality,
                     SUM(
                         CASE 
                             WHEN t.transaction_type = 'expense' THEN t.amount_minor

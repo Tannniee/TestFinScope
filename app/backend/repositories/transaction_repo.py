@@ -292,6 +292,57 @@ class TransactionRepository:
         return TransactionRepository.create(refund_data)
 
     @staticmethod
+    def update_refund(
+        tx_id: int,
+        amount: Optional[float] = None,
+        transaction_date: Optional[str] = None,
+        note: Optional[str] = None,
+        account_id: Optional[int] = None
+    ) -> bool:
+        """
+        Updates an existing refund transaction, enforcing that the updated amount
+        does not cause total cumulative refunds to exceed the original expense.
+        """
+        orig_refund = TransactionRepository.get_by_id(tx_id)
+        if not orig_refund:
+            raise ValueError(f"Refund transaction {tx_id} not found.")
+        if orig_refund["transaction_type"] != "refund":
+            raise ValueError(f"Transaction {tx_id} is not a refund.")
+
+        new_amount_minor = int(round(float(amount) * 100)) if amount is not None else orig_refund["amount_minor"]
+        if new_amount_minor <= 0:
+            raise ValueError("Refund amount must be strictly positive.")
+
+        parent_id = orig_refund.get("refund_of_transaction_id")
+        if parent_id:
+            parent_tx = TransactionRepository.get_by_id(parent_id)
+            if parent_tx:
+                with get_db_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT COALESCE(SUM(amount_minor), 0)
+                        FROM active_transactions
+                        WHERE refund_of_transaction_id = ? AND transaction_type = 'refund' AND id != ?
+                    """, (parent_id, tx_id))
+                    other_refunds = cur.fetchone()[0]
+                
+                remaining = parent_tx["amount_minor"] - other_refunds
+                if new_amount_minor > remaining:
+                    raise ValueError(
+                        f"Updated refund amount of ${new_amount_minor / 100:.2f} exceeds remaining refundable balance of ${remaining / 100:.2f}."
+                    )
+
+        update_payload: Dict[str, Any] = {"amount_minor": new_amount_minor}
+        if transaction_date:
+            update_payload["transaction_date"] = transaction_date
+        if note is not None:
+            update_payload["note"] = note
+        if account_id is not None:
+            update_payload["account_id"] = account_id
+
+        return TransactionRepository.update(tx_id, update_payload)
+
+    @staticmethod
     def update(tx_id: int, data: Dict[str, Any]) -> bool:
         """
         Updates an existing transaction.

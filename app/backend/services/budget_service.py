@@ -5,9 +5,9 @@ from app.backend.repositories.budget_repo import BudgetRepository
 
 class BudgetService:
     @staticmethod
-    def get_monthly_budget_status(month: str) -> Dict[str, Any]:
+    def get_monthly_budget_status(month: str, account_id: Optional[int] = None) -> Dict[str, Any]:
         """Calculates budget pacing and month-end projections for all budgeted categories."""
-        raw_items = BudgetRepository.get_by_month(month)
+        raw_items = BudgetRepository.get_by_month(month, account_id=account_id)
         
         # Calculate time pacing
         now = datetime.now()
@@ -97,6 +97,7 @@ class BudgetService:
 
         return {
             "month": month,
+            "account_id": account_id,
             "days_elapsed": days_elapsed,
             "total_days": total_days,
             "elapsed_pct": elapsed_pct,

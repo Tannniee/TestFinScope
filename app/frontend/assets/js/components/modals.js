@@ -6,10 +6,11 @@
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { showToast } from './toast.js';
-import { escapeHtml } from '../utils.js';
+import { escapeHtml, toLocalDateString, localYesterdayString } from '../utils.js';
 
 export const modals = {
   activeTxId: null,
+  isSubmitting: false,
   autocompleteSelectedIndex: -1,
   currentSuggestions: [],
 
@@ -132,14 +133,11 @@ export const modals = {
         pill.classList.add('active');
         const dateType = pill.dataset.date;
 
-        const today = new Date();
         if (dateType === 'today') {
-          dateInput.value = today.toISOString().split('T')[0];
+          dateInput.value = toLocalDateString();
           dateInput.style.display = 'none';
         } else if (dateType === 'yesterday') {
-          const yesterday = new Date(today);
-          yesterday.setDate(yesterday.getDate() - 1);
-          dateInput.value = yesterday.toISOString().split('T')[0];
+          dateInput.value = localYesterdayString();
           dateInput.style.display = 'none';
         } else if (dateType === 'pick') {
           dateInput.style.display = 'inline-block';
@@ -150,10 +148,8 @@ export const modals = {
 
     dateInput.addEventListener('change', () => {
       const selected = dateInput.value;
-      const todayStr = new Date().toISOString().split('T')[0];
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayStr = yesterday.toISOString().split('T')[0];
+      const todayStr = toLocalDateString();
+      const yesterdayStr = localYesterdayString();
 
       pills.forEach(p => p.classList.remove('active'));
       if (selected === todayStr) {
@@ -338,6 +334,8 @@ export const modals = {
   },
 
   async handleTransactionSubmit(isSaveAndAddAnother = false) {
+    if (this.isSubmitting) return;
+
     const type = document.getElementById('tx-type').value;
     const amountVal = document.getElementById('tx-amount').value;
     const amount = parseFloat(amountVal);
@@ -362,6 +360,17 @@ export const modals = {
       return;
     }
 
+    const submitBtn = document.querySelector('#tx-form button[type="submit"]');
+    const saveAddBtn = document.getElementById('tx-modal-save-add');
+    const originalSubmitText = submitBtn ? submitBtn.textContent : 'Save';
+
+    this.isSubmitting = true;
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Saving...';
+    }
+    if (saveAddBtn) saveAddBtn.disabled = true;
+
     try {
       if (type === 'transfer') {
         const toAccountId = parseInt(document.getElementById('tx-to-account').value);
@@ -375,23 +384,46 @@ export const modals = {
           return;
         }
 
-        await api.createTransfer({
-          from_account_id: accountId,
-          to_account_id: toAccountId,
-          amount: amount,
-          transaction_date: date,
-          transaction_time: time,
-          description: description || 'Account Transfer',
-          note: note
-        });
-        showToast('Transfer completed successfully', 'success');
+        if (this.activeTxId) {
+          await api.updateTransfer({
+            tx_id: this.activeTxId,
+            from_account_id: accountId,
+            to_account_id: toAccountId,
+            amount: amount,
+            transaction_date: date,
+            transaction_time: time,
+            description: description || 'Account Transfer',
+            note: note
+          });
+          showToast('Transfer updated successfully', 'success');
+        } else {
+          await api.createTransfer({
+            from_account_id: accountId,
+            to_account_id: toAccountId,
+            amount: amount,
+            transaction_date: date,
+            transaction_time: time,
+            description: description || 'Account Transfer',
+            note: note
+          });
+          showToast('Transfer completed successfully', 'success');
+        }
       } else if (type === 'refund') {
         const refundTxIdVal = document.getElementById('tx-refund-id').value;
         const refundTxId = refundTxIdVal ? parseInt(refundTxIdVal) : null;
         const categoryId = document.getElementById('tx-category').value ? parseInt(document.getElementById('tx-category').value) : null;
         const merchant = document.getElementById('tx-merchant').value.trim();
 
-        if (refundTxId) {
+        if (this.activeTxId) {
+          await api.updateRefund({
+            tx_id: this.activeTxId,
+            amount: amount,
+            transaction_date: date,
+            note: note,
+            account_id: accountId
+          });
+          showToast('Refund updated successfully', 'success');
+        } else if (refundTxId) {
           await api.createRefund({
             original_transaction_id: refundTxId,
             amount: amount,
@@ -465,6 +497,13 @@ export const modals = {
       }
     } catch (err) {
       showToast(`Failed to save: ${err.message}`, 'error');
+    } finally {
+      this.isSubmitting = false;
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalSubmitText;
+      }
+      if (saveAddBtn) saveAddBtn.disabled = false;
     }
   },
 
@@ -578,16 +617,17 @@ export const modals = {
       const span = moreDetailsToggle?.querySelector('span');
       if (span) span.textContent = 'More Details';
 
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = toLocalDateString();
       document.getElementById('tx-date').value = defaultDate || todayStr;
       document.getElementById('tx-time').value = new Date().toTimeString().slice(0, 5);
       document.getElementById('tx-type').value = 'expense';
       modalOverlay.querySelectorAll('.segmented-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.type === 'expense');
       });
-      if (state.accounts.length > 0) {
-        document.getElementById('tx-account').value = state.accounts[0].id;
-      }
+      const defaultAcc = (state.accountId && state.accounts.some(a => a.id === state.accountId))
+        ? state.accountId
+        : (state.accounts.length > 0 ? state.accounts[0].id : '');
+      document.getElementById('tx-account').value = defaultAcc;
       this.updateFormFieldsForType('expense');
     }
 

@@ -266,7 +266,16 @@ async function loadReviewQueueItems() {
   }
 }
 
+let currentTxRequestSeq = 0;
+let currentTxAbortController = null;
+
 async function loadTransactions() {
+  const reqSeq = ++currentTxRequestSeq;
+  if (currentTxAbortController) {
+    try { currentTxAbortController.abort(); } catch (e) {}
+  }
+  currentTxAbortController = new AbortController();
+
   try {
     const params = {
       month: state.month,
@@ -279,9 +288,12 @@ async function loadTransactions() {
       offset: currentOffset
     };
 
-    const res = await api.getTransactions(params);
+    const res = await api.getTransactions(params, { signal: currentTxAbortController.signal });
+    if (reqSeq !== currentTxRequestSeq) return;
     renderTable(res.items, res.total);
   } catch (err) {
+    if (err.name === 'AbortError') return;
+    if (reqSeq !== currentTxRequestSeq) return;
     console.error('Failed to load transactions:', err);
     showToast('Failed to load transactions', 'error');
   }

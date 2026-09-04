@@ -294,6 +294,24 @@
   gap: 20px;
 }
 
+.grid-5col {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 18px;
+}
+
+@media (max-width: 1300px) {
+  .grid-5col {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 800px) {
+  .grid-5col {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
 .grid-7col {
   display: grid;
   grid-template-columns: repeat(7, 1fr);

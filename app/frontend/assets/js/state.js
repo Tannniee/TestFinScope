@@ -79,7 +79,7 @@ export const state = {
     this.notify({ type: 'privacy_toggled', privacyMode: this.privacyMode });
   },
 
-  async loadInitialData() {
+  async reloadMetadata({ notify = true } = {}) {
     try {
       const [accs, cats, settings] = await Promise.all([
         api.getAccounts(),
@@ -92,10 +92,16 @@ export const state = {
       if (this.settings.currency) {
         this.currency = this.settings.currency;
       }
-      this.notify({ type: 'meta_loaded' });
+      if (notify) {
+        this.notify({ type: 'meta_loaded' });
+      }
     } catch (err) {
-      console.error('Failed to load initial metadata:', err);
+      console.error('Failed to reload metadata:', err);
     }
+  },
+
+  async loadInitialData() {
+    await this.reloadMetadata({ notify: true });
   },
 
   formatCurrency(amount, forceMask = false) {

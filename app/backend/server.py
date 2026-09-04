@@ -51,7 +51,9 @@ ROUTES: Dict[str, Route] = {
     "get_transaction": Route(api_handler.get_transaction, "READ"),
     "create_transaction": Route(api_handler.create_transaction, "WRITE"),
     "create_transfer": Route(api_handler.create_transfer, "WRITE"),
+    "update_transfer": Route(api_handler.update_transfer, "WRITE"),
     "create_refund": Route(api_handler.create_refund, "WRITE"),
+    "update_refund": Route(api_handler.update_refund, "WRITE"),
     "update_transaction": Route(api_handler.update_transaction, "WRITE"),
     "delete_transaction": Route(api_handler.delete_transaction, "DESTRUCTIVE"),
     "undo_delete_transaction": Route(api_handler.undo_delete_transaction, "WRITE"),
@@ -92,6 +94,17 @@ ROUTES: Dict[str, Route] = {
     "get_storage_health": Route(api_handler.get_storage_health, "READ"),
     "seed_demo_data": Route(api_handler.seed_demo_data, "WRITE"),
     "open_data_dir": Route(api_handler.open_data_dir, "PRIVILEGED_DESKTOP"),
+
+    # Bank CSV Import Wizard
+    "preview_csv_import": Route(api_handler.preview_csv_import, "READ"),
+    "commit_csv_import": Route(api_handler.commit_csv_import, "WRITE"),
+
+    # Recurring Rules & Bills
+    "get_recurring_rules": Route(api_handler.get_recurring_rules, "READ"),
+    "create_recurring_rule": Route(api_handler.create_recurring_rule, "WRITE"),
+    "update_recurring_rule": Route(api_handler.update_recurring_rule, "WRITE"),
+    "delete_recurring_rule": Route(api_handler.delete_recurring_rule, "DESTRUCTIVE"),
+    "get_upcoming_bills": Route(api_handler.get_upcoming_bills, "READ"),
 
     # Settings
     "get_settings": Route(api_handler.get_settings, "READ"),
@@ -185,7 +198,18 @@ class FinScopeHTTPHandler(SimpleHTTPRequestHandler):
                 return
 
             try:
-                csv_path = api_handler.export_csv()
+                month = query_params.get("month", [None])[0]
+                account_id_val = query_params.get("account_id", [None])[0]
+                account_id = int(account_id_val) if account_id_val and account_id_val.isdigit() else None
+                start_date = query_params.get("start_date", [None])[0]
+                end_date = query_params.get("end_date", [None])[0]
+
+                csv_path = api_handler.export_csv(
+                    month=month,
+                    account_id=account_id,
+                    start_date=start_date,
+                    end_date=end_date
+                )
                 with open(csv_path, "rb") as f:
                     csv_content = f.read()
 

@@ -130,21 +130,54 @@ class TransferService:
 
     @staticmethod
     def update_transfer(
-        transfer_group_id: str,
+        transfer_group_id: Optional[str] = None,
+        tx_id: Optional[int] = None,
+        from_account_id: Optional[int] = None,
+        to_account_id: Optional[int] = None,
         amount: Optional[float] = None,
         transaction_date: Optional[str] = None,
+        transaction_time: Optional[str] = None,
         description: Optional[str] = None,
         note: Optional[str] = None
     ) -> bool:
-        """Updates both legs of a transfer atomically to preserve matching amounts and dates."""
+        """Updates both legs of a transfer atomically to preserve matching amounts, dates, and accounts."""
         with get_db_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id, transfer_role FROM transactions WHERE transfer_group_id = ?", (transfer_group_id,))
+            if not transfer_group_id and tx_id is not None:
+                cur.execute("SELECT transfer_group_id FROM transactions WHERE id = ?", (tx_id,))
+                row = cur.fetchone()
+                if not row or not row["transfer_group_id"]:
+                    raise ValueError(f"Transaction {tx_id} is not part of a transfer.")
+                transfer_group_id = row["transfer_group_id"]
+
+            if not transfer_group_id:
+                raise ValueError("Either transfer_group_id or tx_id must be provided.")
+
+            cur.execute("SELECT id, account_id, transfer_role FROM transactions WHERE transfer_group_id = ?", (transfer_group_id,))
             legs = cur.fetchall()
             if len(legs) != 2:
                 raise ValueError(f"Invalid transfer group: expected 2 legs, found {len(legs)}")
 
-            updates: Dict[str, Any] = {"updated_at": datetime.now().isoformat()}
+            source_leg = next((l for l in legs if l["transfer_role"] == "source"), legs[0])
+            dest_leg = next((l for l in legs if l["transfer_role"] == "destination"), legs[1])
+
+            # Resolve accounts
+            new_from_acc = from_account_id if from_account_id is not None else source_leg["account_id"]
+            new_to_acc = to_account_id if to_account_id is not None else dest_leg["account_id"]
+
+            if new_from_acc == new_to_acc:
+                raise ValueError("Source and destination accounts must be different.")
+
+            cur.execute("SELECT id, name FROM accounts WHERE id IN (?, ?)", (new_from_acc, new_to_acc))
+            acc_names = {r["id"]: r["name"] for r in cur.fetchall()}
+            if new_from_acc not in acc_names or new_to_acc not in acc_names:
+                raise ValueError("One or both transfer accounts do not exist.")
+
+            from_name = acc_names[new_from_acc]
+            to_name = acc_names[new_to_acc]
+
+            now_str = datetime.now().isoformat()
+            updates: Dict[str, Any] = {"updated_at": now_str}
             if amount is not None:
                 amount_minor = int(round(float(amount) * 100))
                 if amount_minor <= 0:
@@ -152,14 +185,34 @@ class TransferService:
                 updates["amount_minor"] = amount_minor
             if transaction_date:
                 updates["transaction_date"] = transaction_date
-            if description is not None:
-                updates["description"] = description
+            if transaction_time:
+                updates["transaction_time"] = transaction_time
             if note is not None:
                 updates["note"] = note
 
-            set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
-            params = list(updates.values()) + [transfer_group_id]
-            cur.execute(f"UPDATE transactions SET {set_clause} WHERE transfer_group_id = ?", params)
+            # Update common fields on both legs
+            if updates:
+                set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+                params = list(updates.values()) + [transfer_group_id]
+                cur.execute(f"UPDATE transactions SET {set_clause} WHERE transfer_group_id = ?", params)
+
+            # Update role-specific account and merchant/description
+            cur.execute("""
+                UPDATE transactions 
+                SET account_id = ?, 
+                    merchant_name = ?,
+                    description = COALESCE(?, description)
+                WHERE id = ?
+            """, (new_from_acc, f"Transfer to {to_name}", description, source_leg["id"]))
+
+            cur.execute("""
+                UPDATE transactions 
+                SET account_id = ?, 
+                    merchant_name = ?,
+                    description = COALESCE(?, description)
+                WHERE id = ?
+            """, (new_to_acc, f"Transfer from {from_name}", description, dest_leg["id"]))
+
             conn.commit()
             return True
 

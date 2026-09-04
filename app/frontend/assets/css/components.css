@@ -123,8 +123,9 @@
 }
 
 /* Privacy Mode Blur */
-.privacy-blur {
-  filter: blur(8px);
+.privacy-blur,
+body.privacy-active .amount-value {
+  filter: blur(7px);
   user-select: none;
   transition: filter var(--transition-fast);
 }

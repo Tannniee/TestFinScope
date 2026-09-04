@@ -16,7 +16,7 @@ export async function renderOverviewPage(container) {
   container.innerHTML = `
     <div class="overview-view">
       <!-- KPI Cards Row -->
-      <div class="grid-4col" id="kpi-row" style="margin-bottom: 24px;">
+      <div class="grid-5col" id="kpi-row" style="margin-bottom: 24px;">
         <div class="kpi-card" id="kpi-income">
           <div class="kpi-header">
             <span class="kpi-label">Total Income</span>
@@ -68,6 +68,19 @@ export async function renderOverviewPage(container) {
           <div class="kpi-value" id="kpi-savings-val">0.0%</div>
           <div class="kpi-footer">
             <span id="kpi-savings-prev">Previous: 0.0%</span>
+          </div>
+        </div>
+
+        <div class="kpi-card" id="kpi-net-cash">
+          <div class="kpi-header">
+            <span class="kpi-label">Net Cash Position</span>
+            <div class="kpi-icon" style="background: rgba(0, 210, 211, 0.15); color: #00d2d3;">
+              <i data-lucide="landmark"></i>
+            </div>
+          </div>
+          <div class="kpi-value amount-value" id="kpi-net-cash-val">$0.00</div>
+          <div class="kpi-footer">
+            <span id="kpi-net-cash-sub" style="color: var(--text-secondary);">Liquid cash & balances</span>
           </div>
         </div>
       </div>
@@ -145,13 +158,18 @@ export async function renderOverviewPage(container) {
 
 async function loadDashboardData() {
   try {
-    const [summary, recentTxs, insightsData] = await Promise.all([
+    const [summary, recentTxs, insightsData, accounts] = await Promise.all([
       api.getMonthSummary(state.month, state.accountId),
       api.getTransactions({ month: state.month, account_id: state.accountId, limit: 6 }),
-      api.getRankedInsights(state.month, state.accountId, 4)
+      api.getRankedInsights(state.month, state.accountId, 4),
+      api.getAccounts()
     ]);
 
-    renderKPIs(summary.kpis);
+    if (Array.isArray(accounts)) {
+      state.accounts = accounts;
+    }
+
+    renderKPIs(summary.kpis, accounts);
     renderRankedInsights(insightsData ? insightsData.insights : []);
     renderTrendChart(summary.trend);
     renderDonutChart(summary.categories);
@@ -265,7 +283,7 @@ function renderRankedInsights(insights) {
   });
 }
 
-function renderKPIs(kpis) {
+function renderKPIs(kpis, accounts = []) {
   document.getElementById('kpi-income-val').textContent = state.formatCurrency(kpis.income);
   document.getElementById('kpi-expense-val').textContent = state.formatCurrency(kpis.expense);
   document.getElementById('kpi-net-val').textContent = state.formatCurrency(kpis.net_flow);
@@ -294,16 +312,46 @@ function renderKPIs(kpis) {
   } else {
     netValEl.style.color = 'var(--text-primary)';
   }
+
+  // Net Cash Position
+  const netCashEl = document.getElementById('kpi-net-cash-val');
+  const netCashSub = document.getElementById('kpi-net-cash-sub');
+  if (netCashEl) {
+    const activeAccounts = (accounts && accounts.length > 0) ? accounts : (state.accounts || []);
+    let netCash = 0;
+    if (state.accountId) {
+      const targetAcc = activeAccounts.find(a => a.id === state.accountId);
+      netCash = targetAcc ? Number(targetAcc.current_balance || 0) : 0;
+      if (netCashSub) {
+        netCashSub.textContent = targetAcc ? `${targetAcc.name} balance` : 'Selected Account';
+      }
+    } else {
+      netCash = activeAccounts.reduce((sum, a) => sum + Number(a.current_balance || 0), 0);
+      if (netCashSub) {
+        const count = activeAccounts.length;
+        netCashSub.textContent = `${count} active account${count === 1 ? '' : 's'}`;
+      }
+    }
+    netCashEl.textContent = state.formatCurrency(netCash);
+    if (netCash > 0) {
+      netCashEl.style.color = 'var(--color-positive)';
+    } else if (netCash < 0) {
+      netCashEl.style.color = 'var(--color-negative)';
+    } else {
+      netCashEl.style.color = 'var(--text-primary)';
+    }
+  }
 }
 
 function renderTrendChart(trend) {
   const chartDom = document.getElementById('trend-chart');
   if (!chartDom || !window.echarts) return;
 
-  if (!trendChartInstance) {
-    trendChartInstance = window.echarts.init(chartDom);
-    window.addEventListener('resize', () => trendChartInstance?.resize());
+  if (trendChartInstance) {
+    try { trendChartInstance.dispose(); } catch (e) {}
   }
+  trendChartInstance = window.echarts.init(chartDom);
+  window.addEventListener('resize', () => trendChartInstance?.resize());
 
   const option = {
     backgroundColor: 'transparent',
@@ -391,10 +439,11 @@ function renderDonutChart(categories) {
   const chartDom = document.getElementById('donut-chart');
   if (!chartDom || !window.echarts) return;
 
-  if (!donutChartInstance) {
-    donutChartInstance = window.echarts.init(chartDom);
-    window.addEventListener('resize', () => donutChartInstance?.resize());
+  if (donutChartInstance) {
+    try { donutChartInstance.dispose(); } catch (e) {}
   }
+  donutChartInstance = window.echarts.init(chartDom);
+  window.addEventListener('resize', () => donutChartInstance?.resize());
 
   const chartData = categories.map(c => ({
     name: c.name,
@@ -448,10 +497,11 @@ function renderDailyChart(trend) {
   const chartDom = document.getElementById('daily-chart');
   if (!chartDom || !window.echarts) return;
 
-  if (!dailyChartInstance) {
-    dailyChartInstance = window.echarts.init(chartDom);
-    window.addEventListener('resize', () => dailyChartInstance?.resize());
+  if (dailyChartInstance) {
+    try { dailyChartInstance.dispose(); } catch (e) {}
   }
+  dailyChartInstance = window.echarts.init(chartDom);
+  window.addEventListener('resize', () => dailyChartInstance?.resize());
 
   const option = {
     backgroundColor: 'transparent',

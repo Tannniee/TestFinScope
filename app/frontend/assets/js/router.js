@@ -11,6 +11,7 @@ import { renderAnalyticsPage } from './pages/analytics.js';
 import { renderBudgetPage } from './pages/budget.js';
 import { renderReportsPage } from './pages/reports.js';
 import { renderSettingsPage } from './pages/settings.js';
+import { renderImportPage } from './pages/import.js';
 
 const routes = {
   '#overview': { title: 'Overview Dashboard', subtitle: 'Personal financial snapshot & core metrics', render: renderOverviewPage },
@@ -19,6 +20,7 @@ const routes = {
   '#analytics': { title: 'BI Analytics', subtitle: 'Variance explanation, pacing curves & patterns', render: renderAnalyticsPage },
   '#budget': { title: 'Budget System', subtitle: 'Category limits, pacing, and month-end projections', render: renderBudgetPage },
   '#reports': { title: 'Financial Reports', subtitle: 'Formal monthly & annual statement generation', render: renderReportsPage },
+  '#import': { title: 'Bank CSV Import', subtitle: '4-step wizard to upload, map columns, preview duplicates, and batch import', render: renderImportPage },
   '#settings': { title: 'Data & Settings', subtitle: 'Local storage health, backup snapshots & demo data', render: renderSettingsPage },
 };
 
@@ -30,7 +32,7 @@ export const router = {
     
     // Listen to global state changes that warrant a view refresh
     state.subscribe((event) => {
-      if (['month_changed', 'account_changed', 'data_changed', 'privacy_toggled'].includes(event.type)) {
+      if (['month_changed', 'account_changed', 'data_changed', 'database_restored'].includes(event.type)) {
         this.renderCurrentView();
       }
     });

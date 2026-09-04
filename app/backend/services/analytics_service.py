@@ -275,6 +275,7 @@ class AnalyticsService:
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
+            join_acc_clause = " AND t.account_id = ?" if account_id else ""
             params_curr = [f"{month}%"] + ([account_id] if account_id else [])
             params_prev = [f"{prev_month}%"] + ([account_id] if account_id else [])
 
@@ -294,9 +295,9 @@ class AnalyticsService:
                         ), 0
                     ) as current_minor
                 FROM categories c
-                LEFT JOIN transactions t ON t.category_id = c.id 
+                LEFT JOIN active_transactions t ON t.category_id = c.id 
                     AND t.transaction_type IN ('expense', 'refund')
-                    AND t.transaction_date LIKE ? {acc_clause}
+                    AND t.transaction_date LIKE ? {join_acc_clause}
                 WHERE c.type = 'expense' AND c.is_archived = 0
                 GROUP BY c.id
             """, params_curr)
@@ -318,9 +319,9 @@ class AnalyticsService:
                         ), 0
                     ) as prev_minor
                 FROM categories c
-                LEFT JOIN transactions t ON t.category_id = c.id 
+                LEFT JOIN active_transactions t ON t.category_id = c.id 
                     AND t.transaction_type IN ('expense', 'refund')
-                    AND t.transaction_date LIKE ? {acc_clause}
+                    AND t.transaction_date LIKE ? {join_acc_clause}
                 WHERE c.type = 'expense' AND c.is_archived = 0
                 GROUP BY c.id
             """, params_prev)

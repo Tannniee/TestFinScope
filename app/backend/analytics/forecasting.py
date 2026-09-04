@@ -63,7 +63,7 @@ class ForecastingEngine:
             acc_clause = " AND t.account_id = ?" if context.account_id else ""
             acc_params: List[Any] = [context.account_id] if context.account_id else []
 
-            # 1. Actual Spend To Date (days 1 to elapsed_day)
+            # 1. Actual Spend & Income To Date (days 1 to elapsed_day)
             cur.execute(f"""
                 SELECT 
                     t.transaction_type,
@@ -81,6 +81,7 @@ class ForecastingEngine:
 
             actual_rows = cur.fetchall()
             actual_expense_minor = 0
+            actual_income_to_date_minor = 0
             actual_refund_minor = 0
             actual_recurring_minor = 0
             actual_cat_spends: Dict[int, int] = {}
@@ -101,13 +102,16 @@ class ForecastingEngine:
                     actual_cat_spends[cid] = actual_cat_spends.get(cid, 0) + amt
                     if r["is_recurring"]:
                         actual_recurring_minor += amt
+                elif tt == "income":
+                    actual_income_to_date_minor += amt
                 elif tt == "refund":
                     actual_refund_minor += amt
                     actual_cat_spends[cid] = actual_cat_spends.get(cid, 0) - amt
 
             actual_net_spend_to_date = calculate_net_spending(actual_expense_minor, actual_refund_minor)
 
-            # 2. Known Upcoming Recurring Expenses
+            # 2. Known Upcoming Recurring Expenses & Income
+            # 2a. Historical recurring transactions
             cur.execute(f"""
                 SELECT 
                     COALESCE(NULLIF(merchant_name, ''), description) as bill_name,
@@ -137,18 +141,44 @@ class ForecastingEngine:
                         cid = r["category_id"] or 0
                         upcoming_by_cat[cid] = upcoming_by_cat.get(cid, 0) + amt
 
-            # 3. Dynamic Historical Weekday Rate (past 3 completed months)
-            # Define window start & end dates
-            hist_start_str = f"{year - 1 if m_int <= 3 else year}-{(m_int - 4) % 12 + 1:02d}-01"
-            hist_end_str = f"{context.as_of_month}-01"
+            # 2b. Explicit rules from recurring_rules table
+            rec_acc_clause = " AND account_id = ?" if context.account_id else ""
+            rec_params = [context.account_id] if context.account_id else []
+            cur.execute(f"""
+                SELECT name, transaction_type, amount_minor, category_id, next_due_date
+                FROM recurring_rules
+                WHERE active = 1 {rec_acc_clause}
+            """, rec_params)
+            
+            upcoming_recurring_income_minor = 0
+            for r in cur.fetchall():
+                rule_name = r["name"]
+                due_day = 15
+                if r["next_due_date"]:
+                    try:
+                        due_day = int(r["next_due_date"].split("-")[-1])
+                    except (ValueError, IndexError):
+                        due_day = 15
 
+                if rule_name.lower() not in seen_bills and due_day > elapsed_day:
+                    seen_bills.add(rule_name.lower())
+                    if r["transaction_type"] == "expense":
+                        amt = r["amount_minor"]
+                        upcoming_recurring_minor += amt
+                        cid = r["category_id"] or 0
+                        upcoming_by_cat[cid] = upcoming_by_cat.get(cid, 0) + amt
+                    elif r["transaction_type"] == "income":
+                        upcoming_recurring_income_minor += r["amount_minor"]
+
+            # 3. Dynamic Historical Weekday Rates (past 3 completed months)
+            hist_start_str = f"{year - 1 if m_int <= 3 else year}-{(m_int - 4) % 12 + 1:02d}-01"
             h_sy, h_sm = map(int, hist_start_str.split("-")[:2])
             h_start_date = date(h_sy, h_sm, 1)
-            # Yesterday relative to start of current month
             h_end_date = date(year, m_int, 1) - timedelta(days=1)
 
             actual_wday_counts = count_weekdays_in_historical_window(h_start_date, h_end_date)
 
+            # Expense rates
             cur.execute(f"""
                 SELECT 
                     strftime('%w', transaction_date) as wday,
@@ -162,14 +192,30 @@ class ForecastingEngine:
 
             weekday_spend_totals = {int(r["wday"]): r["total_minor"] for r in cur.fetchall()}
 
-            # Dynamic weekday average rate
             weekday_avg_minor: Dict[int, int] = {}
             for w in range(7):
                 tot = weekday_spend_totals.get(w, 0)
                 occ = max(1, actual_wday_counts.get(w, 1))
                 weekday_avg_minor[w] = round(tot / float(occ)) if tot > 0 else 0
 
-            # Fallback if no history: use current pace
+            # Income rates
+            cur.execute(f"""
+                SELECT 
+                    strftime('%w', transaction_date) as wday,
+                    SUM(amount_minor) as total_minor
+                FROM active_transactions t
+                WHERE t.transaction_type = 'income'
+                  AND transaction_date >= ? AND transaction_date <= ? {acc_clause}
+                GROUP BY wday
+            """, [h_start_date.isoformat(), h_end_date.isoformat()] + acc_params)
+            weekday_income_totals = {int(r["wday"]): r["total_minor"] for r in cur.fetchall()}
+            weekday_income_avg: Dict[int, int] = {}
+            for w in range(7):
+                tot = weekday_income_totals.get(w, 0)
+                occ = max(1, actual_wday_counts.get(w, 1))
+                weekday_income_avg[w] = round(tot / float(occ)) if tot > 0 else 0
+
+            # Fallback if no history
             if sum(weekday_avg_minor.values()) == 0 and elapsed_day > 0:
                 daily_pace = actual_net_spend_to_date // elapsed_day
                 for w in range(7):
@@ -177,10 +223,12 @@ class ForecastingEngine:
 
             # Count remaining weekdays in this month
             remaining_variable_minor = 0
+            expected_variable_income_minor = 0
             for d in range(elapsed_day + 1, num_days + 1):
                 day_obj = date(year, m_int, d)
                 sqlite_w = (day_obj.weekday() + 1) % 7
                 remaining_variable_minor += weekday_avg_minor.get(sqlite_w, 0)
+                expected_variable_income_minor += weekday_income_avg.get(sqlite_w, 0)
 
             # 4. Total Forecast Calculation & Exact Reconciliation
             projected_total_minor = (
@@ -188,6 +236,15 @@ class ForecastingEngine:
                 upcoming_recurring_minor +
                 remaining_variable_minor
             )
+
+            # Projected Income & Net Flow
+            projected_income_minor = (
+                actual_income_to_date_minor +
+                upcoming_recurring_income_minor +
+                expected_variable_income_minor
+            )
+            projected_net_flow_minor = projected_income_minor - projected_total_minor
+            projected_savings_rate = round((projected_net_flow_minor / float(projected_income_minor)) * 100.0, 1) if projected_income_minor > 0 else 0.0
 
             recon = reconcile_forecast_components(
                 actual_to_date_minor=actual_net_spend_to_date,
@@ -198,9 +255,17 @@ class ForecastingEngine:
                 total_minor=projected_total_minor
             )
 
-            spread_minor = round(remaining_variable_minor * 0.18)
-            lower_bound_minor = max(actual_net_spend_to_date, projected_total_minor - spread_minor)
-            upper_bound_minor = projected_total_minor + spread_minor
+            # Empirical shrinkage based on month progression
+            progress = (elapsed_day / float(num_days)) if num_days > 0 else 1.0
+            if remaining_days == 0:
+                spread_minor = 0
+                lower_bound_minor = projected_total_minor
+                upper_bound_minor = projected_total_minor
+            else:
+                shrinkage_factor = max(0.25, 1.0 - progress * 0.7)
+                spread_minor = round(remaining_variable_minor * 0.18 * shrinkage_factor)
+                lower_bound_minor = max(actual_net_spend_to_date, projected_total_minor - spread_minor)
+                upper_bound_minor = projected_total_minor + spread_minor
 
             # 5. Category Forecasts & Budget Comparison
             cur.execute("""
@@ -299,6 +364,10 @@ class ForecastingEngine:
                     "remaining_days": remaining_days,
                     "total_days": num_days,
                     "reconciliation": recon.to_dict()
-                }
+                },
+                projected_income_minor=projected_income_minor,
+                projected_net_flow_minor=projected_net_flow_minor,
+                projected_savings_rate=projected_savings_rate,
+                actual_income_to_date_minor=actual_income_to_date_minor
             )
             return res.to_dict()

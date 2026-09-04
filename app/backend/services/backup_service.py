@@ -203,25 +203,49 @@ class BackupService:
                     pass
 
     @staticmethod
-    def export_csv() -> str:
-        """Exports all active (non-deleted) transactions to a CSV file in exports directory."""
-        filename = f"FinScope_Transactions_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    def export_csv(
+        month: Optional[str] = None,
+        account_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> str:
+        """Exports active transactions to CSV with optional scoping filters."""
+        suffix = f"_{month}" if month else ""
+        if account_id:
+            suffix += f"_acc{account_id}"
+        filename = f"FinScope_Transactions{suffix}_{datetime.now().strftime('%Y-%m-%d')}.csv"
         config.EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
         filepath = config.EXPORTS_DIR / filename
 
+        query = """
+            SELECT 
+                t.id, t.transaction_date, t.transaction_time, t.transaction_type,
+                ROUND(CAST(t.amount_minor AS REAL) / 100.0, 2) as amount,
+                t.merchant_name, c.name as category, a.name as account,
+                t.essentiality, t.payment_method, t.description, t.note
+            FROM active_transactions t
+            LEFT JOIN categories c ON t.category_id = c.id
+            LEFT JOIN accounts a ON t.account_id = a.id
+            WHERE 1=1
+        """
+        params = []
+        if month:
+            query += " AND t.transaction_date LIKE ?"
+            params.append(f"{month}%")
+        if start_date:
+            query += " AND t.transaction_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND t.transaction_date <= ?"
+            params.append(end_date)
+        if account_id:
+            query += " AND t.account_id = ?"
+            params.append(account_id)
+        query += " ORDER BY t.transaction_date DESC, t.id DESC"
+
         with get_db_connection() as conn:
             cur = conn.cursor()
-            cur.execute("""
-                SELECT 
-                    t.id, t.transaction_date, t.transaction_time, t.transaction_type,
-                    ROUND(CAST(t.amount_minor AS REAL) / 100.0, 2) as amount,
-                    t.merchant_name, c.name as category, a.name as account,
-                    t.essentiality, t.payment_method, t.description, t.note
-                FROM active_transactions t
-                LEFT JOIN categories c ON t.category_id = c.id
-                LEFT JOIN accounts a ON t.account_id = a.id
-                ORDER BY t.transaction_date DESC, t.id DESC
-            """)
+            cur.execute(query, params)
             rows = cur.fetchall()
 
         with open(filepath, "w", newline="", encoding="utf-8-sig") as f:

@@ -15,8 +15,12 @@ export async function renderBudgetPage(container) {
       <div class="fin-card" style="margin-bottom: 24px; padding: 22px;">
         <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px;">
           <div>
-            <span style="font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">
+            <span style="font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); display: inline-flex; align-items: center; gap: 8px;">
               Monthly Budget Progress — ${state.formatMonthLabel(state.month)}
+              ${state.accountId ? (() => {
+                const acc = state.accounts.find(a => a.id === state.accountId);
+                return `<span class="delta-badge neutral" style="font-size: 11px; text-transform: none; letter-spacing: normal;">Filtered: ${acc ? acc.name : 'Account'}</span>`;
+              })() : ''}
             </span>
             <div style="display: flex; align-items: baseline; gap: 12px; margin-top: 6px;">
               <span id="budget-summary-spent" style="font-size: 28px; font-weight: 700; color: var(--text-primary);">$0.00</span>
@@ -68,7 +72,7 @@ export async function renderBudgetPage(container) {
 
 async function loadBudgetData() {
   try {
-    const data = await api.getMonthlyBudget(state.month);
+    const data = await api.getMonthlyBudget(state.month, state.accountId);
     renderBudgetOverview(data);
   } catch (err) {
     console.error('Failed to load budget data:', err);

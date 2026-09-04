@@ -7,7 +7,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { modals } from '../components/modals.js';
 import { showToast } from '../components/toast.js';
-import { escapeHtml } from '../utils.js';
+import { escapeHtml, toLocalDateString } from '../utils.js';
 
 let selectedDate = null;
 
@@ -148,7 +148,7 @@ function renderCalendarGrid(daysMap) {
   const offset = (firstDayOfWeek + 6) % 7;
   const daysInMonth = new Date(y, m, 0).getDate();
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = toLocalDateString();
 
   let html = '';
 

@@ -3,14 +3,17 @@ from app.backend.database.connection import get_db_connection
 
 class BudgetRepository:
     @staticmethod
-    def get_by_month(month: str) -> List[Dict[str, Any]]:
+    def get_by_month(month: str, account_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Returns all budgets for a given month (YYYY-MM), joined with actual net expense spend
-        (expenses minus refunds).
+        (expenses minus refunds), optionally filtered by account.
         """
         with get_db_connection() as conn:
             cur = conn.cursor()
-            cur.execute("""
+            acc_clause = " AND t.account_id = ?" if account_id else ""
+            params = [month, f"{month}%"] + ([account_id] if account_id else [])
+
+            cur.execute(f"""
                 SELECT 
                     b.id,
                     b.category_id,
@@ -37,11 +40,11 @@ class BudgetRepository:
                 LEFT JOIN budgets b ON b.category_id = c.id AND b.start_date = ?
                 LEFT JOIN active_transactions t ON t.category_id = c.id 
                     AND t.transaction_type IN ('expense', 'refund')
-                    AND t.transaction_date LIKE ?
+                    AND t.transaction_date LIKE ? {acc_clause}
                 WHERE c.type = 'expense' AND c.is_archived = 0
                 GROUP BY c.id, b.id
                 ORDER BY b.amount_minor DESC, c.name ASC
-            """, (month, f"{month}%"))
+            """, params)
             return [dict(row) for row in cur.fetchall()]
 
     @staticmethod

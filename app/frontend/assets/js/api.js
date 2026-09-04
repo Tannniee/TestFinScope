@@ -27,17 +27,21 @@ export const api = {
     return '';
   },
 
-  async call(method, params = {}) {
+  async call(method, params = {}, options = {}) {
     const token = await this.getSessionToken();
     try {
-      const response = await fetch(`/api/${method}`, {
+      const fetchOpts = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-FinScope-Token': token
         },
         body: JSON.stringify(params)
-      });
+      };
+      if (options.signal) {
+        fetchOpts.signal = options.signal;
+      }
+      const response = await fetch(`/api/${method}`, fetchOpts);
       const data = await response.json();
       if (!data.success) {
         const errorMsg = (data.error && data.error.message) || (typeof data.error === 'string' ? data.error : 'Unknown server error');
@@ -45,6 +49,9 @@ export const api = {
       }
       return data.data;
     } catch (err) {
+      if (err.name === 'AbortError') {
+        throw err;
+      }
       console.error(`API error on ${method}:`, err);
       throw err;
     }
@@ -54,15 +61,33 @@ export const api = {
   getAccounts(includeArchived = false) {
     return this.call('get_accounts', { include_archived: includeArchived });
   },
+  createAccount(data) {
+    return this.call('create_account', data);
+  },
+  updateAccount(id, data) {
+    return this.call('update_account', { account_id: id, ...data });
+  },
+  deleteAccount(id) {
+    return this.call('delete_account', { account_id: id });
+  },
 
   // Categories
   getCategories(includeArchived = false, catType = null) {
     return this.call('get_categories', { include_archived: includeArchived, cat_type: catType });
   },
+  createCategory(data) {
+    return this.call('create_category', data);
+  },
+  updateCategory(id, data) {
+    return this.call('update_category', { category_id: id, ...data });
+  },
+  deleteCategory(id) {
+    return this.call('delete_category', { category_id: id });
+  },
 
   // Transactions
-  getTransactions(params = {}) {
-    return this.call('get_transactions', params);
+  getTransactions(params = {}, options = {}) {
+    return this.call('get_transactions', params, options);
   },
   getTransaction(id) {
     return this.call('get_transaction', { tx_id: id });
@@ -73,6 +98,9 @@ export const api = {
   createTransfer(params) {
     return this.call('create_transfer', params);
   },
+  updateTransfer(params) {
+    return this.call('update_transfer', params);
+  },
   updateTransaction(id, data) {
     return this.call('update_transaction', { tx_id: id, data });
   },
@@ -81,6 +109,9 @@ export const api = {
   },
   createRefund(params) {
     return this.call('create_refund', params);
+  },
+  updateRefund(params) {
+    return this.call('update_refund', params);
   },
   undoDeleteTransaction(id) {
     return this.call('undo_delete_transaction', { tx_id: id });
@@ -163,11 +194,36 @@ export const api = {
   },
 
   // Budgets
-  getMonthlyBudget(month) {
-    return this.call('get_monthly_budget', { month });
+  getMonthlyBudget(month, accountId = null) {
+    return this.call('get_monthly_budget', { month, account_id: accountId });
   },
   setCategoryBudget(categoryId, month, amount) {
     return this.call('set_category_budget', { category_id: categoryId, month, amount });
+  },
+
+  // Bank CSV Import Wizard
+  previewCsvImport(csvContent, mapping = {}, accountId = null) {
+    return this.call('preview_csv_import', { csv_content: csvContent, mapping, account_id: accountId });
+  },
+  commitCsvImport(csvContent, mapping = {}, accountId = null, deduplicate = true) {
+    return this.call('commit_csv_import', { csv_content: csvContent, mapping, account_id: accountId, deduplicate });
+  },
+
+  // Recurring Rules & Bills
+  getRecurringRules(accountId = null, activeOnly = false) {
+    return this.call('get_recurring_rules', { account_id: accountId, active_only: activeOnly });
+  },
+  createRecurringRule(data) {
+    return this.call('create_recurring_rule', data);
+  },
+  updateRecurringRule(ruleId, data) {
+    return this.call('update_recurring_rule', { rule_id: ruleId, ...data });
+  },
+  deleteRecurringRule(ruleId) {
+    return this.call('delete_recurring_rule', { rule_id: ruleId });
+  },
+  getUpcomingBills(month, accountId = null) {
+    return this.call('get_upcoming_bills', { month, account_id: accountId });
   },
 
   // Backups & Health
