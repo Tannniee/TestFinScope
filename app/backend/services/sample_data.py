@@ -5,6 +5,7 @@ from app.backend.database.connection import get_db_connection
 from app.backend.repositories.account_repo import AccountRepository
 from app.backend.repositories.category_repo import CategoryRepository
 from app.backend.repositories.transaction_repo import TransactionRepository
+from app.backend.services.transfer_service import TransferService
 
 SAMPLE_MERCHANTS = {
     "Groceries": [("Woolworths", 65.5, 140.0), ("Coles", 42.0, 110.0), ("Aldi", 35.0, 85.0), ("Fresh Market", 25.0, 60.0)],
@@ -103,17 +104,18 @@ def seed_sample_data(clear_existing: bool = False):
                     VALUES (?, ?, 'TechCorp Global', 'income', 285000, ?, '09:00', 'Bi-weekly Salary', 'Direct Deposit', 'savings', 'Direct Deposit')
                 """, (acc_everyday, cat_salary_id, f"{month_str}-15"))
 
-            # 3. Monthly Savings Transfer on 3rd (Double-entry transfer)
+            # 3. Monthly Savings Transfer on 3rd (Double-entry transfer via TransferService)
             if limit_day >= 3:
-                transfer_uuid = f"sample-transfer-{y}-{m:02d}"
-                conn.execute("""
-                    INSERT INTO transactions (account_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, payment_method, essentiality, transfer_group_id)
-                    VALUES (?, 'Transfer to High Yield Savings', 'transfer', 50000, ?, '10:00', 'Monthly Savings Transfer', 'High yield savings allocation', 'Transfer', 'savings', ?)
-                """, (acc_everyday, f"{month_str}-03", transfer_uuid))
-                conn.execute("""
-                    INSERT INTO transactions (account_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, payment_method, essentiality, transfer_group_id)
-                    VALUES (?, 'Transfer from Everyday Checking', 'transfer', 50000, ?, '10:00', 'Monthly Savings Transfer (Received)', 'High yield savings allocation', 'Transfer', 'savings', ?)
-                """, (acc_savings, f"{month_str}-03", transfer_uuid))
+                TransferService.create_transfer_in_conn(
+                    conn=conn,
+                    from_account_id=acc_everyday,
+                    to_account_id=acc_savings,
+                    amount=500.0,
+                    transaction_date=f"{month_str}-03",
+                    transaction_time="10:00",
+                    description="Monthly Savings Transfer",
+                    note="High yield savings allocation"
+                )
 
             # 4. Rent on 2nd of each month
             rent_cat_id = cat_map.get("Housing & Rent")
@@ -137,12 +139,17 @@ def seed_sample_data(clear_existing: bool = False):
                     VALUES (?, ?, 'Spotify Premium', 'expense', 1299, ?, '10:00', 'Family Plan Subscription', 'Automatic billing', 1, 'discretionary', 'Card')
                 """, (acc_credit, sub_cat_id, f"{month_str}-12"))
 
-            # 6. Sample Refund on 14th (Shopping item return)
+            # 6. Sample Expense + Linked Refund on 14th (Shopping item return)
             if limit_day >= 14 and cat_shopping_id:
-                conn.execute("""
+                cur.execute("""
                     INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, essentiality, payment_method)
-                    VALUES (?, ?, 'Uniqlo Return', 'refund', 4500, ?, '15:20', 'Clothing item exchange refund', 'Credited to card', 'discretionary', 'Card')
-                """, (acc_credit, cat_shopping_id, f"{month_str}-14"))
+                    VALUES (?, ?, 'Uniqlo', 'expense', 9000, ?, '14:00', 'Uniqlo Clothing Store', '', 'discretionary', 'Card')
+                """, (acc_credit, cat_shopping_id, f"{month_str}-10"))
+                parent_tx_id = cur.lastrowid
+                cur.execute("""
+                    INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, essentiality, payment_method, refund_of_transaction_id)
+                    VALUES (?, ?, 'Uniqlo Return', 'refund', 4500, ?, '15:20', 'Clothing item exchange refund', 'Credited to card', 'discretionary', 'Card', ?)
+                """, (acc_credit, cat_shopping_id, f"{month_str}-14", parent_tx_id))
 
             # 7. Random daily expenses
             for day in range(1, limit_day + 1):
@@ -174,5 +181,10 @@ def seed_sample_data(clear_existing: bool = False):
                         """, (account_chosen, cat_id, m_name, amt_minor, date_str, t_time, f"{cat_choice} at {m_name}", is_ess))
 
         conn.commit()
+
+    # Invariant Verification: Ensure all transfer groups are valid
+    validation = TransferService.validate_all_transfer_groups()
+    if not validation["valid"]:
+        raise ValueError(f"Sample data failed transfer invariant validation: {validation['invalid_groups']}")
 
     return {"success": True, "message": "Demo sample data created successfully!"}

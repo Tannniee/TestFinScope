@@ -300,3 +300,42 @@ def test_aud_003_deleted_refund_restores_refundable_amount(isolated_db):
     assert new_ref_id > 0
 
 
+def test_aud_007_sample_data_transfers_pass_production_invariants(isolated_db):
+    """
+    AUD-007: Seeding sample data must create transfers exclusively through TransferService.
+    All transfer records must have transfer_role ('source'/'destination'), matching amounts,
+    valid cross-linking, and pass TransferService.validate_all_transfer_groups().
+    """
+    from app.backend.services.sample_data import seed_sample_data
+    from app.backend.services.transfer_service import TransferService
+
+    res = seed_sample_data(clear_existing=True)
+    assert res["success"] is True
+
+    # Validate all transfer groups in database
+    validation = TransferService.validate_all_transfer_groups(include_deleted=True)
+    assert validation["valid"] is True, f"Invariant validation failed: {validation}"
+    assert validation["orphan_count"] == 0
+    assert validation["total_groups"] > 0
+    assert len(validation["invalid_groups"]) == 0
+
+    # Specifically check active transactions table for transfers
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, transfer_group_id, transfer_role, linked_transaction_id, amount_minor
+            FROM active_transactions
+            WHERE transaction_type = 'transfer'
+        """)
+        transfers = [dict(r) for r in cur.fetchall()]
+        assert len(transfers) > 0
+
+        # Invariant checks on each leg
+        for tx in transfers:
+            assert tx["transfer_group_id"] is not None
+            assert tx["transfer_role"] in ("source", "destination")
+            assert tx["linked_transaction_id"] is not None
+            assert tx["amount_minor"] == 50000  # $500.00
+
+
+

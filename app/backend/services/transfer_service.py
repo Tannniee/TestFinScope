@@ -14,6 +14,106 @@ class TransferService:
     """
 
     @staticmethod
+    def create_transfer_in_conn(
+        conn,
+        from_account_id: int,
+        to_account_id: int,
+        amount: float,
+        transaction_date: str,
+        transaction_time: str = "12:00",
+        description: str = "Account Transfer",
+        note: str = ""
+    ) -> Dict[str, Any]:
+        """Creates paired source (debit) and destination (credit) transfer records on an active connection."""
+        if from_account_id == to_account_id:
+            raise ValueError("Source and destination accounts must be different.")
+
+        amount_minor = int(round(float(amount) * 100))
+        if amount_minor <= 0:
+            raise ValueError("Transfer amount must be strictly positive.")
+
+        group_id = str(uuid.uuid4())
+        cur = conn.cursor()
+
+        # Verify accounts exist
+        cur.execute("SELECT id, name FROM accounts WHERE id IN (?, ?)", (from_account_id, to_account_id))
+        acc_names = {r["id"]: r["name"] for r in cur.fetchall()}
+        if from_account_id not in acc_names or to_account_id not in acc_names:
+            raise ValueError("One or both transfer accounts do not exist.")
+
+        from_name = acc_names[from_account_id]
+        to_name = acc_names[to_account_id]
+
+        now_str = datetime.now().isoformat()
+
+        # 1. Outflow leg (From account - Source)
+        cur.execute("""
+            INSERT INTO transactions (
+                account_id, merchant_name, transaction_type,
+                amount_minor, transaction_date, transaction_time, description,
+                note, payment_method, essentiality, transfer_group_id, transfer_role,
+                source, is_deleted, created_at, updated_at
+            ) VALUES (?, ?, 'transfer', ?, ?, ?, ?, ?, 'Transfer', 'savings', ?, 'source', 'manual', 0, ?, ?)
+        """, (
+            from_account_id,
+            f"Transfer to {to_name}",
+            amount_minor,
+            transaction_date,
+            transaction_time,
+            description or f"Transfer to {to_name}",
+            note,
+            group_id,
+            now_str,
+            now_str
+        ))
+        leg1_id = cur.lastrowid
+
+        # 2. Inflow leg (To account - Destination)
+        cur.execute("""
+            INSERT INTO transactions (
+                account_id, merchant_name, transaction_type,
+                amount_minor, transaction_date, transaction_time, description,
+                note, payment_method, essentiality, transfer_group_id, transfer_role,
+                linked_transaction_id, source, is_deleted, created_at, updated_at
+            ) VALUES (?, ?, 'transfer', ?, ?, ?, ?, ?, 'Transfer', 'savings', ?, 'destination', ?, 'manual', 0, ?, ?)
+        """, (
+            to_account_id,
+            f"Transfer from {from_name}",
+            amount_minor,
+            transaction_date,
+            transaction_time,
+            description or f"Transfer from {from_name}",
+            note,
+            group_id,
+            leg1_id,
+            now_str,
+            now_str
+        ))
+        leg2_id = cur.lastrowid
+
+        # Cross-link leg 1 to leg 2
+        cur.execute("UPDATE transactions SET linked_transaction_id = ? WHERE id = ?", (leg2_id, leg1_id))
+
+        # Fetch created records
+        cur.execute("SELECT * FROM transactions WHERE id = ?", (leg1_id,))
+        source_tx = dict(cur.fetchone())
+        source_tx["amount"] = round(source_tx["amount_minor"] / 100.0, 2)
+        cur.execute("SELECT * FROM transactions WHERE id = ?", (leg2_id,))
+        dest_tx = dict(cur.fetchone())
+        dest_tx["amount"] = round(dest_tx["amount_minor"] / 100.0, 2)
+
+        return {
+            "success": True,
+            "transfer_group_id": group_id,
+            "outflow_tx_id": leg1_id,
+            "inflow_tx_id": leg2_id,
+            "outflow_id": leg1_id,
+            "inflow_id": leg2_id,
+            "source_transaction": source_tx,
+            "destination_transaction": dest_tx
+        }
+
+    @staticmethod
     def create_transfer(
         from_account_id: int,
         to_account_id: int,
@@ -24,96 +124,19 @@ class TransferService:
         note: str = ""
     ) -> Dict[str, Any]:
         """Creates paired source (debit) and destination (credit) transfer records atomically."""
-        if from_account_id == to_account_id:
-            raise ValueError("Source and destination accounts must be different.")
-
-        amount_minor = int(round(float(amount) * 100))
-        if amount_minor <= 0:
-            raise ValueError("Transfer amount must be strictly positive.")
-
-        group_id = str(uuid.uuid4())
-
         with get_db_connection() as conn:
-            cur = conn.cursor()
-
-            # Verify accounts exist
-            cur.execute("SELECT id, name FROM accounts WHERE id IN (?, ?)", (from_account_id, to_account_id))
-            acc_names = {r["id"]: r["name"] for r in cur.fetchall()}
-            if from_account_id not in acc_names or to_account_id not in acc_names:
-                raise ValueError("One or both transfer accounts do not exist.")
-
-            from_name = acc_names[from_account_id]
-            to_name = acc_names[to_account_id]
-
-            now_str = datetime.now().isoformat()
-
-            # 1. Outflow leg (From account - Source)
-            cur.execute("""
-                INSERT INTO transactions (
-                    account_id, merchant_name, transaction_type,
-                    amount_minor, transaction_date, transaction_time, description,
-                    note, payment_method, essentiality, transfer_group_id, transfer_role,
-                    source, is_deleted, created_at, updated_at
-                ) VALUES (?, ?, 'transfer', ?, ?, ?, ?, ?, 'Transfer', 'savings', ?, 'source', 'manual', 0, ?, ?)
-            """, (
-                from_account_id,
-                f"Transfer to {to_name}",
-                amount_minor,
-                transaction_date,
-                transaction_time,
-                description or f"Transfer to {to_name}",
-                note,
-                group_id,
-                now_str,
-                now_str
-            ))
-            leg1_id = cur.lastrowid
-
-            # 2. Inflow leg (To account - Destination)
-            cur.execute("""
-                INSERT INTO transactions (
-                    account_id, merchant_name, transaction_type,
-                    amount_minor, transaction_date, transaction_time, description,
-                    note, payment_method, essentiality, transfer_group_id, transfer_role,
-                    linked_transaction_id, source, is_deleted, created_at, updated_at
-                ) VALUES (?, ?, 'transfer', ?, ?, ?, ?, ?, 'Transfer', 'savings', ?, 'destination', ?, 'manual', 0, ?, ?)
-            """, (
-                to_account_id,
-                f"Transfer from {from_name}",
-                amount_minor,
-                transaction_date,
-                transaction_time,
-                description or f"Transfer from {from_name}",
-                note,
-                group_id,
-                leg1_id,
-                now_str,
-                now_str
-            ))
-            leg2_id = cur.lastrowid
-
-            # Cross-link leg 1 to leg 2
-            cur.execute("UPDATE transactions SET linked_transaction_id = ? WHERE id = ?", (leg2_id, leg1_id))
+            res = TransferService.create_transfer_in_conn(
+                conn=conn,
+                from_account_id=from_account_id,
+                to_account_id=to_account_id,
+                amount=amount,
+                transaction_date=transaction_date,
+                transaction_time=transaction_time,
+                description=description,
+                note=note
+            )
             conn.commit()
-
-            # Fetch created records
-            cur.execute("SELECT * FROM transactions WHERE id = ?", (leg1_id,))
-            source_tx = dict(cur.fetchone())
-            source_tx["amount"] = round(source_tx["amount_minor"] / 100.0, 2)
-            cur.execute("SELECT * FROM transactions WHERE id = ?", (leg2_id,))
-            dest_tx = dict(cur.fetchone())
-            dest_tx["amount"] = round(dest_tx["amount_minor"] / 100.0, 2)
-
-            return {
-                "success": True,
-                "transfer_group_id": group_id,
-                "outflow_tx_id": leg1_id,
-                "inflow_tx_id": leg2_id,
-                "outflow_id": leg1_id,
-                "inflow_id": leg2_id,
-                "source_transaction": source_tx,
-                "destination_transaction": dest_tx
-            }
+            return res
 
     @classmethod
     def create_transfer_pair(cls, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -269,6 +292,9 @@ class TransferService:
             if leg1["transaction_date"] != leg2["transaction_date"]:
                 return {"valid": False, "reason": f"Mismatched dates: {leg1['transaction_date']} vs {leg2['transaction_date']}"}
 
+            if leg1.get("linked_transaction_id") != leg2["id"] or leg2.get("linked_transaction_id") != leg1["id"]:
+                return {"valid": False, "reason": "Transfers must be cross-linked via linked_transaction_id"}
+
             return {
                 "valid": True,
                 "amount_minor": leg1["amount_minor"],
@@ -276,3 +302,51 @@ class TransferService:
                 "destination_account_id": leg1["account_id"] if leg1["transfer_role"] == "destination" else leg2["account_id"],
                 "is_deleted": bool(leg1["is_deleted"])
             }
+
+    @staticmethod
+    def validate_all_transfer_groups(include_deleted: bool = False) -> Dict[str, Any]:
+        """
+        Validates that all transfer transactions in the database strictly adhere to invariants:
+        1. No orphan transfers (transfers without transfer_group_id or with transfer_role NULL).
+        2. Every transfer group has exactly 2 legs: one source, one destination.
+        3. Identical amount_minor, identical transaction_date.
+        4. Different accounts.
+        5. Properly cross-linked via linked_transaction_id.
+        """
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+
+            # Check 1: Transfers with missing group or missing role
+            cur.execute("""
+                SELECT id, account_id, transfer_group_id, transfer_role
+                FROM transactions
+                WHERE transaction_type = 'transfer'
+                  AND (transfer_group_id IS NULL OR transfer_group_id = '' OR transfer_role IS NULL)
+                  AND (is_deleted = 0 OR ?)
+            """, (1 if include_deleted else 0,))
+            orphans = [dict(r) for r in cur.fetchall()]
+
+            # Check 2: Group integrity
+            cur.execute("""
+                SELECT DISTINCT transfer_group_id
+                FROM transactions
+                WHERE transaction_type = 'transfer' AND transfer_group_id IS NOT NULL AND transfer_group_id != ''
+                  AND (is_deleted = 0 OR ?)
+            """, (1 if include_deleted else 0,))
+            groups = [r["transfer_group_id"] for r in cur.fetchall()]
+
+            invalid_groups = []
+            for gid in groups:
+                res = TransferService.validate_transfer_group(gid)
+                if not res["valid"]:
+                    invalid_groups.append({"group_id": gid, "reason": res["reason"]})
+
+            is_valid = (len(orphans) == 0 and len(invalid_groups) == 0)
+            return {
+                "valid": is_valid,
+                "total_groups": len(groups),
+                "orphan_count": len(orphans),
+                "orphan_transactions": orphans,
+                "invalid_groups": invalid_groups
+            }
+
