@@ -41,6 +41,9 @@ class TransferService:
         if from_account_id not in acc_names or to_account_id not in acc_names:
             raise ValueError("One or both transfer accounts do not exist.")
 
+        from app.backend.domain.validators import validate_iso_date
+        clean_date = validate_iso_date(transaction_date, "Transfer transaction date")
+
         from_name = acc_names[from_account_id]
         to_name = acc_names[to_account_id]
 
@@ -58,7 +61,7 @@ class TransferService:
             from_account_id,
             f"Transfer to {to_name}",
             amount_minor,
-            transaction_date,
+            clean_date,
             transaction_time,
             description or f"Transfer to {to_name}",
             note,
@@ -80,7 +83,7 @@ class TransferService:
             to_account_id,
             f"Transfer from {from_name}",
             amount_minor,
-            transaction_date,
+            clean_date,
             transaction_time,
             description or f"Transfer from {from_name}",
             note,
@@ -206,8 +209,9 @@ class TransferService:
                 if amount_minor <= 0:
                     raise ValueError("Transfer amount must be strictly positive.")
                 updates["amount_minor"] = amount_minor
-            if transaction_date:
-                updates["transaction_date"] = transaction_date
+            if transaction_date is not None:
+                from app.backend.domain.validators import validate_iso_date
+                updates["transaction_date"] = validate_iso_date(transaction_date, "Transfer transaction date")
             if transaction_time:
                 updates["transaction_time"] = transaction_time
             if note is not None:

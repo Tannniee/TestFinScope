@@ -165,3 +165,144 @@ def test_valid_currency_update_succeeds_when_database_empty(isolated_db):
 
     acc = AccountRepository.get_by_id(acc_id)
     assert acc["currency"] == "EUR"
+
+
+# ==============================================================================
+# V103-03: Transfer create/update validates ISO transaction date
+# ==============================================================================
+
+def test_transfer_create_rejects_invalid_date(isolated_db):
+    """
+    V103-03: TransferService.create_transfer must reject malformed or impossible dates.
+    """
+    acc1 = AccountRepository.create("Acc 1", "checking", opening_balance=500.0)
+    acc2 = AccountRepository.create("Acc 2", "savings", opening_balance=500.0)
+
+    # Malformed text
+    with pytest.raises(ValueError, match="Expected YYYY-MM-DD"):
+        TransferService.create_transfer(
+            from_account_id=acc1,
+            to_account_id=acc2,
+            amount=50.0,
+            transaction_date="banana"
+        )
+
+    # Impossible date (Feb 31)
+    with pytest.raises(ValueError, match="Expected YYYY-MM-DD"):
+        TransferService.create_transfer(
+            from_account_id=acc1,
+            to_account_id=acc2,
+            amount=50.0,
+            transaction_date="2026-02-31"
+        )
+
+    # Empty date string
+    with pytest.raises(ValueError, match="date string is required"):
+        TransferService.create_transfer(
+            from_account_id=acc1,
+            to_account_id=acc2,
+            amount=50.0,
+            transaction_date=""
+        )
+
+
+def test_transfer_update_rejects_invalid_date(isolated_db):
+    """
+    V103-03: TransferService.update_transfer must reject malformed dates.
+    """
+    acc1 = AccountRepository.create("Acc 1", "checking", opening_balance=500.0)
+    acc2 = AccountRepository.create("Acc 2", "savings", opening_balance=500.0)
+
+    res = TransferService.create_transfer(
+        from_account_id=acc1,
+        to_account_id=acc2,
+        amount=50.0,
+        transaction_date="2026-09-01"
+    )
+
+    with pytest.raises(ValueError, match="Expected YYYY-MM-DD"):
+        TransferService.update_transfer(
+            transfer_group_id=res["transfer_group_id"],
+            transaction_date="invalid-date"
+        )
+
+    with pytest.raises(ValueError, match="Expected YYYY-MM-DD"):
+        TransferService.update_transfer(
+            tx_id=res["outflow_tx_id"],
+            transaction_date="2026-13-45"
+        )
+
+
+def test_transfer_create_accepts_iso_date(isolated_db):
+    """
+    V103-03: Valid ISO date YYYY-MM-DD creates both legs successfully.
+    """
+    acc1 = AccountRepository.create("Acc 1", "checking", opening_balance=500.0)
+    acc2 = AccountRepository.create("Acc 2", "savings", opening_balance=500.0)
+
+    res = TransferService.create_transfer(
+        from_account_id=acc1,
+        to_account_id=acc2,
+        amount=75.0,
+        transaction_date="2026-09-15"
+    )
+    assert res["success"] is True
+    assert res["source_transaction"]["transaction_date"] == "2026-09-15"
+    assert res["destination_transaction"]["transaction_date"] == "2026-09-15"
+
+
+def test_transfer_pair_has_identical_date(isolated_db):
+    """
+    V103-03: Both legs of a transfer pair always share the identical validated date.
+    """
+    acc1 = AccountRepository.create("Acc 1", "checking", opening_balance=500.0)
+    acc2 = AccountRepository.create("Acc 2", "savings", opening_balance=500.0)
+
+    res = TransferService.create_transfer(
+        from_account_id=acc1,
+        to_account_id=acc2,
+        amount=120.0,
+        transaction_date="2026-09-10"
+    )
+
+    # Update date
+    TransferService.update_transfer(
+        transfer_group_id=res["transfer_group_id"],
+        transaction_date="2026-09-20"
+    )
+
+    tx1 = TransactionRepository.get_by_id(res["outflow_tx_id"])
+    tx2 = TransactionRepository.get_by_id(res["inflow_tx_id"])
+    assert tx1["transaction_date"] == "2026-09-20"
+    assert tx2["transaction_date"] == "2026-09-20"
+
+
+def test_invalid_transfer_update_is_atomic(isolated_db):
+    """
+    V103-03: If date validation fails during update, neither leg is modified.
+    """
+    acc1 = AccountRepository.create("Acc 1", "checking", opening_balance=500.0)
+    acc2 = AccountRepository.create("Acc 2", "savings", opening_balance=500.0)
+
+    res = TransferService.create_transfer(
+        from_account_id=acc1,
+        to_account_id=acc2,
+        amount=60.0,
+        transaction_date="2026-09-05"
+    )
+
+    with pytest.raises(ValueError, match="Expected YYYY-MM-DD"):
+        TransferService.update_transfer(
+            transfer_group_id=res["transfer_group_id"],
+            amount=90.0,
+            transaction_date="bad-date"
+        )
+
+    # Verify amount and date on both legs remained unchanged
+    tx1 = TransactionRepository.get_by_id(res["outflow_tx_id"])
+    tx2 = TransactionRepository.get_by_id(res["inflow_tx_id"])
+    assert tx1["amount_minor"] == 6000
+    assert tx2["amount_minor"] == 6000
+    assert tx1["transaction_date"] == "2026-09-05"
+    assert tx2["transaction_date"] == "2026-09-05"
+
