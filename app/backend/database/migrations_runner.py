@@ -7,7 +7,7 @@ from app.backend.config import DB_PATH
 logger = logging.getLogger(__name__)
 
 MIGRATIONS: List[tuple[int, str, Callable[[sqlite3.Connection], None]]] = []
-MAX_SUPPORTED_SCHEMA_VERSION = 4
+MAX_SUPPORTED_SCHEMA_VERSION = 5
 
 def migration(version: int, name: str):
     def decorator(fn: Callable[[sqlite3.Connection], None]):
@@ -213,6 +213,81 @@ def migration_004_core_v2_active_transactions_view(conn: sqlite3.Connection):
     budgets, and exports deterministically exclude soft-deleted transactions.
     """
     conn.execute("""
+        CREATE VIEW IF NOT EXISTS active_transactions AS
+        SELECT *
+        FROM transactions
+        WHERE is_deleted = 0;
+    """)
+
+@migration(5, "enforce_table_constraints")
+def migration_005_enforce_table_constraints(conn: sqlite3.Connection):
+    """
+    Rebuilds transactions table with explicit CHECK constraints on transfer_role and source,
+    aligning the runtime database with schema.sql.
+    """
+    conn.executescript("""
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE IF NOT EXISTS transactions_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+            category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            merchant_id INTEGER REFERENCES merchants(id) ON DELETE SET NULL,
+            merchant_name TEXT NOT NULL DEFAULT '',
+            transaction_type TEXT NOT NULL CHECK (transaction_type IN ('income', 'expense', 'transfer', 'refund', 'adjustment')),
+            amount_minor INTEGER NOT NULL,
+            transaction_date TEXT NOT NULL,
+            transaction_time TEXT DEFAULT '12:00',
+            description TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            is_recurring INTEGER NOT NULL DEFAULT 0,
+            recurring_rule_id INTEGER,
+            payment_method TEXT DEFAULT 'Card',
+            essentiality TEXT NOT NULL DEFAULT 'discretionary' CHECK (essentiality IN ('essential', 'discretionary', 'savings')),
+            transfer_group_id TEXT DEFAULT NULL,
+            transfer_role TEXT CHECK (transfer_role IS NULL OR transfer_role IN ('source', 'destination')),
+            linked_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
+            refund_of_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
+            source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'csv_import', 'recurring_generated', 'adjustment')),
+            needs_review INTEGER NOT NULL DEFAULT 0,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        INSERT INTO transactions_new (
+            id, account_id, category_id, merchant_id, merchant_name, transaction_type,
+            amount_minor, transaction_date, transaction_time, description, note,
+            is_recurring, recurring_rule_id, payment_method, essentiality,
+            transfer_group_id, transfer_role, linked_transaction_id,
+            refund_of_transaction_id, source, needs_review, is_deleted,
+            created_at, updated_at
+        )
+        SELECT
+            id, account_id, category_id, merchant_id, merchant_name, transaction_type,
+            amount_minor, transaction_date, transaction_time, description, note,
+            is_recurring, recurring_rule_id, payment_method, essentiality,
+            transfer_group_id, transfer_role, linked_transaction_id,
+            refund_of_transaction_id, source, needs_review, is_deleted,
+            created_at, updated_at
+        FROM transactions;
+
+        DROP VIEW IF EXISTS active_transactions;
+        DROP TABLE transactions;
+        ALTER TABLE transactions_new RENAME TO transactions;
+
+        PRAGMA foreign_keys = ON;
+
+        CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(transaction_date);
+        CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(category_id);
+        CREATE INDEX IF NOT EXISTS idx_tx_account ON transactions(account_id);
+        CREATE INDEX IF NOT EXISTS idx_tx_type ON transactions(transaction_type);
+        CREATE INDEX IF NOT EXISTS idx_tx_essentiality ON transactions(essentiality);
+        CREATE INDEX IF NOT EXISTS idx_tx_transfer_group ON transactions(transfer_group_id);
+        CREATE INDEX IF NOT EXISTS idx_tx_review ON transactions(needs_review);
+        CREATE INDEX IF NOT EXISTS idx_tx_refund_of ON transactions(refund_of_transaction_id);
+        CREATE INDEX IF NOT EXISTS idx_tx_is_deleted ON transactions(is_deleted);
+
         CREATE VIEW IF NOT EXISTS active_transactions AS
         SELECT *
         FROM transactions

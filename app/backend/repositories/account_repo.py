@@ -64,10 +64,15 @@ class AccountRepository:
 
     @staticmethod
     def create(name: str, account_type: str, institution: str = "", opening_balance: float = 0.0, currency: Optional[str] = None) -> int:
+        if not name or not name.strip():
+            raise ValueError("Account name cannot be empty.")
         from app.backend.services.settings_service import SettingsService
+        from app.backend.domain.validators import validate_currency_code
         base_currency = SettingsService.get_setting("currency", "USD") or "USD"
-        if currency and currency != base_currency:
-            raise ValueError(f"Account currency '{currency}' does not match application base currency '{base_currency}'.")
+        if currency:
+            validate_currency_code(currency)
+            if currency != base_currency:
+                raise ValueError(f"Account currency '{currency}' does not match application base currency '{base_currency}'.")
         target_currency = base_currency
         opening_minor = int(round(float(opening_balance) * 100))
         with get_db_connection() as conn:
@@ -77,14 +82,21 @@ class AccountRepository:
                 INSERT INTO accounts (name, account_type, institution, opening_balance_minor, currency)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (name, account_type, institution, opening_minor, target_currency)
+                (name.strip(), account_type, institution, opening_minor, target_currency)
             )
             conn.commit()
             return cur.lastrowid
 
     @staticmethod
     def update(account_id: int, **fields) -> bool:
+        if "name" in fields:
+            if not fields["name"] or not str(fields["name"]).strip():
+                raise ValueError("Account name cannot be empty.")
+            fields["name"] = str(fields["name"]).strip()
+
         if "currency" in fields:
+            from app.backend.domain.validators import validate_currency_code
+            validate_currency_code(fields["currency"])
             from app.backend.services.settings_service import SettingsService
             base_currency = SettingsService.get_setting("currency", "USD") or "USD"
             if fields["currency"] != base_currency:

@@ -1,4 +1,7 @@
--- FinScope Database Schema — Production Edition
+-- FinScope Database Schema — Reference Contract
+-- NOTE: The migration scripts in app/backend/database/migrations_runner.py are the
+-- authoritative source of truth for runtime database structure and constraints.
+-- This file serves as the clean reference contract for fresh schema generation and documentation.
 -- Monetary values stored strictly as exact integer minor units (e.g. cents)
 
 PRAGMA foreign_keys = ON;
@@ -61,7 +64,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     payment_method TEXT DEFAULT 'Card',
     essentiality TEXT NOT NULL DEFAULT 'discretionary' CHECK (essentiality IN ('essential', 'discretionary', 'savings')),
     transfer_group_id TEXT DEFAULT NULL, -- Links legs of double-entry transfers
-    transfer_role TEXT CHECK (transfer_role IN ('source', 'destination')),
+    transfer_role TEXT CHECK (transfer_role IS NULL OR transfer_role IN ('source', 'destination')),
     linked_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
     refund_of_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
     source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'csv_import', 'recurring_generated', 'adjustment')),

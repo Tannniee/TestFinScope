@@ -767,3 +767,159 @@ def test_aud_010_server_rejects_mismatched_port_origin():
     assert handler._is_allowed_origin() is True
 
 
+def test_aud_011_backend_rejects_zero_and_negative_transaction_amount(isolated_db):
+    """
+    AUD-011: TransactionRepository must strictly reject zero or negative amounts.
+    """
+    acc_id = AccountRepository.create("Val Acc", "checking", opening_balance=500.0)
+
+    # 1. Zero amount
+    with pytest.raises(ValueError, match="greater than zero"):
+        TransactionRepository.create({
+            "account_id": acc_id,
+            "amount": 0.0,
+            "transaction_type": "expense",
+            "transaction_date": "2026-09-01"
+        })
+
+    # 2. Negative amount
+    with pytest.raises(ValueError, match="greater than zero"):
+        TransactionRepository.create({
+            "account_id": acc_id,
+            "amount": -25.50,
+            "transaction_type": "expense",
+            "transaction_date": "2026-09-01"
+        })
+
+    # 3. Non-numeric amount
+    with pytest.raises(ValueError, match="valid number"):
+        TransactionRepository.create({
+            "account_id": acc_id,
+            "amount": "abc",
+            "transaction_type": "expense",
+            "transaction_date": "2026-09-01"
+        })
+
+    # 4. Valid amount succeeds
+    tx_id = TransactionRepository.create({
+        "account_id": acc_id,
+        "amount": 10.0,
+        "transaction_type": "expense",
+        "transaction_date": "2026-09-01"
+    })
+    assert tx_id > 0
+
+    # 5. Update amount to zero or negative is rejected
+    with pytest.raises(ValueError, match="greater than zero"):
+        TransactionRepository.update(tx_id, {"amount": 0})
+
+    with pytest.raises(ValueError, match="greater than zero"):
+        TransactionRepository.update(tx_id, {"amount": -5.0})
+
+
+def test_aud_011_backend_rejects_invalid_date(isolated_db):
+    """
+    AUD-011: Invalid date formats or impossible dates must be rejected.
+    """
+    acc_id = AccountRepository.create("Date Val Acc", "checking", opening_balance=500.0)
+
+    with pytest.raises(ValueError, match="Expected YYYY-MM-DD"):
+        TransactionRepository.create({
+            "account_id": acc_id,
+            "amount": 15.0,
+            "transaction_type": "expense",
+            "transaction_date": "09-01-2026"  # wrong format
+        })
+
+    with pytest.raises(ValueError, match="Expected YYYY-MM-DD"):
+        TransactionRepository.create({
+            "account_id": acc_id,
+            "amount": 15.0,
+            "transaction_type": "expense",
+            "transaction_date": "2026-02-31"  # impossible date
+        })
+
+    tx_id = TransactionRepository.create({
+        "account_id": acc_id,
+        "amount": 15.0,
+        "transaction_type": "expense",
+        "transaction_date": "2026-09-01"
+    })
+
+    with pytest.raises(ValueError, match="Expected YYYY-MM-DD"):
+        TransactionRepository.update(tx_id, {"transaction_date": "invalid-date"})
+
+
+def test_aud_011_budget_rejects_non_positive_amount(isolated_db):
+    """
+    AUD-011: BudgetRepository must reject non-positive amounts (<= 0).
+    """
+    from app.backend.repositories.budget_repo import BudgetRepository
+
+    cat_id = CategoryRepository.create("Food Budget Cat", "expense")
+
+    with pytest.raises(ValueError, match="Budget amount must be greater than zero"):
+        BudgetRepository.set_budget(cat_id, "2026-09", 0.0)
+
+    with pytest.raises(ValueError, match="Budget amount must be greater than zero"):
+        BudgetRepository.set_budget(cat_id, "2026-09", -100.0)
+
+    # Positive budget succeeds
+    bid = BudgetRepository.set_budget(cat_id, "2026-09", 250.0)
+    assert bid > 0
+
+
+def test_aud_011_recurring_update_rejects_invalid_amount(isolated_db):
+    """
+    AUD-011: RecurringService must reject zero/negative amount on update as well as create.
+    """
+    from app.backend.services.recurring_service import RecurringService
+
+    acc_id = AccountRepository.create("Rec Acc", "checking", opening_balance=500.0)
+    rule_id = RecurringService.create({
+        "name": "Gym",
+        "amount": 50.0,
+        "account_id": acc_id,
+        "frequency": "monthly"
+    })
+
+    with pytest.raises(ValueError, match="greater than zero"):
+        RecurringService.update_rule(rule_id, amount=0.0)
+
+    with pytest.raises(ValueError, match="greater than zero"):
+        RecurringService.update_rule(rule_id, amount=-10.0)
+
+    with pytest.raises(ValueError, match="Invalid recurring frequency"):
+        RecurringService.update_rule(rule_id, frequency="hourly")
+
+
+def test_aud_012_fresh_migrated_schema_and_constraints(isolated_db):
+    """
+    AUD-012: Verify that fresh database generated entirely by migrations reaches version 5
+    and enforces CHECK constraints on transfer_role and source.
+    """
+    cur = isolated_db.cursor()
+    cur.execute("SELECT MAX(version) FROM schema_migrations")
+    assert cur.fetchone()[0] == 5
+
+    # Test transfer_role CHECK constraint at the DB level
+    acc_id = AccountRepository.create("DB Level Check Acc", "checking", opening_balance=100.0)
+    with pytest.raises(sqlite3.IntegrityError):
+        isolated_db.execute("""
+            INSERT INTO transactions (
+                account_id, amount_minor, transaction_date, transaction_type,
+                transfer_role, source
+            ) VALUES (?, 1000, '2026-09-01', 'transfer', 'invalid_role', 'manual')
+        """, (acc_id,))
+
+    # Test source CHECK constraint at the DB level
+    with pytest.raises(sqlite3.IntegrityError):
+        isolated_db.execute("""
+            INSERT INTO transactions (
+                account_id, amount_minor, transaction_date, transaction_type,
+                transfer_role, source
+            ) VALUES (?, 1000, '2026-09-01', 'expense', NULL, 'illegal_source')
+        """, (acc_id,))
+
+
+

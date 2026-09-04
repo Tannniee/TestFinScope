@@ -59,9 +59,18 @@ class RecurringService:
         frequency: str = "monthly",
         next_due_date: Optional[str] = None
     ) -> int:
-        amount_minor = int(round(float(amount) * 100))
-        if amount_minor <= 0:
-            raise ValueError("Amount must be strictly positive.")
+        if not name or not str(name).strip():
+            raise ValueError("Recurring rule name cannot be empty.")
+        from app.backend.domain.validators import (
+            validate_positive_amount,
+            validate_recurring_frequency,
+            validate_iso_date,
+            validate_transaction_type
+        )
+        amount_minor = validate_positive_amount(amount, "Recurring amount")
+        tx_type = validate_transaction_type(transaction_type)
+        freq = validate_recurring_frequency(frequency)
+        clean_date = validate_iso_date(next_due_date, "Next due date") if next_due_date else None
 
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -70,7 +79,7 @@ class RecurringService:
                     name, transaction_type, amount_minor, category_id,
                     account_id, frequency, next_due_date, active
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-            """, (name, transaction_type, amount_minor, category_id, account_id, frequency, next_due_date))
+            """, (name.strip(), tx_type, amount_minor, category_id, account_id, freq, clean_date))
             conn.commit()
             return cur.lastrowid
 
@@ -79,8 +88,29 @@ class RecurringService:
         allowed = {"name", "transaction_type", "category_id", "account_id", "frequency", "next_due_date", "active"}
         updates = {k: v for k, v in fields.items() if k in allowed}
 
+        from app.backend.domain.validators import (
+            validate_positive_amount,
+            validate_recurring_frequency,
+            validate_iso_date,
+            validate_transaction_type
+        )
+
+        if "name" in updates:
+            if not updates["name"] or not str(updates["name"]).strip():
+                raise ValueError("Recurring rule name cannot be empty.")
+            updates["name"] = str(updates["name"]).strip()
+
         if "amount" in fields:
-            updates["amount_minor"] = int(round(float(fields["amount"]) * 100))
+            updates["amount_minor"] = validate_positive_amount(fields["amount"], "Recurring amount")
+
+        if "transaction_type" in updates:
+            updates["transaction_type"] = validate_transaction_type(updates["transaction_type"])
+
+        if "frequency" in updates:
+            updates["frequency"] = validate_recurring_frequency(updates["frequency"])
+
+        if "next_due_date" in updates and updates["next_due_date"]:
+            updates["next_due_date"] = validate_iso_date(updates["next_due_date"], "Next due date")
 
         if not updates:
             return False

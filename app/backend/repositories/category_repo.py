@@ -1,13 +1,6 @@
-import re
 from typing import List, Dict, Any, Optional
 from app.backend.database.connection import get_db_connection
-
-COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
-
-def validate_category_color(color: str) -> str:
-    if not color or not isinstance(color, str) or not COLOR_RE.fullmatch(color.strip()):
-        raise ValueError("Invalid category colour. Expected format: #RRGGBB")
-    return color.strip()
+from app.backend.domain.validators import validate_hex_color
 
 class CategoryRepository:
     @staticmethod
@@ -43,7 +36,11 @@ class CategoryRepository:
 
     @staticmethod
     def create(name: str, cat_type: str = "expense", icon: str = "tag", color: str = "#5B8CFF", parent_category_id: Optional[int] = None) -> int:
-        clean_color = validate_category_color(color)
+        if not name or not name.strip():
+            raise ValueError("Category name cannot be empty.")
+        if cat_type not in ("expense", "income", "transfer"):
+            raise ValueError(f"Invalid category type: '{cat_type}'.")
+        clean_color = validate_hex_color(color)
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute(
@@ -51,7 +48,7 @@ class CategoryRepository:
                 INSERT INTO categories (name, type, icon, color, parent_category_id)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (name, cat_type, icon, clean_color, parent_category_id)
+                (name.strip(), cat_type, icon, clean_color, parent_category_id)
             )
             conn.commit()
             return cur.lastrowid
@@ -63,8 +60,16 @@ class CategoryRepository:
         if not updates:
             return False
 
+        if "name" in updates:
+            if not updates["name"] or not str(updates["name"]).strip():
+                raise ValueError("Category name cannot be empty.")
+            updates["name"] = str(updates["name"]).strip()
+
+        if "type" in updates and updates["type"] not in ("expense", "income", "transfer"):
+            raise ValueError(f"Invalid category type: '{updates['type']}'.")
+
         if "color" in updates:
-            updates["color"] = validate_category_color(updates["color"])
+            updates["color"] = validate_hex_color(updates["color"])
 
         set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
         values = list(updates.values()) + [category_id]

@@ -126,11 +126,21 @@ class TransactionRepository:
 
     @staticmethod
     def create(data: Dict[str, Any]) -> int:
-        tx_type = data["transaction_type"]
+        from app.backend.domain.validators import (
+            validate_positive_amount,
+            validate_iso_date,
+            validate_transaction_type
+        )
+        tx_type = validate_transaction_type(data["transaction_type"])
         if tx_type == "transfer":
             raise ValueError("Transfers must be created through TransferService.")
 
-        amount_minor = int(round(float(data["amount"]) * 100))
+        if tx_type != "adjustment":
+            amount_minor = validate_positive_amount(data["amount"], "Transaction amount")
+        else:
+            amount_minor = int(round(float(data["amount"]) * 100))
+
+        clean_date = validate_iso_date(data["transaction_date"], "Transaction date")
         category_id = data.get("category_id")
         raw_merchant = data.get("merchant_name", "")
         clean_merchant = normalize_merchant_name(raw_merchant)
@@ -213,7 +223,7 @@ class TransactionRepository:
                     clean_merchant or raw_merchant,
                     tx_type,
                     amount_minor,
-                    data["transaction_date"],
+                    clean_date,
                     data.get("transaction_time", "12:00"),
                     data.get("description", "") or clean_merchant,
                     data.get("note", ""),
@@ -272,9 +282,9 @@ class TransactionRepository:
         3. Refund amount is strictly positive.
         4. Cumulative active refunds do not exceed the original expense amount.
         """
-        refund_minor = int(round(float(amount) * 100))
-        if refund_minor <= 0:
-            raise ValueError("Refund amount must be strictly positive.")
+        from app.backend.domain.validators import validate_positive_amount, validate_iso_date
+        refund_minor = validate_positive_amount(amount, "Refund amount")
+        clean_date = validate_iso_date(transaction_date, "Refund transaction date")
 
         with get_db_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -321,7 +331,7 @@ class TransactionRepository:
                     orig["merchant_id"],
                     merchant_name,
                     refund_minor,
-                    transaction_date,
+                    clean_date,
                     datetime.now().strftime("%H:%M"),
                     desc,
                     note,
@@ -360,9 +370,11 @@ class TransactionRepository:
                 if orig_refund["transaction_type"] != "refund":
                     raise ValueError(f"Transaction {tx_id} is not a refund.")
 
-                new_amount_minor = int(round(float(amount) * 100)) if amount is not None else orig_refund["amount_minor"]
-                if new_amount_minor <= 0:
-                    raise ValueError("Refund amount must be strictly positive.")
+                from app.backend.domain.validators import validate_positive_amount, validate_iso_date
+                if amount is not None:
+                    new_amount_minor = validate_positive_amount(amount, "Refund amount")
+                else:
+                    new_amount_minor = orig_refund["amount_minor"]
 
                 parent_id = orig_refund["refund_of_transaction_id"]
                 if parent_id:
@@ -384,7 +396,7 @@ class TransactionRepository:
 
                 updates: Dict[str, Any] = {"amount_minor": new_amount_minor, "updated_at": datetime.now().isoformat()}
                 if transaction_date:
-                    updates["transaction_date"] = transaction_date
+                    updates["transaction_date"] = validate_iso_date(transaction_date, "Refund transaction date")
                 if note is not None:
                     updates["note"] = note
                 if account_id is not None:
@@ -404,6 +416,11 @@ class TransactionRepository:
         """
         Low-level persistence method for updating transaction fields in SQLite.
         """
+        from app.backend.domain.validators import (
+            validate_positive_amount,
+            validate_iso_date,
+            validate_transaction_type
+        )
         allowed = {
             "account_id", "category_id", "merchant_name", "transaction_type",
             "transaction_date", "transaction_time", "description",
@@ -412,11 +429,23 @@ class TransactionRepository:
         }
         updates: Dict[str, Any] = {}
 
+        if "transaction_type" in data:
+            data["transaction_type"] = validate_transaction_type(data["transaction_type"])
+
+        if "transaction_date" in data:
+            data["transaction_date"] = validate_iso_date(data["transaction_date"], "Transaction date")
+
         # Normalize amount or amount_minor first
         if "amount_minor" in data:
-            updates["amount_minor"] = int(data["amount_minor"])
+            amt_minor = int(data["amount_minor"])
+            if data.get("transaction_type") != "adjustment" and amt_minor <= 0:
+                raise ValueError("Transaction amount must be greater than zero.")
+            updates["amount_minor"] = amt_minor
         elif "amount" in data:
-            updates["amount_minor"] = int(round(float(data["amount"]) * 100))
+            if data.get("transaction_type") != "adjustment":
+                updates["amount_minor"] = validate_positive_amount(data["amount"], "Transaction amount")
+            else:
+                updates["amount_minor"] = int(round(float(data["amount"]) * 100))
 
         for k in allowed:
             if k in data:

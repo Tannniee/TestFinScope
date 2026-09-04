@@ -49,7 +49,8 @@ class BudgetRepository:
 
     @staticmethod
     def set_budget(category_id: int, month: str, amount: float) -> int:
-        amount_minor = int(round(float(amount) * 100))
+        from app.backend.domain.validators import validate_budget_amount
+        amount_minor = validate_budget_amount(amount)
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
