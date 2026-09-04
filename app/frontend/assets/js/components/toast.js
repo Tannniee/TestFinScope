@@ -14,10 +14,13 @@ export function showToast(message, type = 'success', duration = 3500, action = n
   toast.className = `toast-item ${type}`;
 
   const iconName = type === 'success' ? 'check-circle' : type === 'error' ? 'alert-circle' : 'info';
-  toast.innerHTML = `
-    <i data-lucide="${iconName}"></i>
-    <span style="flex: 1;">${message}</span>
-  `;
+  const icon = document.createElement('i');
+  icon.setAttribute('data-lucide', iconName);
+  const span = document.createElement('span');
+  span.style.flex = '1';
+  span.textContent = message;
+  toast.appendChild(icon);
+  toast.appendChild(span);
 
   if (action && action.label && action.onClick) {
     const actBtn = document.createElement('button');

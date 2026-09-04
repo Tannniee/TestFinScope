@@ -205,8 +205,8 @@ function renderRankedInsights(insights) {
     if (ins.evidence && Object.keys(ins.evidence).length > 0) {
       evidenceHtml = Object.entries(ins.evidence).map(([k, v]) => `
         <div class="evidence-item">
-          <span class="evidence-label">${k.replace(/_/g, ' ')}</span>
-          <span class="evidence-val">${typeof v === 'number' ? state.formatCurrency(v) : v}</span>
+          <span class="evidence-label">${escapeHtml(k.replace(/_/g, ' '))}</span>
+          <span class="evidence-val">${typeof v === 'number' ? state.formatCurrency(v) : escapeHtml(v)}</span>
         </div>
       `).join('');
     }
@@ -220,10 +220,10 @@ function renderRankedInsights(insights) {
             </div>
             <div>
               <div class="insight-title">
-                ${ins.title}
+                ${escapeHtml(ins.title)}
                 <span class="delta-badge neutral" style="font-size: 10.5px; padding: 1px 6px;">Score: ${ins.impact_score ? Math.round(ins.impact_score * 100) : 50}</span>
               </div>
-              <div class="insight-summary">${ins.summary}</div>
+              <div class="insight-summary">${escapeHtml(ins.summary)}</div>
             </div>
           </div>
           <div class="insight-actions">

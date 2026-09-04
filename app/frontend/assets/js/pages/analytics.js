@@ -112,7 +112,7 @@ async function loadTabContent() {
     }
   } catch (err) {
     console.error('Error rendering analytics tab:', err);
-    content.innerHTML = `<div style="text-align:center; color: var(--color-negative); padding: 30px;">Error loading analytics: ${err.message}</div>`;
+    content.innerHTML = `<div style="text-align:center; color: var(--color-negative); padding: 30px;">Error loading analytics: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -464,7 +464,7 @@ async function loadMerchantDrilldown(categoryId, categoryName) {
     <div class="merchant-drilldown-panel">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
         <h4 style="font-size: 14px; font-weight: 600; color: var(--text-primary);">
-          Merchant Drill-down for <span style="color: var(--accent-blue);">${categoryName}</span>
+          Merchant Drill-down for <span style="color: var(--accent-blue);">${escapeHtml(categoryName)}</span>
         </h4>
         <button class="btn btn-secondary btn-sm" id="close-merchant-drilldown" style="padding: 3px 8px; font-size: 11px;">Close</button>
       </div>
@@ -494,7 +494,7 @@ async function loadMerchantDrilldown(categoryId, categoryName) {
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
           <div>
             <h4 style="font-size: 14px; font-weight: 600; color: var(--text-primary); margin: 0;">
-              Merchant Drill-down: <span style="color: var(--accent-blue);">${categoryName}</span>
+              Merchant Drill-down: <span style="color: var(--accent-blue);">${escapeHtml(categoryName)}</span>
             </h4>
             <span style="font-size: 11.5px; color: var(--text-muted);">Breakdown of behavioral causes per merchant</span>
           </div>

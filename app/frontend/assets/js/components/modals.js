@@ -542,11 +542,11 @@ export const modals = {
     const toAccSelect = document.getElementById('tx-to-account');
 
     const accOptions = '<option value="">Select Account...</option>' +
-      state.accounts.map(a => `<option value="${a.id}">${a.name} (${a.account_type})</option>`).join('');
+      state.accounts.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)} (${escapeHtml(a.account_type)})</option>`).join('');
 
     if (accSelect) accSelect.innerHTML = accOptions;
     if (toAccSelect) toAccSelect.innerHTML = '<option value="">Select Destination...</option>' +
-      state.accounts.map(a => `<option value="${a.id}">${a.name} (${a.account_type})</option>`).join('');
+      state.accounts.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)} (${escapeHtml(a.account_type)})</option>`).join('');
 
     this.filterCategoryDropdown(document.getElementById('tx-type')?.value || 'expense');
   },
@@ -558,7 +558,7 @@ export const modals = {
     const catType = type === 'refund' ? 'expense' : type;
     const filtered = state.categories.filter(c => c.type === catType);
     catSelect.innerHTML = '<option value="">Select Category...</option>' +
-      filtered.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+      filtered.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('');
     if (currentVal) catSelect.value = currentVal;
   },
 

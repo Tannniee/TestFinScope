@@ -303,3 +303,44 @@ def test_bug_004_restore_invalid_backup_preserves_root_exception(isolated_db):
     assert bal == 999.0
 
 
+def test_bug_005_frontend_xss_prevention_in_templates(isolated_db):
+    """
+    BUG-005: Ensure user-supplied account/category names with XSS payloads
+    are safely handled in both backend persistence and frontend JS templates.
+    """
+    from app.backend.repositories.category_repo import CategoryRepository
+    import re
+
+    # 1. Backend safely stores dangerous characters verbatim
+    xss_account = "<img src=x onerror=alert('xss-acc')>"
+    xss_category = "</option><script>alert('xss-cat')</script>"
+
+    acc_id = AccountRepository.create(xss_account, "checking", opening_balance=100.0)
+    cat_id = CategoryRepository.create(xss_category, "expense", icon="alert", color="#FF0000")
+
+    acc = AccountRepository.get_by_id(acc_id)
+    cat = CategoryRepository.get_by_id(cat_id)
+    assert acc["name"] == xss_account
+    assert cat["name"] == xss_category
+
+    # 2. Frontend inspection: verify no raw, unescaped interpolation in modal dropdowns & filter bars
+    modals_js = (config.PROJECT_ROOT / "app" / "frontend" / "assets" / "js" / "components" / "modals.js").read_text(encoding="utf-8")
+    assert "${escapeHtml(a.name)}" in modals_js
+    assert "${escapeHtml(a.account_type)}" in modals_js
+    assert "${escapeHtml(c.name)}" in modals_js
+    assert "${a.name} (" not in modals_js
+
+    tx_js = (config.PROJECT_ROOT / "app" / "frontend" / "assets" / "js" / "pages" / "transactions.js").read_text(encoding="utf-8")
+    assert "${escapeHtml(c.name)}" in tx_js
+    assert "${escapeHtml(a.name)}" in tx_js
+    # Ensure raw unescaped select options do not exist
+    assert ">${c.name}</option>" not in tx_js
+    assert ">${a.name}</option>" not in tx_js
+
+    budget_js = (config.PROJECT_ROOT / "app" / "frontend" / "assets" / "js" / "pages" / "budget.js").read_text(encoding="utf-8")
+    assert "escapeHtml" in budget_js
+    assert "${escapeHtml(cat.category_name)}" in budget_js
+    assert "data-name=\"${escapeHtml(cat.category_name)}\"" in budget_js
+    assert ">${cat.category_name}</div>" not in budget_js
+
+

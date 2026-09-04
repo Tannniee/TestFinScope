@@ -7,6 +7,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { modals } from '../components/modals.js';
 import { showToast } from '../components/toast.js';
+import { escapeHtml } from '../utils.js';
 
 export async function renderBudgetPage(container) {
   container.innerHTML = `
@@ -19,7 +20,7 @@ export async function renderBudgetPage(container) {
               Monthly Budget Progress — ${state.formatMonthLabel(state.month)}
               ${state.accountId ? (() => {
                 const acc = state.accounts.find(a => a.id === state.accountId);
-                return `<span class="delta-badge neutral" style="font-size: 11px; text-transform: none; letter-spacing: normal;">Filtered: ${acc ? acc.name : 'Account'}</span>`;
+                return `<span class="delta-badge neutral" style="font-size: 11px; text-transform: none; letter-spacing: normal;">Filtered: ${escapeHtml(acc ? acc.name : 'Account')}</span>`;
               })() : ''}
             </span>
             <div style="display: flex; align-items: baseline; gap: 12px; margin-top: 6px;">
@@ -128,7 +129,7 @@ function renderBudgetOverview(data) {
               <i data-lucide="${cat.category_icon || 'tag'}"></i>
             </div>
             <div>
-              <div style="font-weight: 600; font-size: 14px;">${cat.category_name}</div>
+              <div style="font-weight: 600; font-size: 14px;">${escapeHtml(cat.category_name)}</div>
               <div style="font-size: 12px; color: var(--text-muted);">
                 ${hasBudget ? `${state.formatCurrency(cat.spent)} of ${state.formatCurrency(cat.budget)}` : `Spent: ${state.formatCurrency(cat.spent)}`}
               </div>
@@ -137,7 +138,7 @@ function renderBudgetOverview(data) {
 
           <div style="display: flex; align-items: center; gap: 8px;">
             <span class="delta-badge ${statusBadgeClass}">${cat.status_label}</span>
-            <button class="btn btn-secondary btn-sm btn-edit-budget" data-id="${cat.category_id}" data-name="${cat.category_name}" data-amount="${cat.budget || ''}">
+            <button class="btn btn-secondary btn-sm btn-edit-budget" data-id="${cat.category_id}" data-name="${escapeHtml(cat.category_name)}" data-amount="${cat.budget || ''}">
               ${hasBudget ? 'Edit' : 'Set'}
             </button>
           </div>

@@ -37,12 +37,12 @@ export async function renderTransactionsPage(container) {
 
             <select id="filter-category" class="form-select" style="min-width: 150px;">
               <option value="">All Categories</option>
-              ${state.categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+              ${state.categories.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('')}
             </select>
 
             <select id="filter-account" class="form-select" style="min-width: 150px;">
               <option value="">All Accounts</option>
-              ${state.accounts.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+              ${state.accounts.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`).join('')}
             </select>
 
             <select id="filter-type" class="form-select" style="min-width: 120px;">
