@@ -74,6 +74,27 @@ export const api = {
   getAnalyticsDeepDive(month, accountId = null) {
     return this.call('get_analytics_deep_dive', { month, account_id: accountId });
   },
+  getRollingMetrics(metric = 'expense', categoryId = null, accountId = null) {
+    return this.call('get_rolling_metrics', { metric, category_id: categoryId, account_id: accountId });
+  },
+  getWhatChanged(currentMonth, comparisonMonth = null, accountId = null, maxDay = null) {
+    return this.call('get_what_changed', { current_month: currentMonth, comparison_month: comparisonMonth, account_id: accountId, max_day: maxDay });
+  },
+  getSpendingFingerprint(monthsWindow = 6, accountId = null) {
+    return this.call('get_spending_fingerprint', { months_window: monthsWindow, account_id: accountId });
+  },
+  getAnomalies(month, accountId = null, kRange = 2.5) {
+    return this.call('get_anomalies', { month, account_id: accountId, k_range: kRange });
+  },
+  getForecast(month, accountId = null, asOfDate = null) {
+    return this.call('get_forecast', { month, account_id: accountId, as_of_date: asOfDate });
+  },
+  getRankedInsights(month, accountId = null, limit = 5) {
+    return this.call('get_ranked_insights', { month, account_id: accountId, limit });
+  },
+  getBacktestEvaluation(accountId = null) {
+    return this.call('get_backtest_evaluation', { account_id: accountId });
+  },
 
   // Budgets
   getMonthlyBudget(month) {

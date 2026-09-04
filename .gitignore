@@ -29,6 +29,8 @@ data/finance.db
 data/backups/
 data/exports/
 data_test/
+data_safety_test/
+tests/analytics_test_data/
 
 # IDE / OS
 .vscode/

@@ -114,6 +114,27 @@ class ApiHandler:
     def get_analytics_deep_dive(self, month: str, account_id: Optional[int] = None) -> Dict[str, Any]:
         return AnalyticsService.get_analytics_deep_dive(month, account_id)
 
+    def get_rolling_metrics(self, metric: str = "expense", category_id: Optional[int] = None, account_id: Optional[int] = None) -> Dict[str, Any]:
+        return AnalyticsService.get_rolling_metrics(metric, category_id, account_id)
+
+    def get_what_changed(self, current_month: str, comparison_month: Optional[str] = None, account_id: Optional[int] = None, max_day: Optional[int] = None) -> Dict[str, Any]:
+        return AnalyticsService.get_what_changed(current_month, comparison_month, account_id, max_day)
+
+    def get_spending_fingerprint(self, months_window: int = 6, account_id: Optional[int] = None) -> Dict[str, Any]:
+        return AnalyticsService.get_spending_fingerprint(months_window, account_id)
+
+    def get_anomalies(self, month: str, account_id: Optional[int] = None, k_range: float = 2.5) -> List[Dict[str, Any]]:
+        return AnalyticsService.get_anomalies(month, account_id, k_range)
+
+    def get_forecast(self, month: str, account_id: Optional[int] = None, as_of_date: Optional[str] = None) -> Dict[str, Any]:
+        return AnalyticsService.get_forecast(month, account_id, as_of_date)
+
+    def get_ranked_insights(self, month: str, account_id: Optional[int] = None, limit: int = 5) -> Dict[str, Any]:
+        return AnalyticsService.get_ranked_insights(month, account_id, limit)
+
+    def get_backtest_evaluation(self, account_id: Optional[int] = None) -> Dict[str, Any]:
+        return AnalyticsService.get_backtest_evaluation(account_id)
+
     # --- Budgets ---
     def get_monthly_budget(self, month: str) -> Dict[str, Any]:
         return BudgetService.get_monthly_budget_status(month)

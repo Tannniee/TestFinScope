@@ -2,6 +2,15 @@ import calendar
 from datetime import datetime, date
 from typing import Dict, Any, List, Optional
 from app.backend.database.connection import get_db_connection
+from app.backend.analytics.aggregates import AggregateQueries
+from app.backend.analytics.rolling import RollingAnalyticsEngine
+from app.backend.analytics.changes import WhatChangedEngine
+from app.backend.analytics.fingerprint import SpendingFingerprintEngine
+from app.backend.analytics.anomalies import AnomalyDetectionEngine
+from app.backend.analytics.forecasting import ForecastingEngine
+from app.backend.analytics.backtesting import BacktestingEngine
+from app.backend.analytics.insight_rules import InsightRulesGenerator
+from app.backend.analytics.insight_ranker import InsightRanker
 
 class AnalyticsService:
     @staticmethod
@@ -477,3 +486,101 @@ class AnalyticsService:
                 "merchants": top_merchants,
                 "distribution": buckets
             }
+
+    @staticmethod
+    def get_rolling_metrics(
+        metric: str = "expense",
+        category_id: Optional[int] = None,
+        account_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Calculates 3M, 6M, 12M Mean, Median, MAD, and EWMA historical baselines."""
+        if category_id:
+            series_data = AggregateQueries.get_category_monthly_series(category_id, account_id)
+            values = [d["net_spending_minor"] for d in series_data]
+        else:
+            history = AggregateQueries.get_monthly_history(limit_months=24, account_id=account_id)
+            if metric == "income":
+                values = [d["income_minor"] for d in history]
+            else:
+                values = [d["net_spending_minor"] for d in history]
+
+        if not values:
+            return {
+                "current": 0.0,
+                "mean_3": 0.0,
+                "median_3": 0.0,
+                "mean_6": 0.0,
+                "median_6": 0.0,
+                "mean_12": 0.0,
+                "ewma_3": 0.0,
+                "mad_6": 0.0,
+                "sample_size_months": 0
+            }
+
+        curr_val = values[-1]
+        hist = values[:-1]
+        return RollingAnalyticsEngine.compute_rolling_baselines(hist, curr_val)
+
+    @staticmethod
+    def get_what_changed(
+        current_month: str,
+        comparison_month: Optional[str] = None,
+        account_id: Optional[int] = None,
+        max_day: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Provides What Changed? v2 frequency vs ticket decomposition and waterfall data."""
+        comp_m = comparison_month or AnalyticsService._get_previous_month(current_month)
+        return WhatChangedEngine.analyze_changes(current_month, comp_m, account_id, max_day)
+
+    @staticmethod
+    def get_spending_fingerprint(
+        months_window: int = 6,
+        account_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Computes spending fingerprint, percentiles, rhythm, diversity, and burstiness."""
+        return SpendingFingerprintEngine.generate_fingerprint(months_window, account_id)
+
+    @staticmethod
+    def get_anomalies(
+        month: str,
+        account_id: Optional[int] = None,
+        k_range: float = 2.5
+    ) -> List[Dict[str, Any]]:
+        """Detects unusual transactions, category overruns, and recurring payment jumps."""
+        return AnomalyDetectionEngine.detect_anomalies(month, account_id, k_range)
+
+    @staticmethod
+    def get_forecast(
+        month: str,
+        account_id: Optional[int] = None,
+        as_of_date: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Generates transparent, explainable month-end forecast with budget comparison."""
+        return ForecastingEngine.forecast_month(month, account_id, as_of_date)
+
+    @staticmethod
+    def get_ranked_insights(
+        month: str,
+        account_id: Optional[int] = None,
+        limit: int = 5
+    ) -> Dict[str, Any]:
+        """Synthesizes insights across all analytics modules and ranks them by absolute impact & unusualness."""
+        prev_m = AnalyticsService._get_previous_month(month)
+        changes = WhatChangedEngine.analyze_changes(month, prev_m, account_id)
+        anomalies = AnomalyDetectionEngine.detect_anomalies(month, account_id)
+        forecast = ForecastingEngine.forecast_month(month, account_id)
+
+        candidates = InsightRulesGenerator.generate_candidates(changes, anomalies, forecast, month)
+        ranked = InsightRanker.rank_and_deduplicate(candidates, limit=limit)
+        return {
+            "month": month,
+            "insights": ranked,
+            "total_candidates": len(candidates)
+        }
+
+    @staticmethod
+    def get_backtest_evaluation(account_id: Optional[int] = None) -> Dict[str, Any]:
+        """Evaluates historical forecasting baselines using rolling-origin backtesting."""
+        history = AggregateQueries.get_monthly_history(limit_months=24, account_id=account_id)
+        series = [d["net_spending_minor"] for d in history]
+        return BacktestingEngine.evaluate_models(series)

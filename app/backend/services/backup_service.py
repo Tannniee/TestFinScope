@@ -19,8 +19,8 @@ class BackupService:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         prefix = "Safety_PreRestore_" if is_safety_snapshot else "FinScope_Backup_"
         backup_filename = f"{prefix}{timestamp}.financebackup"
+        BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
         backup_filepath = BACKUPS_DIR / backup_filename
-
         temp_db_path = BACKUPS_DIR / f"temp_snapshot_{timestamp}.db"
 
         try:
@@ -175,6 +175,7 @@ class BackupService:
     def export_csv() -> str:
         """Exports all transactions to a CSV file in exports directory."""
         filename = f"FinScope_Transactions_{datetime.now().strftime('%Y-%m-%d')}.csv"
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
         filepath = EXPORTS_DIR / filename
 
         with get_db_connection() as conn:

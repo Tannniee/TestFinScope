@@ -186,6 +186,7 @@ class TestFinScopeSafety(unittest.TestCase):
     def test_05_corrupt_backup_rejection(self):
         """Verifies that corrupt or invalid backup files are rejected before affecting live DB."""
         fake_backup = TEST_DATA_DIR / "backups" / "corrupted_test.financebackup"
+        fake_backup.parent.mkdir(parents=True, exist_ok=True)
         with open(fake_backup, "wb") as f:
             f.write(b"NOT A VALID ZIP OR SQLITE ARCHIVE")
 

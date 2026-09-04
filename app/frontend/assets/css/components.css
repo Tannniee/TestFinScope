@@ -600,3 +600,306 @@
     transform: translateX(0);
   }
 }
+
+/* ==========================================================================
+   FinScope Analytics Engine Core Components
+   Insights, Normal Ranges, Fingerprint, Drivers & Forecasting
+   ========================================================================== */
+
+/* Ranked Insights Strip */
+.insight-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.insight-card {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-fast);
+}
+
+.insight-card:hover {
+  border-color: var(--border-medium);
+  box-shadow: var(--shadow-md);
+}
+
+.insight-card.warning {
+  border-left: 4px solid var(--color-warning);
+}
+
+.insight-card.critical {
+  border-left: 4px solid var(--color-negative);
+}
+
+.insight-card.success {
+  border-left: 4px solid var(--color-positive);
+}
+
+.insight-card.info {
+  border-left: 4px solid var(--accent-blue);
+}
+
+.insight-card-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.insight-content-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex: 1;
+}
+
+.insight-icon-box {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.insight-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.insight-summary {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+.insight-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.insight-evidence-drawer {
+  background-color: rgba(0, 0, 0, 0.2);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: none;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.insight-evidence-drawer.open {
+  display: grid;
+}
+
+.evidence-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.evidence-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.evidence-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Analytics Tabs Navigation */
+.analytics-tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--bg-card);
+  padding: 6px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  margin-bottom: 22px;
+  overflow-x: auto;
+}
+
+.analytics-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.analytics-tab-btn:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-surface);
+}
+
+.analytics-tab-btn.active {
+  color: #FFFFFF;
+  background-color: var(--accent-blue);
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(91, 140, 255, 0.35);
+}
+
+/* Driver Decomposition Badges */
+.driver-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--radius-pill);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.driver-tag.new {
+  background-color: rgba(77, 213, 165, 0.18);
+  color: #4DD5A5;
+}
+
+.driver-tag.freq {
+  background-color: rgba(91, 140, 255, 0.18);
+  color: #5B8CFF;
+}
+
+.driver-tag.ticket {
+  background-color: rgba(255, 159, 67, 0.18);
+  color: #FF9F43;
+}
+
+.driver-tag.reduced {
+  background-color: rgba(142, 142, 147, 0.18);
+  color: #8E8E93;
+}
+
+/* Normal Range Visual Bar */
+.normal-range-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.normal-range-track {
+  position: relative;
+  height: 6px;
+  background-color: rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-pill);
+  overflow: visible;
+  margin: 8px 0;
+}
+
+.normal-range-band {
+  position: absolute;
+  height: 100%;
+  background-color: rgba(91, 140, 255, 0.35);
+  border-radius: var(--radius-pill);
+}
+
+.normal-range-current-dot {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-card);
+  box-shadow: 0 0 6px rgba(0,0,0,0.5);
+}
+
+/* Spending Fingerprint Grid */
+.fingerprint-card-metric {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color var(--transition-fast);
+}
+
+.fingerprint-card-metric:hover {
+  border-color: var(--border-medium);
+}
+
+.fingerprint-label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fingerprint-val {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.fingerprint-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Rhythm Slider Bar */
+.rhythm-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+.rhythm-track {
+  flex: 1;
+  height: 4px;
+  background: linear-gradient(90deg, #4DD5A5 0%, #5B8CFF 50%, #FF6B8A 100%);
+  border-radius: var(--radius-pill);
+  margin: 0 10px;
+  position: relative;
+}
+
+.rhythm-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  background-color: #FFFFFF;
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(0,0,0,0.6);
+}

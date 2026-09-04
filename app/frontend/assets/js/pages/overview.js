@@ -71,6 +71,9 @@ export async function renderOverviewPage(container) {
         </div>
       </div>
 
+      <!-- Ranked Financial Insights Strip (Core Analytics Engine) -->
+      <div id="overview-insights-strip" class="insight-strip"></div>
+
       <!-- Charts Section: Cash Flow Trend & Expense Breakdown -->
       <div class="grid-2col" style="grid-template-columns: 1.6fr 1fr; margin-bottom: 24px;">
         <div class="fin-card">
@@ -141,12 +144,14 @@ export async function renderOverviewPage(container) {
 
 async function loadDashboardData() {
   try {
-    const [summary, recentTxs] = await Promise.all([
+    const [summary, recentTxs, insightsData] = await Promise.all([
       api.getMonthSummary(state.month, state.accountId),
-      api.getTransactions({ month: state.month, limit: 6 })
+      api.getTransactions({ month: state.month, limit: 6 }),
+      api.getRankedInsights(state.month, state.accountId, 4)
     ]);
 
     renderKPIs(summary.kpis);
+    renderRankedInsights(insightsData ? insightsData.insights : []);
     renderTrendChart(summary.trend);
     renderDonutChart(summary.categories);
     renderDailyChart(summary.trend);
@@ -155,6 +160,85 @@ async function loadDashboardData() {
     console.error('Error loading dashboard data:', err);
     showToast('Failed to load dashboard data', 'error');
   }
+}
+
+function renderRankedInsights(insights) {
+  const container = document.getElementById('overview-insights-strip');
+  if (!container) return;
+
+  if (!insights || insights.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const sevIcons = {
+    critical: { icon: 'alert-triangle', color: '#FF6B8A', bg: 'rgba(255, 107, 138, 0.15)' },
+    warning: { icon: 'alert-circle', color: '#FF9F43', bg: 'rgba(255, 159, 67, 0.15)' },
+    success: { icon: 'check-circle-2', color: '#4DD5A5', bg: 'rgba(77, 213, 165, 0.15)' },
+    info: { icon: 'sparkles', color: '#5B8CFF', bg: 'rgba(91, 140, 255, 0.15)' }
+  };
+
+  container.innerHTML = insights.map((ins, idx) => {
+    const s = sevIcons[ins.severity] || sevIcons.info;
+    const drawerId = `insight-evidence-${idx}`;
+
+    let evidenceHtml = '';
+    if (ins.evidence && Object.keys(ins.evidence).length > 0) {
+      evidenceHtml = Object.entries(ins.evidence).map(([k, v]) => `
+        <div class="evidence-item">
+          <span class="evidence-label">${k.replace(/_/g, ' ')}</span>
+          <span class="evidence-val">${typeof v === 'number' ? state.formatCurrency(v) : v}</span>
+        </div>
+      `).join('');
+    }
+
+    return `
+      <div class="insight-card ${ins.severity || 'info'}">
+        <div class="insight-card-main">
+          <div class="insight-content-wrap">
+            <div class="insight-icon-box" style="background: ${s.bg}; color: ${s.color};">
+              <i data-lucide="${s.icon}"></i>
+            </div>
+            <div>
+              <div class="insight-title">
+                ${ins.title}
+                <span class="delta-badge neutral" style="font-size: 10.5px; padding: 1px 6px;">Score: ${ins.impact_score ? Math.round(ins.impact_score * 100) : 50}</span>
+              </div>
+              <div class="insight-summary">${ins.summary}</div>
+            </div>
+          </div>
+          <div class="insight-actions">
+            ${evidenceHtml ? `<button class="btn btn-secondary btn-sm evidence-toggle-btn" data-target="${drawerId}" style="padding: 4px 10px; font-size: 11.5px;">Why?</button>` : ''}
+            <button class="btn btn-primary btn-sm insight-explore-btn" data-insight-id="${ins.id}" data-entity-id="${ins.entity_id || ''}" style="padding: 4px 10px; font-size: 11.5px;">Explore</button>
+          </div>
+        </div>
+        ${evidenceHtml ? `<div id="${drawerId}" class="insight-evidence-drawer">${evidenceHtml}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  if (window.lucide) window.lucide.createIcons();
+
+  // Attach evidence toggles
+  container.querySelectorAll('.evidence-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.dataset.target;
+      const drawer = document.getElementById(targetId);
+      if (drawer) {
+        drawer.classList.toggle('open');
+        btn.textContent = drawer.classList.contains('open') ? 'Hide Details' : 'Why?';
+      }
+    });
+  });
+
+  // Attach explore clicks
+  container.querySelectorAll('.insight-explore-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      // Navigate to Analytics page
+      const analyticsNav = document.querySelector('[data-page="analytics"]');
+      if (analyticsNav) analyticsNav.click();
+    });
+  });
 }
 
 function renderKPIs(kpis) {
