@@ -11,6 +11,7 @@
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { showToast } from '../components/toast.js';
+import { escapeHtml } from '../utils.js';
 
 let varianceChart = null;
 let weekdayChart = null;
@@ -424,10 +425,10 @@ async function renderChangesTab(container) {
       const color = d.delta > 0 ? 'var(--color-negative)' : (d.delta < 0 ? 'var(--color-positive)' : 'var(--text-muted)');
 
       return `
-        <tr class="table-row-clickable category-driver-row" data-category-id="${d.entity_id}" data-category-name="${d.name}">
+        <tr class="table-row-clickable category-driver-row" data-category-id="${d.entity_id}" data-category-name="${escapeHtml(d.name)}">
           <td style="font-weight: 500;">
-            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${d.color}; margin-right:6px;"></span>
-            ${d.name}
+            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${escapeHtml(d.color)}; margin-right:6px;"></span>
+            ${escapeHtml(d.name)}
           </td>
           <td><span class="driver-tag ${tagClass}">${d.tag.replace(/_/g, ' ')}</span></td>
           <td style="text-align: right; font-weight: 600; color: ${color};">${sign}${state.formatCurrency(d.delta)}</td>
@@ -480,7 +481,7 @@ async function loadMerchantDrilldown(categoryId, categoryName) {
     if (!merchants || merchants.length === 0) {
       container.querySelector('.merchant-drilldown-panel').innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 13px; color: var(--text-muted);">No individual merchant data found for ${categoryName}.</span>
+          <span style="font-size: 13px; color: var(--text-muted);">No individual merchant data found for ${escapeHtml(categoryName)}.</span>
           <button class="btn btn-secondary btn-sm" id="close-merchant-drilldown">Close</button>
         </div>
       `;
@@ -519,7 +520,7 @@ async function loadMerchantDrilldown(categoryId, categoryName) {
                 const color = m.delta > 0 ? 'var(--color-negative)' : (m.delta < 0 ? 'var(--color-positive)' : 'var(--text-muted)');
                 return `
                   <tr>
-                    <td style="font-weight: 500;">${m.merchant}</td>
+                    <td style="font-weight: 500;">${escapeHtml(m.merchant)}</td>
                     <td><span class="driver-tag ${tagClass}">${m.tag.replace(/_/g, ' ')}</span></td>
                     <td style="text-align: right;">${state.formatCurrency(m.current)}</td>
                     <td style="text-align: right;">${state.formatCurrency(m.previous)}</td>
@@ -725,10 +726,10 @@ async function renderAnomaliesTab(container) {
                 <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 8px;">
                   <div>
                     <div style="font-size: 14.5px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
-                      ${a.title}
-                      <span class="delta-badge" style="background: ${sevColor}22; color: ${sevColor}; font-size: 10.5px;">${a.severity.toUpperCase()}</span>
+                      ${escapeHtml(a.title)}
+                      <span class="delta-badge" style="background: ${sevColor}22; color: ${sevColor}; font-size: 10.5px;">${escapeHtml(a.severity.toUpperCase())}</span>
                     </div>
-                    <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 3px;">${a.explanation}</div>
+                    <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 3px;">${escapeHtml(a.explanation)}</div>
                   </div>
                   <div style="text-align: right;">
                     <div style="font-size: 18px; font-weight: 700; color: ${sevColor};">${state.formatCurrency(a.actual)}</div>
@@ -778,8 +779,8 @@ async function renderAnomaliesTab(container) {
             ${normalRanges.map(nr => `
               <tr>
                 <td style="font-weight: 500;">
-                  <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${nr.color}; margin-right:6px;"></span>
-                  ${nr.category_name}
+                  <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${escapeHtml(nr.color)}; margin-right:6px;"></span>
+                  ${escapeHtml(nr.category_name)}
                 </td>
                 <td style="text-align: right; color: var(--text-secondary);">${state.formatCurrency(nr.lower)}</td>
                 <td style="text-align: right; font-weight: 600;">${state.formatCurrency(nr.median)}</td>
@@ -873,8 +874,8 @@ async function renderForecastTab(container) {
               return `
                 <tr>
                   <td style="font-weight: 500;">
-                    <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${cf.color}; margin-right:6px;"></span>
-                    ${cf.name}
+                    <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${escapeHtml(cf.color)}; margin-right:6px;"></span>
+                    ${escapeHtml(cf.name)}
                   </td>
                   <td style="text-align: right;">${state.formatCurrency(cf.actual)}</td>
                   <td style="text-align: right; font-weight: 600;">${state.formatCurrency(cf.projected)}</td>

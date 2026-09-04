@@ -31,6 +31,7 @@ class TestFinScopeBackend(unittest.TestCase):
             shutil.rmtree(test_dir, ignore_errors=True)
         test_dir.mkdir(parents=True, exist_ok=True)
         init_db()
+        seed_sample_data()
 
     def test_01_default_accounts_and_categories(self):
         accounts = AccountRepository.get_all()

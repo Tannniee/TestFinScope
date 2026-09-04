@@ -35,7 +35,7 @@ class BudgetRepository:
                     ) as spent_amount
                 FROM categories c
                 LEFT JOIN budgets b ON b.category_id = c.id AND b.start_date = ?
-                LEFT JOIN transactions t ON t.category_id = c.id 
+                LEFT JOIN active_transactions t ON t.category_id = c.id 
                     AND t.transaction_type IN ('expense', 'refund')
                     AND t.transaction_date LIKE ?
                 WHERE c.type = 'expense' AND c.is_archived = 0

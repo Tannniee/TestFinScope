@@ -6,6 +6,7 @@
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { showToast } from './toast.js';
+import { escapeHtml } from '../utils.js';
 
 export const modals = {
   activeTxId: null,
@@ -258,12 +259,12 @@ export const modals = {
         ? `<span class="confidence-tag moderate">Suggested</span>`
         : '';
 
-      const catHint = s.category_name ? `<span class="payee-cat-hint">📁 ${s.category_name}</span>` : '';
+      const catHint = s.category_name ? `<span class="payee-cat-hint">📁 ${escapeHtml(s.category_name)}</span>` : '';
 
       return `
         <div class="payee-autocomplete-item" data-idx="${idx}">
           <div class="payee-info">
-            <span class="payee-name">${s.name}</span>
+            <span class="payee-name">${escapeHtml(s.name)}</span>
             ${catHint}
           </div>
           ${confBadge}

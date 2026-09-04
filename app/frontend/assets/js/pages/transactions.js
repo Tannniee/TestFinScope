@@ -7,6 +7,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { modals } from '../components/modals.js';
 import { showToast } from '../components/toast.js';
+import { escapeHtml } from '../utils.js';
 
 let currentOffset = 0;
 const PAGE_SIZE = 25;
@@ -341,7 +342,7 @@ function renderTableRows(items, isReviewQueueView = false) {
       </span>
     ` : `
       <span class="tag-pill" style="background: ${catColor}20; color: ${catColor}; border: 1px solid ${catColor}40;">
-        ${tx.category_name || (isTransfer ? 'Transfer' : 'Uncategorized')}
+        ${escapeHtml(tx.category_name || (isTransfer ? 'Transfer' : 'Uncategorized'))}
       </span>
     `;
 
@@ -350,26 +351,26 @@ function renderTableRows(items, isReviewQueueView = false) {
     return `
       <tr data-id="${tx.id}">
         <td>
-          <div style="font-weight: 500;">${tx.transaction_date}</div>
-          <div style="font-size: 11px; color: var(--text-muted);">${tx.transaction_time || ''}</div>
+          <div style="font-weight: 500;">${escapeHtml(tx.transaction_date)}</div>
+          <div style="font-size: 11px; color: var(--text-muted);">${escapeHtml(tx.transaction_time || '')}</div>
         </td>
         <td>
           <div style="font-weight: 600; color: var(--text-primary);">
-            ${tx.merchant_name || tx.description || 'Transaction'}
+            ${escapeHtml(tx.merchant_name || tx.description || 'Transaction')}
             ${tx.refund_of_transaction_id ? `<span style="font-size: 10.5px; color: var(--color-positive); margin-left: 6px;">(Refund for #${tx.refund_of_transaction_id})</span>` : ''}
           </div>
-          ${tx.note ? `<div style="font-size: 11.5px; color: var(--text-secondary);">${tx.note}</div>` : ''}
+          ${tx.note ? `<div style="font-size: 11.5px; color: var(--text-secondary);">${escapeHtml(tx.note)}</div>` : ''}
         </td>
         <td>
           ${categoryCell}
         </td>
         <td>
-          <span style="font-size: 12.5px; color: var(--text-secondary);">${tx.account_name || 'Everyday'}</span>
-          ${tx.transfer_role ? `<span style="font-size: 10px; color: var(--accent-blue); text-transform: uppercase; margin-left: 4px;">(${tx.transfer_role})</span>` : ''}
+          <span style="font-size: 12.5px; color: var(--text-secondary);">${escapeHtml(tx.account_name || 'Everyday')}</span>
+          ${tx.transfer_role ? `<span style="font-size: 10px; color: var(--accent-blue); text-transform: uppercase; margin-left: 4px;">(${escapeHtml(tx.transfer_role)})</span>` : ''}
         </td>
         <td>
           <span class="tag-pill" style="background: rgba(255,255,255,0.06); color: var(--text-secondary); text-transform: capitalize;">
-            ${tx.essentiality || 'discretionary'}
+            ${escapeHtml(tx.essentiality || 'discretionary')}
           </span>
         </td>
         <td style="text-align: right;">

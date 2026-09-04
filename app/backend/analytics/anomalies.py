@@ -70,7 +70,7 @@ class AnomalyDetectionEngine:
                     COALESCE(NULLIF(t.merchant_name, ''), 'Unknown') as m_name,
                     t.category_id,
                     t.amount_minor
-                FROM transactions t
+                FROM active_transactions t
                 WHERE t.transaction_type = 'expense'
                   AND t.transaction_date < ?
                   AND t.transaction_date >= ? {acc_clause}
@@ -133,7 +133,7 @@ class AnomalyDetectionEngine:
                     t.category_id,
                     c.name as category_name,
                     t.is_recurring
-                FROM transactions t
+                FROM active_transactions t
                 LEFT JOIN categories c ON t.category_id = c.id
                 WHERE t.transaction_type = 'expense'
                   AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
@@ -210,7 +210,7 @@ class AnomalyDetectionEngine:
                     t.amount_minor,
                     t.category_id,
                     c.name as category_name
-                FROM transactions t
+                FROM active_transactions t
                 LEFT JOIN categories c ON t.category_id = c.id
                 WHERE t.transaction_type = 'expense'
                   AND t.is_recurring = 1
@@ -228,7 +228,7 @@ class AnomalyDetectionEngine:
 
                 cur.execute(f"""
                     SELECT amount_minor
-                    FROM transactions
+                    FROM active_transactions
                     WHERE transaction_type = 'expense'
                       AND is_recurring = 1
                       AND (merchant_name = ? OR description = ?)
@@ -381,7 +381,7 @@ class AnomalyDetectionEngine:
                         END
                     ) as net_minor
                 FROM categories c
-                JOIN transactions t ON t.category_id = c.id
+                JOIN active_transactions t ON t.category_id = c.id
                 WHERE t.transaction_type IN ('expense', 'refund')
                   AND t.transaction_date < ?
                   AND t.transaction_date >= date(?, '-6 months') {acc_clause}

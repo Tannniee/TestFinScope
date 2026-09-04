@@ -127,11 +127,13 @@ class MerchantService:
 
             for r in rows:
                 m_id = r["id"]
-                # Query transaction history for confidence
+                # Query active expense transaction history for statistical confidence
                 cur.execute("""
                     SELECT category_id, COUNT(*) as cnt
-                    FROM transactions
-                    WHERE merchant_name = ? AND category_id IS NOT NULL
+                    FROM active_transactions
+                    WHERE merchant_name = ? 
+                      AND category_id IS NOT NULL
+                      AND transaction_type = 'expense'
                     GROUP BY category_id
                     ORDER BY cnt DESC
                 """, (r["name"],))
@@ -141,19 +143,19 @@ class MerchantService:
                 cat_name = r["category_name"]
                 cat_color = r["category_color"]
                 cat_icon = r["category_icon"]
+                total_hist = sum(hr["cnt"] for hr in hist_rows) if hist_rows else 0
 
                 confidence = "low"
                 if r["default_category_id"]:
                     confidence = "high"
                 elif hist_rows:
-                    total_hist = sum(hr["cnt"] for hr in hist_rows)
                     top_cnt = hist_rows[0]["cnt"]
                     if top_cnt / total_hist >= 0.8 and total_hist >= 3:
                         confidence = "high"
                     elif total_hist >= 2:
                         confidence = "moderate"
 
-                    # If no default set, use top historical category
+                    # If no explicit default set, use top historical category
                     if not cat_id and hist_rows[0]["category_id"]:
                         top_cid = hist_rows[0]["category_id"]
                         cur.execute("SELECT name, color, icon FROM categories WHERE id = ?", (top_cid,))
@@ -165,16 +167,20 @@ class MerchantService:
                             cat_icon = c_info["icon"]
 
                 results.append({
+                    "merchant_id": m_id,
                     "id": m_id,
                     "name": r["name"],
+                    "merchant_name": r["name"],
                     "category_id": cat_id,
                     "category_name": cat_name,
                     "category_color": cat_color,
                     "category_icon": cat_icon,
                     "account_id": r["preferred_account_id"],
+                    "preferred_account_id": r["preferred_account_id"],
                     "account_name": r["account_name"],
                     "essentiality": r["default_essentiality"] or "discretionary",
-                    "confidence": confidence
+                    "confidence": confidence,
+                    "transaction_count": total_hist
                 })
 
             return results
@@ -194,12 +200,12 @@ class MerchantService:
                     c.name as category_name,
                     c.color as category_color,
                     c.icon as category_icon,
-                    MAX(t.transaction_date) as last_used
-                FROM transactions t
+                    MAX(t.transaction_date) as last_used,
+                    COUNT(*) as transaction_count
+                FROM active_transactions t
                 JOIN categories c ON t.category_id = c.id
                 WHERE t.transaction_type = 'expense'
                   AND t.merchant_name != ''
-                  AND t.is_deleted = 0
                 GROUP BY t.merchant_name
                 ORDER BY last_used DESC
                 LIMIT ?
@@ -208,13 +214,19 @@ class MerchantService:
             items = []
             for r in cur.fetchall():
                 items.append({
+                    "merchant_id": None,
+                    "id": None,
+                    "name": r["merchant_name"],
                     "merchant_name": r["merchant_name"],
                     "category_id": r["category_id"],
                     "category_name": r["category_name"],
                     "category_color": r["category_color"],
                     "category_icon": r["category_icon"],
                     "account_id": r["account_id"],
+                    "preferred_account_id": r["account_id"],
                     "essentiality": r["essentiality"],
+                    "confidence": "high",
+                    "transaction_count": r["transaction_count"],
                     "amount": round(r["amount_minor"] / 100.0, 2)
                 })
             return items

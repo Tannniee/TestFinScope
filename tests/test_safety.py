@@ -31,6 +31,9 @@ class TestFinScopeSafety(unittest.TestCase):
             shutil.rmtree(TEST_DATA_DIR, ignore_errors=True)
         TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
         init_db()
+        AccountRepository.create(name="Everyday Checking", account_type="depository", opening_balance=2500.0)
+        AccountRepository.create(name="High Yield Savings", account_type="depository", opening_balance=10000.0)
+        AccountRepository.create(name="Credit Card", account_type="credit", opening_balance=0.0)
 
     def test_01_money_minor_units_exact_arithmetic(self):
         """Verifies that monetary amounts are stored as exact integer cents without float drift."""

@@ -111,23 +111,36 @@ class BackupService:
     def restore_backup(backup_path_str: str) -> Dict[str, Any]:
         """
         Creates a safety backup first, validates the target backup integrity,
-        and restores the database safely.
+        validates path traversal, and restores the database atomically using os.replace.
         """
-        backup_file = Path(backup_path_str)
+        backup_file = Path(backup_path_str).resolve()
         if not backup_file.exists():
             raise FileNotFoundError(f"Backup file not found: {backup_path_str}")
+
+        if backup_file.suffix != ".financebackup":
+            raise ValueError("Invalid backup file extension; expected .financebackup")
+
+        # Path traversal guard: ensure path is within BACKUPS_DIR
+        backups_dir_resolved = config.BACKUPS_DIR.resolve()
+        try:
+            backup_file.relative_to(backups_dir_resolved)
+        except ValueError:
+            raise ValueError("Path traversal rejected: Backup file must be located within the backups directory.")
 
         # 1. Create safety backup snapshot using proper backup archive format
         safety_res = BackupService.create_backup(is_safety_snapshot=True)
 
-        temp_extract_db = config.BACKUPS_DIR / f"temp_restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        temp_extract_db = config.BACKUPS_DIR / f"temp_restore_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
         try:
             # 2. Verify zip structure
-            with zipfile.ZipFile(backup_file, "r") as zf:
-                if "finance.db" not in zf.namelist():
-                    raise ValueError("Invalid backup archive: finance.db missing")
-                with open(temp_extract_db, "wb") as f:
-                    f.write(zf.read("finance.db"))
+            try:
+                with zipfile.ZipFile(backup_file, "r") as zf:
+                    if "finance.db" not in zf.namelist():
+                        raise ValueError("Invalid backup archive: finance.db missing")
+                    with open(temp_extract_db, "wb") as f:
+                        f.write(zf.read("finance.db"))
+            except zipfile.BadZipFile:
+                raise ValueError("Corrupted backup archive: Not a valid ZIP file")
 
             # 3. Validate extracted database with integrity check before replacing active DB
             check_conn = sqlite3.connect(str(temp_extract_db))
@@ -137,32 +150,50 @@ class BackupService:
                 status = cur.fetchone()[0]
                 if status != "ok":
                     raise ValueError(f"Corrupted backup database: {status}")
+
+                # Check schema version
+                cur.execute("SELECT MAX(version) FROM schema_migrations")
+                row = cur.fetchone()
+                if not row or row[0] is None:
+                    raise ValueError("Corrupted backup database: Missing schema migrations table")
             finally:
                 check_conn.close()
 
-            # 4. Remove active WAL and SHM files to avoid state collision
-            wal_file = config.DB_PATH.parent / f"{config.DB_PATH.name}-wal"
-            shm_file = config.DB_PATH.parent / f"{config.DB_PATH.name}-shm"
-            if wal_file.exists():
+            # 4. Atomic restore into live database using SQLite native backup API
+            # This safely overwrites all database pages and checkpoints the WAL log without Windows file-locking conflicts
+            src_conn = sqlite3.connect(str(temp_extract_db))
+            try:
+                dest_conn = sqlite3.connect(str(config.DB_PATH))
                 try:
-                    os.remove(wal_file)
-                except OSError:
-                    pass
-            if shm_file.exists():
-                try:
-                    os.remove(shm_file)
-                except OSError:
-                    pass
+                    src_conn.backup(dest_conn)
+                    dest_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                finally:
+                    dest_conn.close()
+            finally:
+                src_conn.close()
 
-            # 5. Overwrite live DB file
-            with open(temp_extract_db, "rb") as src, open(config.DB_PATH, "wb") as dst:
-                dst.write(src.read())
+            # 5. Post-restore integrity verification
+            post_conn = sqlite3.connect(str(config.DB_PATH))
+            try:
+                post_cur = post_conn.cursor()
+                post_cur.execute("PRAGMA integrity_check;")
+                post_status = post_cur.fetchone()[0]
+                if post_status != "ok":
+                    raise ValueError(f"Post-restore check failed: {post_status}")
+            finally:
+                post_conn.close()
 
             return {
                 "success": True,
                 "safety_backup": safety_res["filename"],
+                "safety_backup_path": safety_res["filepath"],
+                "pre_restore_safety_backup": safety_res["filepath"],
                 "restored_from": backup_file.name
             }
+
+        except Exception as e:
+            logger.error("Restore failed: %s. Preserving original database.", e)
+            raise
 
         finally:
             if temp_extract_db.exists():
@@ -173,7 +204,7 @@ class BackupService:
 
     @staticmethod
     def export_csv() -> str:
-        """Exports all transactions to a CSV file in exports directory."""
+        """Exports all active (non-deleted) transactions to a CSV file in exports directory."""
         filename = f"FinScope_Transactions_{datetime.now().strftime('%Y-%m-%d')}.csv"
         config.EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
         filepath = config.EXPORTS_DIR / filename
@@ -186,7 +217,7 @@ class BackupService:
                     ROUND(CAST(t.amount_minor AS REAL) / 100.0, 2) as amount,
                     t.merchant_name, c.name as category, a.name as account,
                     t.essentiality, t.payment_method, t.description, t.note
-                FROM transactions t
+                FROM active_transactions t
                 LEFT JOIN categories c ON t.category_id = c.id
                 LEFT JOIN accounts a ON t.account_id = a.id
                 ORDER BY t.transaction_date DESC, t.id DESC

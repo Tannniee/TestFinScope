@@ -25,8 +25,8 @@ class AccountRepository:
                                     ELSE 0.0
                                 END
                             )
-                            FROM transactions t
-                            WHERE t.account_id = a.id AND t.is_deleted = 0
+                            FROM active_transactions t
+                            WHERE t.account_id = a.id
                         ), 0.0)
                     ) as current_balance
                 FROM accounts a

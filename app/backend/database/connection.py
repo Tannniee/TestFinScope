@@ -44,7 +44,7 @@ DEFAULT_SETTINGS = {
     "currency_symbol": "$",
     "date_format": "YYYY-MM-DD",
     "theme": "dark",
-    "has_initialized": "true"
+    "has_initialized": "false"
 }
 
 @contextmanager
@@ -83,19 +83,7 @@ def init_db():
                 (k, v)
             )
 
-        # 3. Seed default accounts if none exist
-        cur.execute("SELECT COUNT(*) FROM accounts")
-        if cur.fetchone()[0] == 0:
-            for acc in DEFAULT_ACCOUNTS:
-                conn.execute(
-                    """
-                    INSERT INTO accounts (name, account_type, institution, opening_balance_minor, currency)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (acc["name"], acc["account_type"], acc["institution"], acc["opening_balance_minor"], acc["currency"])
-                )
-
-        # 4. Seed default categories if none exist
+        # 3. Default categories (0 fake accounts created on fresh init)
         cur.execute("SELECT COUNT(*) FROM categories WHERE name != 'Uncategorized'")
         if cur.fetchone()[0] == 0:
             for cat in DEFAULT_CATEGORIES:

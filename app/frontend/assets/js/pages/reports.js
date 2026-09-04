@@ -5,6 +5,7 @@
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { showToast } from '../components/toast.js';
+import { escapeHtml } from '../utils.js';
 
 export async function renderReportsPage(container) {
   container.innerHTML = `
@@ -104,8 +105,9 @@ export async function renderReportsPage(container) {
 }
 
 function setupReportHandlers() {
-  document.getElementById('btn-export-csv')?.addEventListener('click', () => {
-    window.location.href = '/api/export_csv';
+  document.getElementById('btn-export-csv')?.addEventListener('click', async () => {
+    const token = await api.getSessionToken();
+    window.location.href = `/api/export_csv?token=${encodeURIComponent(token || '')}`;
     showToast('Exporting CSV statement...', 'info');
   });
 
@@ -140,15 +142,15 @@ async function loadReportData() {
     tbody.innerHTML = summary.categories.map(c => `
       <tr>
         <td style="font-weight: 500;">
-          <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${c.color}; margin-right:8px;"></span>
-          ${c.name}
+          <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${escapeHtml(c.color)}; margin-right:8px;"></span>
+          ${escapeHtml(c.name)}
         </td>
         <td style="text-align: right; color: var(--text-muted);">${c.count}</td>
         <td style="text-align: right; font-weight: 600;">${state.formatCurrency(c.amount)}</td>
         <td style="text-align: right;">
           <div style="display:flex; align-items:center; justify-content:flex-end; gap:8px;">
             <div class="budget-progress-wrap" style="width: 60px; height: 6px;">
-              <div class="budget-progress-fill" style="width: ${c.percentage}%; background-color: ${c.color};"></div>
+              <div class="budget-progress-fill" style="width: ${c.percentage}%; background-color: ${escapeHtml(c.color)};"></div>
             </div>
             <span style="font-weight:600; min-width:38px;">${c.percentage}%</span>
           </div>

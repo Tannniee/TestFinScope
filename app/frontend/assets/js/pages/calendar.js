@@ -7,6 +7,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { modals } from '../components/modals.js';
 import { showToast } from '../components/toast.js';
+import { escapeHtml } from '../utils.js';
 
 let selectedDate = null;
 
@@ -249,9 +250,9 @@ async function openDayDrawer(dateStr) {
       return `
         <div class="fin-card" style="padding: 14px; display: flex; align-items: center; justify-content: space-between;">
           <div>
-            <div style="font-weight: 600; font-size: 13.5px;">${t.merchant_name || t.description || 'Transaction'}</div>
+            <div style="font-weight: 600; font-size: 13.5px;">${escapeHtml(t.merchant_name || t.description || 'Transaction')}</div>
             <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 2px;">
-              ${t.category_name || 'Uncategorized'} • ${t.account_name || 'Everyday'} • ${t.transaction_time || ''}
+              ${escapeHtml(t.category_name || 'Uncategorized')} • ${escapeHtml(t.account_name || 'Everyday')} • ${escapeHtml(t.transaction_time || '')}
             </div>
           </div>
           <div style="font-weight: 700; color: ${color}; font-size: 14px;">

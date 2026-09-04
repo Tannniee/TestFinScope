@@ -73,7 +73,7 @@ class ForecastingEngine:
                     c.color as category_color,
                     COALESCE(SUM(t.amount_minor), 0) as total_minor,
                     COUNT(t.id) as count
-                FROM transactions t
+                FROM active_transactions t
                 LEFT JOIN categories c ON t.category_id = c.id
                 WHERE t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
                 GROUP BY t.transaction_type, t.is_recurring, t.category_id
@@ -114,8 +114,8 @@ class ForecastingEngine:
                     category_id,
                     CAST(strftime('%d', transaction_date) AS INTEGER) as usual_day,
                     amount_minor
-                FROM transactions
-                WHERE transaction_type = 'expense'
+                FROM active_transactions t
+                WHERE t.transaction_type = 'expense'
                   AND is_recurring = 1
                   AND transaction_date < ? || '-01'
                   AND transaction_date >= date(? || '-01', '-3 months') {acc_clause}
@@ -153,8 +153,8 @@ class ForecastingEngine:
                 SELECT 
                     strftime('%w', transaction_date) as wday,
                     SUM(amount_minor) as total_minor
-                FROM transactions
-                WHERE transaction_type = 'expense'
+                FROM active_transactions t
+                WHERE t.transaction_type = 'expense'
                   AND is_recurring = 0
                   AND transaction_date >= ? AND transaction_date <= ? {acc_clause}
                 GROUP BY wday
@@ -219,8 +219,8 @@ class ForecastingEngine:
                 SELECT 
                     category_id,
                     SUM(amount_minor) as total_minor
-                FROM transactions
-                WHERE transaction_type = 'expense'
+                FROM active_transactions t
+                WHERE t.transaction_type = 'expense'
                   AND is_recurring = 0
                   AND transaction_date >= ? AND transaction_date <= ? {acc_clause}
                 GROUP BY category_id
@@ -267,8 +267,8 @@ class ForecastingEngine:
 
             # History months for confidence
             cur.execute(f"""
-                SELECT COUNT(DISTINCT strftime('%Y-%m', transaction_date)) as m_count
-                FROM transactions WHERE transaction_type = 'expense' {acc_clause}
+                SELECT COUNT(DISTINCT strftime('%Y-%m', t.transaction_date)) as m_count
+                FROM active_transactions t WHERE t.transaction_type = 'expense' {acc_clause}
             """, acc_params)
             history_months = cur.fetchone()["m_count"] or 0
             if history_months >= 6:

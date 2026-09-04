@@ -1,32 +1,51 @@
 /**
  * FinScope API Client Bridge
- * Seamlessly talks to either PyWebView native API or local HTTP server.
+ * Single unified HTTP business transport with session security.
  */
 
 export const api = {
-  async call(method, params = {}) {
-    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api[method] === 'function') {
-      try {
-        return await window.pywebview.api[method](params);
-      } catch (err) {
-        console.error(`PyWebView API error on ${method}:`, err);
-        throw err;
-      }
-    }
+  _sessionToken: null,
 
+  async getSessionToken() {
+    if (window.__FINSCOPE_TOKEN__) {
+      return window.__FINSCOPE_TOKEN__;
+    }
+    if (this._sessionToken) {
+      return this._sessionToken;
+    }
+    try {
+      const resp = await fetch('/api/bootstrap');
+      const payload = await resp.json();
+      if (payload && payload.success && payload.data && payload.data.token) {
+        this._sessionToken = payload.data.token;
+        window.__FINSCOPE_TOKEN__ = this._sessionToken;
+        return this._sessionToken;
+      }
+    } catch (e) {
+      console.warn('Could not bootstrap session token:', e);
+    }
+    return '';
+  },
+
+  async call(method, params = {}) {
+    const token = await this.getSessionToken();
     try {
       const response = await fetch(`/api/${method}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-FinScope-Token': token
+        },
         body: JSON.stringify(params)
       });
       const data = await response.json();
       if (!data.success) {
-        throw new Error(data.error || 'Unknown server error');
+        const errorMsg = (data.error && data.error.message) || (typeof data.error === 'string' ? data.error : 'Unknown server error');
+        throw new Error(errorMsg);
       }
       return data.data;
     } catch (err) {
-      console.error(`HTTP API error on ${method}:`, err);
+      console.error(`API error on ${method}:`, err);
       throw err;
     }
   },
@@ -65,6 +84,9 @@ export const api = {
   },
   undoDeleteTransaction(id) {
     return this.call('undo_delete_transaction', { tx_id: id });
+  },
+  duplicateTransaction(id) {
+    return this.call('duplicate_transaction', { tx_id: id });
   },
   getMerchantSuggestions(query, limit = 6) {
     return this.call('get_merchant_suggestions', { query, limit });

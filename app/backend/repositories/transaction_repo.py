@@ -42,10 +42,10 @@ class TransactionRepository:
                     c.name as category_name,
                     c.color as category_color,
                     c.icon as category_icon
-                FROM transactions t
+                FROM active_transactions t
                 LEFT JOIN accounts a ON t.account_id = a.id
                 LEFT JOIN categories c ON t.category_id = c.id
-                WHERE t.is_deleted = 0
+                WHERE 1=1
             """
             params = []
 
@@ -143,6 +143,25 @@ class TransactionRepository:
                 essentiality=data.get("essentiality")
             )
 
+        # Invariant: Prevent over-refunding in create
+        if tx_type == "refund" and data.get("refund_of_transaction_id"):
+            orig_id = data["refund_of_transaction_id"]
+            orig = TransactionRepository.get_by_id(orig_id)
+            if orig:
+                with get_db_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT COALESCE(SUM(amount_minor), 0)
+                        FROM active_transactions
+                        WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
+                    """, (orig_id,))
+                    existing_refunded_minor = cur.fetchone()[0]
+                remaining_minor = orig["amount_minor"] - existing_refunded_minor
+                if amount_minor > remaining_minor:
+                    raise ValueError(
+                        f"Cumulative refunds exceed original expense amount (Remaining: ${remaining_minor / 100:.2f}, Attempted: ${amount_minor / 100:.2f})."
+                    )
+
         with get_db_connection() as conn:
             cur = conn.cursor()
 
@@ -196,75 +215,17 @@ class TransactionRepository:
         description: str = "Account Transfer",
         note: str = ""
     ) -> Dict[str, Any]:
-        """
-        Creates proper double-entry transfer records linked via transfer_group_id
-        with explicit transfer_roles: 'source' (debit) and 'destination' (credit).
-        """
-        if from_account_id == to_account_id:
-            raise ValueError("Source and destination accounts must be different.")
-
-        amount_minor = int(round(float(amount) * 100))
-        group_id = str(uuid.uuid4())
-
-        with get_db_connection() as conn:
-            cur = conn.cursor()
-
-            cur.execute("SELECT id, name FROM accounts WHERE id IN (?, ?)", (from_account_id, to_account_id))
-            acc_names = {r["id"]: r["name"] for r in cur.fetchall()}
-            from_name = acc_names.get(from_account_id, "Account")
-            to_name = acc_names.get(to_account_id, "Account")
-
-            # Outflow leg (From account - Source)
-            cur.execute("""
-                INSERT INTO transactions (
-                    account_id, merchant_name, transaction_type,
-                    amount_minor, transaction_date, transaction_time, description,
-                    note, payment_method, essentiality, transfer_group_id, transfer_role,
-                    source, is_deleted
-                ) VALUES (?, ?, 'transfer', ?, ?, ?, ?, ?, 'Transfer', 'savings', ?, 'source', 'manual', 0)
-            """, (
-                from_account_id,
-                f"Transfer to {to_name}",
-                amount_minor,
-                transaction_date,
-                transaction_time,
-                description or f"Transfer to {to_name}",
-                note,
-                group_id
-            ))
-            leg1_id = cur.lastrowid
-
-            # Inflow leg (To account - Destination)
-            cur.execute("""
-                INSERT INTO transactions (
-                    account_id, merchant_name, transaction_type,
-                    amount_minor, transaction_date, transaction_time, description,
-                    note, payment_method, essentiality, transfer_group_id, transfer_role,
-                    linked_transaction_id, source, is_deleted
-                ) VALUES (?, ?, 'transfer', ?, ?, ?, ?, ?, 'Transfer', 'savings', ?, 'destination', ?, 'manual', 0)
-            """, (
-                to_account_id,
-                f"Transfer from {from_name}",
-                amount_minor,
-                transaction_date,
-                transaction_time,
-                f"{description or 'Transfer'} (Received)",
-                note,
-                group_id,
-                leg1_id
-            ))
-            leg2_id = cur.lastrowid
-
-            cur.execute("UPDATE transactions SET linked_transaction_id = ? WHERE id = ?", (leg2_id, leg1_id))
-            conn.commit()
-
-            return {
-                "transfer_group_id": group_id,
-                "outflow_tx_id": leg1_id,
-                "inflow_tx_id": leg2_id,
-                "source_transaction": TransactionRepository.get_by_id(leg1_id),
-                "destination_transaction": TransactionRepository.get_by_id(leg2_id)
-            }
+        """Creates proper double-entry transfer records using TransferService."""
+        from app.backend.services.transfer_service import TransferService
+        return TransferService.create_transfer(
+            from_account_id=from_account_id,
+            to_account_id=to_account_id,
+            amount=amount,
+            transaction_date=transaction_date,
+            transaction_time=transaction_time,
+            description=description,
+            note=note
+        )
 
     @staticmethod
     def create_refund(
@@ -276,11 +237,39 @@ class TransactionRepository:
     ) -> int:
         """
         Creates a refund linked to an original expense transaction.
-        Inherits category, merchant, and essentiality from the original.
+        Enforces:
+        1. Original transaction exists.
+        2. Original transaction is an expense.
+        3. Refund amount is strictly positive.
+        4. Cumulative active refunds do not exceed the original expense amount.
         """
         orig = TransactionRepository.get_by_id(original_tx_id)
         if not orig:
             raise ValueError(f"Original transaction {original_tx_id} not found.")
+
+        if orig["transaction_type"] != "expense":
+            raise ValueError(f"Cannot refund a transaction of type '{orig['transaction_type']}'; only expenses can be refunded.")
+
+        refund_minor = int(round(float(amount) * 100))
+        if refund_minor <= 0:
+            raise ValueError("Refund amount must be strictly positive.")
+
+        # Check cumulative refund limit against active transactions
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT COALESCE(SUM(amount_minor), 0)
+                FROM active_transactions
+                WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
+            """, (original_tx_id,))
+            existing_refunded_minor = cur.fetchone()[0]
+
+        remaining_refundable_minor = orig["amount_minor"] - existing_refunded_minor
+        if refund_minor > remaining_refundable_minor:
+            raise ValueError(
+                f"Refund amount of ${refund_minor / 100:.2f} exceeds remaining refundable balance of ${remaining_refundable_minor / 100:.2f} "
+                f"(Original: ${orig['amount_minor'] / 100:.2f}, Prior Refunds: ${existing_refunded_minor / 100:.2f})."
+            )
 
         target_acc_id = account_id or orig["account_id"]
         merchant_name = orig.get("merchant_name", "")
@@ -304,18 +293,31 @@ class TransactionRepository:
 
     @staticmethod
     def update(tx_id: int, data: Dict[str, Any]) -> bool:
+        """
+        Updates an existing transaction.
+        Correctly handles amount-only updates by normalizing amount before empty-check.
+        """
         allowed = {
             "account_id", "category_id", "merchant_name", "transaction_type",
             "transaction_date", "transaction_time", "description",
             "note", "is_recurring", "payment_method", "essentiality",
             "needs_review"
         }
-        updates = {k: v for k, v in data.items() if k in allowed}
+        updates: Dict[str, Any] = {}
+
+        # Normalize amount or amount_minor first
+        if "amount_minor" in data:
+            updates["amount_minor"] = int(data["amount_minor"])
+        elif "amount" in data:
+            updates["amount_minor"] = int(round(float(data["amount"]) * 100))
+
+        for k in allowed:
+            if k in data:
+                updates[k] = data[k]
+
         if not updates:
             return False
 
-        if "amount" in data:
-            updates["amount_minor"] = int(round(float(data["amount"]) * 100))
         if "is_recurring" in updates:
             updates["is_recurring"] = 1 if updates["is_recurring"] else 0
         if "merchant_name" in updates:
@@ -335,24 +337,21 @@ class TransactionRepository:
     def delete(tx_id: int, hard: bool = False) -> bool:
         """
         By default, soft-deletes (is_deleted = 1) allowing 5-second Undo recovery.
-        If part of a transfer group, operates atomically on both legs.
+        If part of a transfer group, operates atomically on both legs via TransferService.
         """
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("SELECT transfer_group_id FROM transactions WHERE id = ?", (tx_id,))
             row = cur.fetchone()
 
-            if hard:
-                if row and row["transfer_group_id"]:
-                    cur.execute("DELETE FROM transactions WHERE transfer_group_id = ?", (row["transfer_group_id"],))
-                else:
-                    cur.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
-            else:
-                if row and row["transfer_group_id"]:
-                    cur.execute("UPDATE transactions SET is_deleted = 1 WHERE transfer_group_id = ?", (row["transfer_group_id"],))
-                else:
-                    cur.execute("UPDATE transactions SET is_deleted = 1 WHERE id = ?", (tx_id,))
+            if row and row["transfer_group_id"]:
+                from app.backend.services.transfer_service import TransferService
+                return TransferService.delete_transfer(row["transfer_group_id"], hard=hard)
 
+            if hard:
+                cur.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+            else:
+                cur.execute("UPDATE transactions SET is_deleted = 1, updated_at = ? WHERE id = ?", (datetime.now().isoformat(), tx_id))
             conn.commit()
             return cur.rowcount > 0
 
@@ -364,9 +363,10 @@ class TransactionRepository:
             cur.execute("SELECT transfer_group_id FROM transactions WHERE id = ?", (tx_id,))
             row = cur.fetchone()
             if row and row["transfer_group_id"]:
-                cur.execute("UPDATE transactions SET is_deleted = 0 WHERE transfer_group_id = ?", (row["transfer_group_id"],))
-            else:
-                cur.execute("UPDATE transactions SET is_deleted = 0 WHERE id = ?", (tx_id,))
+                from app.backend.services.transfer_service import TransferService
+                return TransferService.undo_delete_transfer(row["transfer_group_id"])
+
+            cur.execute("UPDATE transactions SET is_deleted = 0, updated_at = ? WHERE id = ?", (datetime.now().isoformat(), tx_id))
             conn.commit()
             return cur.rowcount > 0
 
@@ -382,21 +382,19 @@ class TransactionRepository:
                     t.transaction_date, t.description, t.essentiality,
                     a.name as account_name,
                     c.name as category_name, c.color as category_color, c.icon as category_icon
-                FROM transactions t
+                FROM active_transactions t
                 LEFT JOIN accounts a ON t.account_id = a.id
                 LEFT JOIN categories c ON t.category_id = c.id
                 WHERE (t.needs_review = 1 OR c.name = 'Uncategorized')
-                  AND t.is_deleted = 0
                 ORDER BY t.transaction_date DESC, t.id DESC
                 LIMIT ? OFFSET ?
             """, (limit, offset))
             items = [dict(r) for r in cur.fetchall()]
 
             cur.execute("""
-                SELECT COUNT(*) FROM transactions t
+                SELECT COUNT(*) FROM active_transactions t
                 LEFT JOIN categories c ON t.category_id = c.id
                 WHERE (t.needs_review = 1 OR c.name = 'Uncategorized')
-                  AND t.is_deleted = 0
             """)
             total = cur.fetchone()[0]
 

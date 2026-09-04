@@ -88,7 +88,7 @@ class SpendingFingerprintEngine:
 
             cur.execute(f"""
                 SELECT DISTINCT strftime('%Y-%m', transaction_date) as m
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type IN ('expense', 'refund') {month_clause} {acc_clause}
                 ORDER BY m DESC
                 LIMIT ?
@@ -120,7 +120,7 @@ class SpendingFingerprintEngine:
                     merchant_name,
                     essentiality,
                     is_recurring
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type = 'expense'
                   AND transaction_date >= ? AND transaction_date <= ? || '-31' {acc_clause}
                 ORDER BY transaction_date ASC, transaction_time ASC
@@ -262,7 +262,7 @@ class SpendingFingerprintEngine:
                     strftime('%Y-%m', transaction_date) as m,
                     category_id,
                     SUM(amount_minor) as total_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type = 'expense'
                   AND transaction_date >= ? AND transaction_date <= ? || '-31' {acc_clause}
                 GROUP BY m, category_id

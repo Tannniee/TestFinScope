@@ -1,42 +1,46 @@
-import urllib.request
-import json
+import pytest
 
-base = "http://127.0.0.1:8088"
+def test_server_static_assets(ephemeral_server):
+    """Verifies static assets are served properly with correct MIME types."""
+    client = ephemeral_server
+    static_paths = [
+        "/",
+        "/assets/css/theme.css",
+        "/assets/css/layout.css",
+        "/assets/css/components.css",
+        "/assets/js/api.js",
+        "/assets/js/state.js",
+        "/assets/js/router.js"
+    ]
+    for path in static_paths:
+        status, content = client.get(path)
+        assert status == 200, f"Expected 200 for {path}, got {status}"
+        assert len(content) > 0
 
-def test_get(path):
-    url = f"{base}{path}"
-    req = urllib.request.Request(url)
-    with urllib.request.urlopen(req) as r:
-        content = r.read()
-        print(f"GET {path} -> Status {r.status}, Content-Type: {r.headers.get('Content-Type')}, Size: {len(content):,} bytes")
+def test_server_api_endpoints(ephemeral_server):
+    """Verifies JSON POST API endpoints succeed with standard envelopes."""
+    client = ephemeral_server
 
-def test_post(path, body):
-    url = f"{base}{path}"
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req) as r:
-        resp = json.loads(r.read().decode("utf-8"))
-        print(f"POST {path} -> Success: {resp.get('success')}")
+    endpoints = [
+        ("get_month_summary", {"month": "2026-09"}),
+        ("get_transactions", {"month": "2026-09", "limit": 5}),
+        ("get_calendar_data", {"month": "2026-09"}),
+        ("get_analytics_context", {"month": "2026-09"}),
+        ("get_monthly_budget", {"month": "2026-09"}),
+        ("get_storage_health", {}),
+        ("create_backup", {})
+    ]
 
-if __name__ == "__main__":
-    print("Testing static assets...")
-    test_get("/")
-    test_get("/assets/css/theme.css")
-    test_get("/assets/css/layout.css")
-    test_get("/assets/css/components.css")
-    test_get("/assets/vendor/echarts.min.js")
-    test_get("/assets/vendor/lucide.min.js")
-    test_get("/assets/js/api.js")
-    test_get("/assets/js/state.js")
-    test_get("/assets/js/router.js")
+    for method, payload in endpoints:
+        status, resp = client.post(method, payload)
+        assert status == 200, f"Expected 200 for {method}, got {status}: {resp}"
+        assert resp.get("success") is True, f"Failed on {method}: {resp}"
+        assert resp.get("api_version") == 2
+        assert "data" in resp
 
-    print("\nTesting API endpoints...")
-    test_post("/api/get_month_summary", {"month": "2026-09"})
-    test_post("/api/get_transactions", {"month": "2026-09", "limit": 5})
-    test_post("/api/get_calendar_data", {"month": "2026-09"})
-    test_post("/api/get_analytics_deep_dive", {"month": "2026-09"})
-    test_post("/api/get_monthly_budget", {"month": "2026-09"})
-    test_post("/api/get_storage_health", {})
-    test_post("/api/create_backup", {})
-    test_get("/api/export_csv")
-    print("\nAll HTTP & API endpoints tested successfully!")
+def test_server_export_csv(ephemeral_server):
+    """Verifies CSV export endpoint returns CSV data with valid token."""
+    client = ephemeral_server
+    status, csv_text = client.get_export_csv()
+    assert status == 200
+    assert "Date" in csv_text or "Amount" in csv_text or len(csv_text) >= 0

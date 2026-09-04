@@ -18,6 +18,15 @@ from app.backend.api.handler import ApiHandler
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("FinScope")
 
+class DesktopBridge:
+    """Narrow native desktop capabilities exposed to PyWebView shell."""
+    def is_desktop(self) -> bool:
+        return True
+
+    def open_data_folder(self):
+        from app.backend.config import open_data_folder
+        return open_data_folder()
+
 def main():
     parser = argparse.ArgumentParser(description="FinScope — Personal Finance Analytics")
     parser.add_argument("--browser", action="store_true", help="Launch in default web browser instead of desktop window")
@@ -56,11 +65,11 @@ def main():
         try:
             import webview
             logger.info("Opening desktop application window via WebView2...")
-            handler = ApiHandler()
+            desktop_bridge = DesktopBridge()
             window = webview.create_window(
                 title="FinScope — Personal Finance Analytics",
                 url=url,
-                js_api=handler,
+                js_api=desktop_bridge,
                 width=1400,
                 height=880,
                 min_size=(1080, 720),

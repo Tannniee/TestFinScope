@@ -6,6 +6,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { modals } from '../components/modals.js';
 import { showToast } from '../components/toast.js';
+import { escapeHtml } from '../utils.js';
 
 let trendChartInstance = null;
 let donutChartInstance = null;
@@ -146,7 +147,7 @@ async function loadDashboardData() {
   try {
     const [summary, recentTxs, insightsData] = await Promise.all([
       api.getMonthSummary(state.month, state.accountId),
-      api.getTransactions({ month: state.month, limit: 6 }),
+      api.getTransactions({ month: state.month, account_id: state.accountId, limit: 6 }),
       api.getRankedInsights(state.month, state.accountId, 4)
     ]);
 
@@ -522,14 +523,14 @@ function renderRecentTransactions(transactions) {
 
     return `
       <tr>
-        <td style="color: var(--text-muted); font-size:12px;">${tx.transaction_date.slice(5)}</td>
+        <td style="color: var(--text-muted); font-size:12px;">${escapeHtml(tx.transaction_date.slice(5))}</td>
         <td>
-          <div style="font-weight: 500;">${tx.merchant_name || tx.description || 'Transaction'}</div>
-          ${tx.account_name ? `<div style="font-size:11px; color:var(--text-muted);">${tx.account_name}</div>` : ''}
+          <div style="font-weight: 500;">${escapeHtml(tx.merchant_name || tx.description || 'Transaction')}</div>
+          ${tx.account_name ? `<div style="font-size:11px; color:var(--text-muted);">${escapeHtml(tx.account_name)}</div>` : ''}
         </td>
         <td>
           <span class="tag-pill" style="background: ${catColor}20; color: ${catColor}; border: 1px solid ${catColor}40;">
-            ${tx.category_name || 'Uncategorized'}
+            ${escapeHtml(tx.category_name || 'Uncategorized')}
           </span>
         </td>
         <td style="text-align: right;">

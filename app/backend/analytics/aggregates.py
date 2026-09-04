@@ -22,7 +22,7 @@ class AggregateQueries:
                     transaction_type,
                     COALESCE(SUM(amount_minor), 0) as total_minor,
                     COUNT(id) as count
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
                 GROUP BY transaction_type
             """, params)
@@ -56,7 +56,7 @@ class AggregateQueries:
                     transaction_type,
                     COALESCE(SUM(amount_minor), 0) as total_minor,
                     COUNT(id) as count
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type IN ('income', 'expense', 'refund') {acc_clause}
                 GROUP BY month, transaction_type
                 ORDER BY month ASC
@@ -106,7 +106,7 @@ class AggregateQueries:
                     transaction_type,
                     COALESCE(SUM(amount_minor), 0) as total_minor,
                     COUNT(id) as count
-                FROM transactions
+                FROM active_transactions
                 WHERE category_id = ?
                   AND transaction_type IN ('expense', 'refund') {acc_clause}
                 GROUP BY month, transaction_type
@@ -159,7 +159,7 @@ class AggregateQueries:
                     ) as net_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
                 FROM categories c
-                JOIN transactions t ON t.category_id = c.id
+                JOIN active_transactions t ON t.category_id = c.id
                 WHERE t.transaction_type IN ('expense', 'refund')
                   AND t.transaction_date LIKE ? {acc_clause}
                 GROUP BY c.id
@@ -211,7 +211,7 @@ class AggregateQueries:
                         END
                     ) as net_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
-                FROM transactions t
+                FROM active_transactions t
                 WHERE {where_sql}
                 GROUP BY merchant
                 ORDER BY net_minor DESC

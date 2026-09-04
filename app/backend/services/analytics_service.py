@@ -43,7 +43,7 @@ class AnalyticsService:
                     transaction_type,
                     COALESCE(SUM(amount_minor), 0) as total_minor,
                     COUNT(id) as count
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
                 GROUP BY transaction_type
             """, params_curr)
@@ -54,7 +54,7 @@ class AnalyticsService:
                 SELECT 
                     transaction_type,
                     COALESCE(SUM(amount_minor), 0) as total_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
                 GROUP BY transaction_type
             """, params_prev)
@@ -98,7 +98,7 @@ class AnalyticsService:
                     transaction_date,
                     transaction_type,
                     SUM(amount_minor) as total_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
                   AND transaction_type IN ('income', 'expense', 'refund')
                 GROUP BY transaction_date, transaction_type
@@ -142,7 +142,7 @@ class AnalyticsService:
                         END
                     ) as net_cat_minor,
                     COUNT(t.id) as count
-                FROM transactions t
+                FROM active_transactions t
                 JOIN categories c ON t.category_id = c.id
                 WHERE t.transaction_type IN ('expense', 'refund')
                   AND t.transaction_date LIKE ? {acc_clause}
@@ -177,7 +177,7 @@ class AnalyticsService:
                             ELSE 0
                         END
                     ) as total_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type IN ('expense', 'refund')
                   AND transaction_date LIKE ? {acc_clause}
                 GROUP BY essentiality
@@ -229,7 +229,7 @@ class AnalyticsService:
                     transaction_type,
                     SUM(amount_minor) as total_minor,
                     COUNT(id) as count
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
                   AND transaction_type IN ('income', 'expense', 'refund')
                 GROUP BY transaction_date, transaction_type
@@ -354,7 +354,7 @@ class AnalyticsService:
                 SELECT 
                     transaction_date,
                     amount_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type = 'expense'
                   AND transaction_date LIKE ? {acc_clause}
             """, params_curr)
@@ -393,7 +393,7 @@ class AnalyticsService:
                             ELSE 0
                         END
                     ) as day_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type IN ('expense', 'refund') AND transaction_date LIKE ? {acc_clause}
                 GROUP BY transaction_date
             """, params_curr)
@@ -409,7 +409,7 @@ class AnalyticsService:
                             ELSE 0
                         END
                     ) as day_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type IN ('expense', 'refund') AND transaction_date LIKE ? {acc_clause}
                 GROUP BY transaction_date
             """, params_prev)
@@ -434,7 +434,7 @@ class AnalyticsService:
                     merchant_name,
                     COUNT(id) as count,
                     SUM(amount_minor) as total_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type = 'expense' 
                   AND merchant_name != '' 
                   AND transaction_date LIKE ? {acc_clause}
@@ -455,7 +455,7 @@ class AnalyticsService:
             # 5. Transaction Distribution
             cur.execute(f"""
                 SELECT amount_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type = 'expense' AND transaction_date LIKE ? {acc_clause}
             """, params_curr)
 
@@ -527,7 +527,7 @@ class AnalyticsService:
             # 1. Fetch earliest and latest month
             cur.execute(f"""
                 SELECT MIN(transaction_date) as min_d, MAX(transaction_date) as max_d
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type IN ('income', 'expense', 'refund') {acc_clause}
             """, acc_params)
             row = cur.fetchone()
@@ -557,7 +557,7 @@ class AnalyticsService:
                                 ELSE 0
                             END
                         ) as net_minor
-                    FROM transactions
+                    FROM active_transactions
                     WHERE category_id = ?
                       AND transaction_type IN ('expense', 'refund')
                       AND strftime('%Y-%m', transaction_date) <= ? {acc_clause}
@@ -578,7 +578,7 @@ class AnalyticsService:
                                 ELSE 0
                             END
                         ) as net_minor
-                    FROM transactions
+                    FROM active_transactions
                     WHERE {t_filter}
                       AND strftime('%Y-%m', transaction_date) <= ? {acc_clause}
                     GROUP BY m

@@ -33,6 +33,18 @@ def seed_sample_data(clear_existing: bool = False):
     accounts = AccountRepository.get_all()
     categories = CategoryRepository.get_all()
 
+    if not accounts:
+        from app.backend.database.connection import DEFAULT_ACCOUNTS
+        for acc in DEFAULT_ACCOUNTS:
+            AccountRepository.create(
+                name=acc["name"],
+                account_type=acc["account_type"],
+                institution=acc["institution"],
+                opening_balance=acc["opening_balance_minor"] / 100.0,
+                currency=acc["currency"]
+            )
+        accounts = AccountRepository.get_all()
+
     if not accounts or not categories:
         return {"success": False, "message": "Missing accounts or categories"}
 

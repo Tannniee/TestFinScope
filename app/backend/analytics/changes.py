@@ -259,7 +259,7 @@ class WhatChangedEngine:
                             ELSE 0
                         END
                     ) as net_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type IN ('expense', 'refund')
                   AND transaction_date >= ? AND transaction_date <= ? {acc_clause}
                 GROUP BY wday
@@ -276,7 +276,7 @@ class WhatChangedEngine:
                             ELSE 0
                         END
                     ) as net_minor
-                FROM transactions
+                FROM active_transactions
                 WHERE transaction_type IN ('expense', 'refund')
                   AND transaction_date >= ? AND transaction_date <= ? {acc_clause}
                 GROUP BY wday
@@ -395,7 +395,7 @@ class WhatChangedEngine:
                     COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount_minor ELSE 0 END), 0) as gross_minor,
                     COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN t.amount_minor ELSE 0 END), 0) as refund_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
-                FROM transactions t
+                FROM active_transactions t
                 WHERE t.category_id = ?
                   AND t.transaction_type IN ('expense', 'refund')
                   AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
@@ -418,7 +418,7 @@ class WhatChangedEngine:
                     COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount_minor ELSE 0 END), 0) as gross_minor,
                     COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN t.amount_minor ELSE 0 END), 0) as refund_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
-                FROM transactions t
+                FROM active_transactions t
                 WHERE t.category_id = ?
                   AND t.transaction_type IN ('expense', 'refund')
                   AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}

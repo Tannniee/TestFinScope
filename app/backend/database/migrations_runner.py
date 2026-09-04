@@ -205,6 +205,19 @@ def migration_003_analytics_v2_insight_history(conn: sqlite3.Connection):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_insight_key ON insight_history(insight_key);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_insight_dismissed ON insight_history(dismissed);")
 
+@migration(4, "core_v2_active_transactions_view")
+def migration_004_core_v2_active_transactions_view(conn: sqlite3.Connection):
+    """
+    Creates canonical active_transactions view to ensure all reporting, analytics,
+    budgets, and exports deterministically exclude soft-deleted transactions.
+    """
+    conn.execute("""
+        CREATE VIEW IF NOT EXISTS active_transactions AS
+        SELECT *
+        FROM transactions
+        WHERE is_deleted = 0;
+    """)
+
 def run_migrations(conn: sqlite3.Connection):
     """Executes any pending migrations safely."""
     # Ensure migration table exists

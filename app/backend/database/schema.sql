@@ -104,3 +104,9 @@ CREATE INDEX IF NOT EXISTS idx_tx_type ON transactions(transaction_type);
 CREATE INDEX IF NOT EXISTS idx_tx_essentiality ON transactions(essentiality);
 CREATE INDEX IF NOT EXISTS idx_tx_transfer_group ON transactions(transfer_group_id);
 CREATE INDEX IF NOT EXISTS idx_budgets_period ON budgets(start_date, category_id);
+
+-- Canonical Active Transactions View (Excludes soft-deleted records)
+CREATE VIEW IF NOT EXISTS active_transactions AS
+SELECT *
+FROM transactions
+WHERE is_deleted = 0;
