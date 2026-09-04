@@ -3,6 +3,7 @@ from app.backend.repositories.transaction_repo import TransactionRepository
 from app.backend.services.transfer_service import TransferService
 from app.backend.repositories.account_repo import AccountRepository
 from app.backend.repositories.category_repo import CategoryRepository
+from app.backend.services.import_service import ImportService
 
 
 def test_bug_001_duplicate_expense_succeeds(isolated_db):
@@ -181,4 +182,102 @@ def test_bug_002_specialised_updates_succeed(isolated_db):
     assert r_success is True
     r_updated = TransactionRepository.get_by_id(ref_id)
     assert r_updated["amount_minor"] == 8000
+
+
+def test_bug_003a_amount_parsing_vnd_and_formats():
+    # 1. VND format with dots as thousands
+    val1, type1 = ImportService.parse_amount("50.000 VND")
+    assert val1 == 50000.0
+
+    val2, type2 = ImportService.parse_amount("1.500.000 đ")
+    assert val2 == 1500000.0
+
+    # 2. European format
+    val3, type3 = ImportService.parse_amount("1.250,50 EUR")
+    assert val3 == 1250.50
+
+    # 3. US format
+    val4, type4 = ImportService.parse_amount("1,250.50")
+    assert val4 == 1250.50
+
+    # 4. Accounting parentheses negative
+    val5, type5 = ImportService.parse_amount("(123.45)")
+    assert val5 == 123.45
+    assert type5 == "expense"
+
+    # 5. Invalid amount throws ValueError
+    with pytest.raises(ValueError, match="Unable to parse amount"):
+        ImportService.parse_amount("invalid-amount")
+
+
+def test_bug_003b_invalid_date_not_turned_into_today(isolated_db):
+    acc_id = AccountRepository.create("Checking Bank", "checking", opening_balance=500.0)
+
+    csv_data = """Date,Payee,Amount
+31-ABC-2025,Woolworths,-50.00
+2026-09-01,Coles Supermarket,-30.00
+"""
+    mapping = {"date": "Date", "payee": "Payee", "amount": "Amount"}
+
+    # Preview must flag invalid date
+    preview = ImportService.preview_csv(csv_data, mapping=mapping, account_id=acc_id)
+    assert preview["invalid_count"] == 1
+    assert preview["valid_count"] == 1
+    assert preview["preview_rows"][0]["is_valid"] is False
+    assert "Invalid date" in preview["preview_rows"][0]["errors"][0]
+    assert preview["preview_rows"][0]["date"] is None
+    assert preview["preview_rows"][1]["is_valid"] is True
+
+    # Commit must reject the invalid date row and only import the valid one
+    commit_res = ImportService.commit_import(csv_data, mapping=mapping, account_id=acc_id)
+    assert commit_res["imported_count"] == 1
+    assert commit_res["invalid_count"] == 1
+
+    # Invariant: Database must not contain Woolworths with today's date
+    txs = TransactionRepository.get_all(account_id=acc_id)
+    assert txs["total"] == 1
+    assert txs["items"][0]["merchant_name"] == "Coles Supermarket"
+
+
+def test_bug_003c_duplicate_detection_not_flagging_different_merchants(isolated_db):
+    acc_id = AccountRepository.create("Everyday Acc", "checking", opening_balance=1000.0)
+
+    # 1. Existing purchase at Woolworths on 2026-09-01 for $25.00
+    TransactionRepository.create({
+        "account_id": acc_id,
+        "amount": 25.0,
+        "transaction_type": "expense",
+        "merchant_name": "Woolworths",
+        "transaction_date": "2026-09-01"
+    })
+
+    # CSV has two transactions on 2026-09-01 with the same amount ($25.00):
+    # - Row 1: Chemist Warehouse (DIFFERENT merchant) -> NOT duplicate
+    # - Row 2: Woolworths (SAME merchant) -> DUPLICATE
+    csv_data = """Date,Payee,Amount
+2026-09-01,Chemist Warehouse,-25.00
+2026-09-01,Woolworths,-25.00
+"""
+    mapping = {"date": "Date", "payee": "Payee", "amount": "Amount"}
+
+    preview = ImportService.preview_csv(csv_data, mapping=mapping, account_id=acc_id)
+    assert preview["duplicate_count"] == 1
+    assert preview["valid_count"] == 1
+
+    # First row (Chemist Warehouse) is NOT duplicate
+    assert preview["preview_rows"][0]["payee"] == "Chemist Warehouse"
+    assert preview["preview_rows"][0]["is_duplicate"] is False
+
+    # Second row (Woolworths) IS duplicate
+    assert preview["preview_rows"][1]["payee"] == "Woolworths"
+    assert preview["preview_rows"][1]["is_duplicate"] is True
+
+    # Commit with deduplicate=True imports Chemist Warehouse and skips Woolworths
+    commit_res = ImportService.commit_import(csv_data, mapping=mapping, account_id=acc_id, deduplicate=True)
+    assert commit_res["imported_count"] == 1
+    assert commit_res["skipped_duplicates"] == 1
+
+    txs = TransactionRepository.get_all(account_id=acc_id)
+    assert txs["total"] == 2 # 1 pre-existing Woolworths + 1 imported Chemist Warehouse
+
 

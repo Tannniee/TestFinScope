@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from app.backend.database.connection import get_db_connection
-from app.backend.services.merchant_service import MerchantService
+from app.backend.services.merchant_service import MerchantService, normalize_merchant_name
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class ImportService:
 
     @staticmethod
     def parse_date(date_str: str) -> Optional[str]:
-        """Parses diverse date formats into standard YYYY-MM-DD."""
+        """Parses diverse date formats into standard YYYY-MM-DD. Returns None if unparseable."""
         if not date_str:
             return None
         cleaned = date_str.strip().split()[0]  # Strip time component if present
@@ -50,43 +50,75 @@ class ImportService:
     def parse_amount(amount_str: str) -> Tuple[float, str]:
         """
         Parses amount string into float and transaction type ('expense' or 'income').
-        Handles formats like ($123.45), -123.45, +123.45, 123,45 EUR, 50.000 VND.
+        Handles formats like ($123.45), -123.45, +123.45, 1.250,50 EUR, 1,250.50, 50.000 VND.
+        Raises ValueError on malformed or empty numeric values.
         """
-        if not amount_str:
-            return 0.0, "expense"
+        if not amount_str or not amount_str.strip():
+            raise ValueError("Amount string is empty.")
+
         raw = amount_str.strip()
         is_negative = False
 
         if raw.startswith("(") and raw.endswith(")"):
             is_negative = True
-            raw = raw[1:-1]
+            raw = raw[1:-1].strip()
+        elif raw.startswith("-"):
+            is_negative = True
+            raw = raw[1:].strip()
         elif "-" in raw:
             is_negative = True
-            raw = raw.replace("-", "")
+            raw = raw.replace("-", "").strip()
+        elif raw.startswith("+"):
+            is_negative = False
+            raw = raw[1:].strip()
 
-        # Remove currency symbols and non-numeric except . and ,
-        raw = re.sub(r"[^\d.,]", "", raw)
-        if not raw:
-            return 0.0, "expense"
+        # Detect currency indicators
+        has_vnd = bool(re.search(r'(?:vnd|vnđ|đ)', raw, re.IGNORECASE))
+        has_eur = bool(re.search(r'(?:eur|€)', raw, re.IGNORECASE))
 
-        # Handle European decimal comma (e.g. 1.250,50 -> 1250.50)
-        if "," in raw and "." in raw:
-            if raw.rfind(",") > raw.rfind("."):
-                raw = raw.replace(".", "").replace(",", ".")
+        # Remove currency symbols and letters, keeping only digits and separators
+        cleaned = re.sub(r"[^\d.,]", "", raw)
+        if not cleaned:
+            raise ValueError(f"Unable to parse amount: '{amount_str}'")
+
+        if has_vnd:
+            # VND has no decimal minor units; dots and commas are thousand separators
+            cleaned = cleaned.replace(".", "").replace(",", "")
+        elif "," in cleaned and "." in cleaned:
+            # Both separators present
+            last_comma = cleaned.rfind(",")
+            last_dot = cleaned.rfind(".")
+            if last_comma > last_dot:
+                # 1.250,50 EUR -> dot is thousand, comma is decimal
+                cleaned = cleaned.replace(".", "").replace(",", ".")
             else:
-                raw = raw.replace(",", "")
-        elif "," in raw and "." not in raw:
-            # Could be decimal comma like 12,50 or thousand sep 12,000
-            parts = raw.split(",")
-            if len(parts) == 2 and len(parts[1]) <= 2:
-                raw = raw.replace(",", ".")
-            else:
-                raw = raw.replace(",", "")
+                # 1,250.50 USD -> comma is thousand, dot is decimal
+                cleaned = cleaned.replace(",", "")
+        elif "," in cleaned and "." not in cleaned:
+            parts = cleaned.split(",")
+            if len(parts) > 2:
+                # e.g. 1,000,000
+                cleaned = cleaned.replace(",", "")
+            elif len(parts) == 2:
+                # e.g. 12,50 (len=2) or 50,000 (len=3)
+                if len(parts[1]) == 3 and not has_eur:
+                    cleaned = cleaned.replace(",", "")
+                else:
+                    cleaned = cleaned.replace(",", ".")
+        elif "." in cleaned and "," not in cleaned:
+            parts = cleaned.split(".")
+            if len(parts) > 2:
+                # e.g. 1.000.000 -> thousand separators
+                cleaned = cleaned.replace(".", "")
+            elif len(parts) == 2:
+                # e.g. 50.000 VND or 50.000 (3 digits ending)
+                if len(parts[1]) == 3 and (has_vnd or has_eur or len(parts[0]) <= 3):
+                    cleaned = cleaned.replace(".", "")
 
         try:
-            val = float(raw)
+            val = float(cleaned)
         except ValueError:
-            val = 0.0
+            raise ValueError(f"Unable to parse amount: '{amount_str}'")
 
         if is_negative:
             return abs(val), "expense"
@@ -137,6 +169,100 @@ class ImportService:
 
         return mapping
 
+    @staticmethod
+    def _build_fingerprint(
+        account_id: Optional[int],
+        date_str: Optional[str],
+        amount_minor: int,
+        tx_type: str,
+        payee: str,
+        desc: str = ""
+    ) -> Tuple:
+        """
+        Creates a scoped deduplication fingerprint.
+        Avoids false duplicates between different payees on the same date/amount.
+        """
+        norm_key = (normalize_merchant_name(payee) or normalize_merchant_name(desc) or "").lower()
+        return (account_id, date_str, amount_minor, tx_type, norm_key)
+
+    @classmethod
+    def _parse_csv_row(
+        cls,
+        row: List[str],
+        headers: List[str],
+        indices: Dict[str, Optional[int]],
+        existing_fingerprints: set,
+        account_id: Optional[int]
+    ) -> Dict[str, Any]:
+        """
+        Unified parser for a single CSV row.
+        Guarantees identical normalization between preview_csv and commit_import.
+        """
+        errors: List[str] = []
+
+        # 1. Date parsing
+        idx_date = indices.get("date")
+        raw_date = row[idx_date].strip() if idx_date is not None and idx_date < len(row) else ""
+        parsed_date = cls.parse_date(raw_date)
+        if not parsed_date:
+            errors.append(f"Invalid date: '{raw_date}'" if raw_date else "Missing date")
+
+        # 2. Amount and Type
+        idx_amt = indices.get("amount")
+        idx_debit = indices.get("debit")
+        idx_credit = indices.get("credit")
+        amount = 0.0
+        tx_type = "expense"
+
+        try:
+            if idx_debit is not None and idx_debit < len(row) and row[idx_debit].strip():
+                val, _ = cls.parse_amount(row[idx_debit])
+                if val > 0:
+                    amount = val
+                    tx_type = "expense"
+            elif idx_credit is not None and idx_credit < len(row) and row[idx_credit].strip():
+                val, _ = cls.parse_amount(row[idx_credit])
+                if val > 0:
+                    amount = val
+                    tx_type = "income"
+            elif idx_amt is not None and idx_amt < len(row) and row[idx_amt].strip():
+                amount, tx_type = cls.parse_amount(row[idx_amt])
+            else:
+                errors.append("Missing amount value")
+        except ValueError as ve:
+            errors.append(str(ve))
+
+        amount_minor = int(round(amount * 100))
+        if amount_minor <= 0 and not errors:
+            errors.append("Amount must be strictly greater than zero")
+
+        # 3. Payee and Description
+        idx_payee = indices.get("payee")
+        idx_desc = indices.get("description")
+        raw_payee = row[idx_payee].strip() if idx_payee is not None and idx_payee < len(row) else ""
+        raw_desc = row[idx_desc].strip() if idx_desc is not None and idx_desc < len(row) else ""
+        payee = raw_payee or raw_desc or "Bank Transaction"
+        desc = raw_desc or payee
+
+        # 4. Fingerprint and Duplicate status
+        fp = cls._build_fingerprint(account_id, parsed_date, amount_minor, tx_type, payee, desc)
+        is_duplicate = bool(parsed_date and amount_minor > 0 and fp in existing_fingerprints)
+        is_valid = len(errors) == 0
+
+        return {
+            "date": parsed_date,
+            "raw_date": raw_date,
+            "amount": amount,
+            "amount_minor": amount_minor,
+            "transaction_type": tx_type,
+            "payee": payee,
+            "description": desc,
+            "fingerprint": fp,
+            "is_duplicate": is_duplicate,
+            "is_valid": is_valid,
+            "errors": errors
+        }
+
     @classmethod
     def preview_csv(
         cls,
@@ -163,25 +289,28 @@ class ImportService:
 
         active_mapping = mapping if mapping and any(mapping.values()) else cls.auto_detect_mapping(headers)
 
-        # Build existing transaction set for duplicate detection
-        existing_txs = set()
+        # Build existing transaction fingerprints for duplicate detection
+        existing_fingerprints = set()
         if account_id:
             with get_db_connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT transaction_date, amount_minor FROM active_transactions WHERE account_id = ?",
+                    """
+                    SELECT transaction_date, amount_minor, transaction_type, merchant_name, description
+                    FROM active_transactions WHERE account_id = ?
+                    """,
                     (account_id,)
                 )
                 for r in cur.fetchall():
-                    existing_txs.add((r["transaction_date"], r["amount_minor"]))
-
-        date_col = active_mapping.get("date")
-        amount_col = active_mapping.get("amount")
-        debit_col = active_mapping.get("debit")
-        credit_col = active_mapping.get("credit")
-        payee_col = active_mapping.get("payee")
-        desc_col = active_mapping.get("description")
-        cat_col = active_mapping.get("category")
+                    fp = cls._build_fingerprint(
+                        account_id,
+                        r["transaction_date"],
+                        r["amount_minor"],
+                        r["transaction_type"],
+                        r["merchant_name"] or "",
+                        r["description"] or ""
+                    )
+                    existing_fingerprints.add(fp)
 
         def get_col_idx(col_name: Optional[str]) -> Optional[int]:
             if not col_name:
@@ -191,65 +320,43 @@ class ImportService:
             except ValueError:
                 return None
 
-        idx_date = get_col_idx(date_col)
-        idx_amt = get_col_idx(amount_col)
-        idx_debit = get_col_idx(debit_col)
-        idx_credit = get_col_idx(credit_col)
-        idx_payee = get_col_idx(payee_col)
-        idx_desc = get_col_idx(desc_col)
-        idx_cat = get_col_idx(cat_col)
+        indices = {
+            "date": get_col_idx(active_mapping.get("date")),
+            "amount": get_col_idx(active_mapping.get("amount")),
+            "debit": get_col_idx(active_mapping.get("debit")),
+            "credit": get_col_idx(active_mapping.get("credit")),
+            "payee": get_col_idx(active_mapping.get("payee")),
+            "description": get_col_idx(active_mapping.get("description")),
+            "category": get_col_idx(active_mapping.get("category"))
+        }
 
         preview_rows = []
         duplicate_count = 0
         valid_count = 0
+        invalid_count = 0
 
         for row_idx, row in enumerate(data_rows):
-            # Extract date
-            raw_date = row[idx_date] if idx_date is not None and idx_date < len(row) else ""
-            parsed_date = cls.parse_date(raw_date) or datetime.now().strftime("%Y-%m-%d")
-
-            # Extract amount and type
-            amount = 0.0
-            tx_type = "expense"
-
-            if idx_debit is not None and idx_debit < len(row) and row[idx_debit].strip():
-                val, _ = cls.parse_amount(row[idx_debit])
-                if val > 0:
-                    amount = val
-                    tx_type = "expense"
-            elif idx_credit is not None and idx_credit < len(row) and row[idx_credit].strip():
-                val, _ = cls.parse_amount(row[idx_credit])
-                if val > 0:
-                    amount = val
-                    tx_type = "income"
-            elif idx_amt is not None and idx_amt < len(row):
-                amount, tx_type = cls.parse_amount(row[idx_amt])
-
-            amount_minor = int(round(amount * 100))
-
-            # Extract payee and description
-            raw_payee = row[idx_payee].strip() if idx_payee is not None and idx_payee < len(row) else ""
-            raw_desc = row[idx_desc].strip() if idx_desc is not None and idx_desc < len(row) else ""
-            payee = raw_payee or raw_desc or "Bank Transaction"
-            desc = raw_desc or payee
-
-            # Duplicate check
-            is_dup = (parsed_date, amount_minor) in existing_txs
-            if is_dup:
+            parsed = cls._parse_csv_row(row, headers, indices, existing_fingerprints, account_id)
+            if not parsed["is_valid"]:
+                invalid_count += 1
+            elif parsed["is_duplicate"]:
                 duplicate_count += 1
-            elif amount_minor > 0:
+            else:
                 valid_count += 1
 
             preview_rows.append({
                 "row_index": row_idx,
-                "date": parsed_date,
-                "amount": amount,
-                "amount_minor": amount_minor,
-                "transaction_type": tx_type,
-                "payee": payee,
-                "description": desc,
+                "date": parsed["date"],
+                "raw_date": parsed["raw_date"],
+                "amount": parsed["amount"],
+                "amount_minor": parsed["amount_minor"],
+                "transaction_type": parsed["transaction_type"],
+                "payee": parsed["payee"],
+                "description": parsed["description"],
                 "category_suggestion": None,
-                "is_duplicate": is_dup
+                "is_duplicate": parsed["is_duplicate"],
+                "is_valid": parsed["is_valid"],
+                "errors": parsed["errors"]
             })
 
         return {
@@ -258,7 +365,8 @@ class ImportService:
             "preview_rows": preview_rows[:100],
             "total_rows": len(data_rows),
             "duplicate_count": duplicate_count,
-            "valid_count": valid_count
+            "valid_count": valid_count,
+            "invalid_count": invalid_count
         }
 
     @classmethod
@@ -270,16 +378,16 @@ class ImportService:
         deduplicate: bool = True
     ) -> Dict[str, Any]:
         """
-        Parses and inserts transactions atomically. Auto-categorizes known payees
-        via MerchantService and tags uncertain ones with needs_review = 1.
+        Parses and inserts transactions atomically using unified _parse_csv_row logic.
+        Auto-categorizes known payees via MerchantService and tags uncertain ones with needs_review = 1.
         """
-        preview = cls.preview_csv(csv_content, mapping, account_id=account_id)
-        rows_to_insert = preview["preview_rows"]
-
-        # Parse ALL rows from CSV for the actual commit
         delimiter = cls._detect_delimiter(csv_content)
         reader = csv.reader(io.StringIO(csv_content.strip()), delimiter=delimiter)
         raw_rows = [row for row in reader if row and any(cell.strip() for cell in row)]
+
+        if not raw_rows:
+            raise ValueError("No valid rows found in CSV.")
+
         headers = [h.strip() for h in raw_rows[0]]
         data_rows = raw_rows[1:]
 
@@ -291,22 +399,36 @@ class ImportService:
             except ValueError:
                 return None
 
-        idx_date = get_col_idx(mapping.get("date"))
-        idx_amt = get_col_idx(mapping.get("amount"))
-        idx_debit = get_col_idx(mapping.get("debit"))
-        idx_credit = get_col_idx(mapping.get("credit"))
-        idx_payee = get_col_idx(mapping.get("payee"))
-        idx_desc = get_col_idx(mapping.get("description"))
+        indices = {
+            "date": get_col_idx(mapping.get("date")),
+            "amount": get_col_idx(mapping.get("amount")),
+            "debit": get_col_idx(mapping.get("debit")),
+            "credit": get_col_idx(mapping.get("credit")),
+            "payee": get_col_idx(mapping.get("payee")),
+            "description": get_col_idx(mapping.get("description")),
+            "category": get_col_idx(mapping.get("category"))
+        }
 
-        existing_txs = set()
+        existing_fingerprints = set()
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute(
-                "SELECT transaction_date, amount_minor FROM active_transactions WHERE account_id = ?",
+                """
+                SELECT transaction_date, amount_minor, transaction_type, merchant_name, description
+                FROM active_transactions WHERE account_id = ?
+                """,
                 (account_id,)
             )
             for r in cur.fetchall():
-                existing_txs.add((r["transaction_date"], r["amount_minor"]))
+                fp = cls._build_fingerprint(
+                    account_id,
+                    r["transaction_date"],
+                    r["amount_minor"],
+                    r["transaction_type"],
+                    r["merchant_name"] or "",
+                    r["description"] or ""
+                )
+                existing_fingerprints.add(fp)
 
             # Load default category for unassigned
             cur.execute("SELECT id FROM categories WHERE type = 'expense' ORDER BY id ASC LIMIT 1")
@@ -316,39 +438,24 @@ class ImportService:
             now_str = datetime.now().isoformat()
             imported_count = 0
             skipped_count = 0
+            invalid_count = 0
 
             for row in data_rows:
-                raw_date = row[idx_date] if idx_date is not None and idx_date < len(row) else ""
-                parsed_date = cls.parse_date(raw_date) or datetime.now().strftime("%Y-%m-%d")
+                parsed = cls._parse_csv_row(row, headers, indices, existing_fingerprints, account_id)
 
-                amount = 0.0
-                tx_type = "expense"
-
-                if idx_debit is not None and idx_debit < len(row) and row[idx_debit].strip():
-                    val, _ = cls.parse_amount(row[idx_debit])
-                    if val > 0:
-                        amount = val
-                        tx_type = "expense"
-                elif idx_credit is not None and idx_credit < len(row) and row[idx_credit].strip():
-                    val, _ = cls.parse_amount(row[idx_credit])
-                    if val > 0:
-                        amount = val
-                        tx_type = "income"
-                elif idx_amt is not None and idx_amt < len(row):
-                    amount, tx_type = cls.parse_amount(row[idx_amt])
-
-                amount_minor = int(round(amount * 100))
-                if amount_minor <= 0:
+                if not parsed["is_valid"]:
+                    invalid_count += 1
                     continue
 
-                if deduplicate and (parsed_date, amount_minor) in existing_txs:
+                if deduplicate and parsed["is_duplicate"]:
                     skipped_count += 1
                     continue
 
-                raw_payee = row[idx_payee].strip() if idx_payee is not None and idx_payee < len(row) else ""
-                raw_desc = row[idx_desc].strip() if idx_desc is not None and idx_desc < len(row) else ""
-                payee = raw_payee or raw_desc or "Bank Transaction"
-                desc = raw_desc or payee
+                payee = parsed["payee"]
+                desc = parsed["description"]
+                parsed_date = parsed["date"]
+                amount_minor = parsed["amount_minor"]
+                tx_type = parsed["transaction_type"]
 
                 # Merchant memory lookup
                 cur.execute("SELECT default_category_id, default_essentiality FROM merchants WHERE name = ? COLLATE NOCASE", (payee,))
@@ -379,7 +486,7 @@ class ImportService:
                     now_str
                 ))
 
-                existing_txs.add((parsed_date, amount_minor))
+                existing_fingerprints.add(parsed["fingerprint"])
                 imported_count += 1
 
             conn.commit()
@@ -388,5 +495,6 @@ class ImportService:
             "success": True,
             "imported_count": imported_count,
             "skipped_duplicates": skipped_count,
+            "invalid_count": invalid_count,
             "total_processed": len(data_rows)
         }

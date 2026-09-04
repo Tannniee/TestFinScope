@@ -300,6 +300,7 @@ function renderStep3Html() {
   const rows = previewData?.preview_rows || [];
   const dups = previewData?.duplicate_count || 0;
   const valids = previewData?.valid_count || 0;
+  const invalids = previewData?.invalid_count || 0;
   const total = previewData?.total_rows || 0;
 
   return `
@@ -311,11 +312,16 @@ function renderStep3Html() {
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
           <span class="tag-pill" style="background: rgba(77, 213, 165, 0.15); color: #4DD5A5; font-weight: 600;">
-            ✓ ${valids} New Transactions
+            ✓ ${valids} Ready to Import
           </span>
           ${dups > 0 ? `
             <span class="tag-pill" style="background: rgba(255, 184, 77, 0.15); color: #FFB84D; font-weight: 600;">
-              ⚠ ${dups} Suspected Duplicates
+              ⚠ ${dups} Duplicates
+            </span>
+          ` : ''}
+          ${invalids > 0 ? `
+            <span class="tag-pill" style="background: rgba(255, 107, 138, 0.15); color: #FF6B8A; font-weight: 600;">
+              ✗ ${invalids} Invalid (Skipped)
             </span>
           ` : ''}
         </div>
@@ -341,14 +347,22 @@ function renderStep3Html() {
           </thead>
           <tbody>
             ${rows.map(r => `
-              <tr style="${r.is_duplicate ? 'background: rgba(255, 184, 77, 0.05);' : ''}">
+              <tr style="${!r.is_valid ? 'background: rgba(255, 107, 138, 0.05);' : (r.is_duplicate ? 'background: rgba(255, 184, 77, 0.05);' : '')}">
                 <td>
-                  ${r.is_duplicate
-                    ? '<span class="tag-pill" style="background: rgba(255, 184, 77, 0.2); color: #FFB84D; font-size: 11px;">Duplicate</span>'
-                    : '<span class="tag-pill" style="background: rgba(77, 213, 165, 0.15); color: #4DD5A5; font-size: 11px;">New</span>'
+                  ${!r.is_valid
+                    ? '<span class="tag-pill" style="background: rgba(255, 107, 138, 0.2); color: #FF6B8A; font-size: 11px;">Invalid</span>'
+                    : (r.is_duplicate
+                      ? '<span class="tag-pill" style="background: rgba(255, 184, 77, 0.2); color: #FFB84D; font-size: 11px;">Duplicate</span>'
+                      : '<span class="tag-pill" style="background: rgba(77, 213, 165, 0.15); color: #4DD5A5; font-size: 11px;">Ready</span>'
+                    )
                   }
                 </td>
-                <td>${escapeHtml(r.date)}</td>
+                <td>
+                  ${r.date
+                    ? `<span style="font-weight: 500;">${escapeHtml(r.date)}</span>`
+                    : `<span style="color: #FF6B8A; font-size: 11.5px;">${escapeHtml(r.raw_date || 'Invalid Date')}</span>`
+                  }
+                </td>
                 <td>
                   <span class="delta-badge ${r.transaction_type === 'income' ? 'positive' : 'negative'}">
                     ${r.transaction_type}
@@ -357,6 +371,7 @@ function renderStep3Html() {
                 <td>
                   <div style="font-weight: 600; font-size: 13px;">${escapeHtml(r.payee)}</div>
                   ${r.description && r.description !== r.payee ? `<div style="font-size: 11px; color: var(--text-muted);">${escapeHtml(r.description)}</div>` : ''}
+                  ${r.errors && r.errors.length > 0 ? `<div style="font-size: 10.5px; color: #FF6B8A; margin-top: 2px;">⚠ ${escapeHtml(r.errors.join('; '))}</div>` : ''}
                 </td>
                 <td style="text-align: right; font-weight: 700; font-family: monospace;">
                   ${state.formatCurrency(r.amount)}
