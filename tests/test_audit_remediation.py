@@ -602,6 +602,100 @@ def test_aud_006b_forecast_uses_deterministic_recurring_history(isolated_db):
     assert res2["upcoming_recurring_minor"] == 2200
 
 
+def test_aud_008_restore_rejects_unsupported_format_or_newer_schema(isolated_db):
+    """
+    AUD-008: Restore must reject backup archives with format_version > 2
+    or schema_version > MAX_SUPPORTED_SCHEMA_VERSION.
+    """
+    import zipfile
+    import json
+    from pathlib import Path
+    import pytest
+    from app.backend.services.backup_service import BackupService
+    from app.backend.database.migrations_runner import MAX_SUPPORTED_SCHEMA_VERSION
+
+    # Create a valid backup
+    backup_meta = BackupService.create_backup()
+    orig_path = Path(backup_meta["filepath"])
+
+    # 1. Test unsupported format_version
+    bad_fmt_path = orig_path.parent / "bad_format.financebackup"
+    with zipfile.ZipFile(orig_path, "r") as zin, zipfile.ZipFile(bad_fmt_path, "w") as zout:
+        for item in zin.infolist():
+            content = zin.read(item.filename)
+            if item.filename == "metadata.json":
+                meta = json.loads(content.decode("utf-8"))
+                meta["format_version"] = 99
+                content = json.dumps(meta).encode("utf-8")
+            zout.writestr(item, content)
+
+    with pytest.raises(ValueError, match="Unsupported backup format version"):
+        BackupService.restore_backup(str(bad_fmt_path))
+
+    # 2. Test newer schema_version
+    bad_sch_path = orig_path.parent / "newer_schema.financebackup"
+    with zipfile.ZipFile(orig_path, "r") as zin, zipfile.ZipFile(bad_sch_path, "w") as zout:
+        for item in zin.infolist():
+            content = zin.read(item.filename)
+            if item.filename == "metadata.json":
+                meta = json.loads(content.decode("utf-8"))
+                meta["schema_version"] = MAX_SUPPORTED_SCHEMA_VERSION + 1
+                content = json.dumps(meta).encode("utf-8")
+            zout.writestr(item, content)
+
+    with pytest.raises(ValueError, match="is newer than application supported version"):
+        BackupService.restore_backup(str(bad_sch_path))
 
 
+def test_aud_008_post_restore_failure_rolls_back_live_database(isolated_db, monkeypatch):
+    """
+    AUD-008: If a failure occurs after the validated backup is swapped into the live DB,
+    the live database must be automatically rolled back from the safety snapshot.
+    """
+    import sqlite3
+    import pytest
+    from app.backend import config
+    from app.backend.services.backup_service import BackupService
+
+    # Initial state: Account 1
+    AccountRepository.create("Account In Backup", "checking", opening_balance=500.0)
+    backup_meta = BackupService.create_backup()
+    backup_path = backup_meta["filepath"]
+
+    # Live DB state is changed before restore: Account 2 added
+    AccountRepository.create("Live Account Must Be Preserved", "checking", opening_balance=1000.0)
+
+    # Verify both accounts exist in live DB
+    accs = AccountRepository.get_all()
+    assert len(accs) == 2
+
+    # Simulate failure during post-restore check (after live_db_swapped = True)
+    real_connect = sqlite3.connect
+    state = {"in_swap": False, "dest_done": False, "failed": False}
+
+    def mock_connect(db_path, *args, **kwargs):
+        conn = real_connect(db_path, *args, **kwargs)
+        if "temp_restore_" in str(db_path):
+            state["in_swap"] = True
+        elif state.get("in_swap") and str(db_path) == str(config.DB_PATH) and not state.get("failed"):
+            if not state.get("dest_done"):
+                state["dest_done"] = True  # dest_conn in swap
+            else:
+                # post_conn check!
+                state["failed"] = True
+                raise RuntimeError("Simulated post-swap disk or integrity check failure")
+        return conn
+
+    monkeypatch.setattr("app.backend.services.backup_service.sqlite3.connect", mock_connect)
+
+    with pytest.raises(RuntimeError, match="Simulated post-swap"):
+        BackupService.restore_backup(backup_path)
+
+    # Invariant check: Live DB must have been restored to its safety snapshot
+    # containing "Live Account Must Be Preserved"!
+    monkeypatch.undo()
+    rolled_back_accs = AccountRepository.get_all()
+    names = [a["name"] for a in rolled_back_accs]
+    assert "Live Account Must Be Preserved" in names, "Live DB should have rolled back to safety backup state!"
+    assert len(rolled_back_accs) == 2
 

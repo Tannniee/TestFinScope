@@ -7,6 +7,7 @@ from app.backend.config import DB_PATH
 logger = logging.getLogger(__name__)
 
 MIGRATIONS: List[tuple[int, str, Callable[[sqlite3.Connection], None]]] = []
+MAX_SUPPORTED_SCHEMA_VERSION = 4
 
 def migration(version: int, name: str):
     def decorator(fn: Callable[[sqlite3.Connection], None]):

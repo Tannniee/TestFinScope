@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from app.backend import config
 from app.backend.database.connection import get_db_connection
+from app.backend.database.migrations_runner import MAX_SUPPORTED_SCHEMA_VERSION, run_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +49,17 @@ class BackupService:
                 tx_count = cur.fetchone()[0]
                 cur.execute("SELECT COUNT(*) FROM accounts")
                 acc_count = cur.fetchone()[0]
+
+                cur.execute("SELECT MAX(version) FROM schema_migrations")
+                schema_row = cur.fetchone()
+                schema_version = schema_row[0] if schema_row and schema_row[0] is not None else 1
             finally:
                 test_conn.close()
 
             metadata = {
                 "app": "FinScope",
                 "format_version": 2,
+                "schema_version": schema_version,
                 "created_at": datetime.now().isoformat(),
                 "is_safety_snapshot": is_safety_snapshot,
                 "transaction_count": tx_count,
@@ -113,8 +119,9 @@ class BackupService:
     @staticmethod
     def restore_backup(backup_path_str: str) -> Dict[str, Any]:
         """
-        Creates a safety backup first, validates the target backup integrity,
-        validates path traversal, and restores the database atomically using os.replace.
+        Creates a safety backup first, validates format/schema compatibility and integrity,
+        swaps validated DB into live DB, verifies post-restore health, and automatically
+        rolls back live DB from safety backup if any failure occurs post-swap (AUD-008).
         """
         backup_file = Path(backup_path_str).resolve()
         if not backup_file.exists():
@@ -130,22 +137,42 @@ class BackupService:
         except ValueError:
             raise ValueError("Path traversal rejected: Backup file must be located within the backups directory.")
 
-        # 1. Create safety backup snapshot using proper backup archive format
+        # 1. Pre-validate archive structure and metadata before any modifications
+        try:
+            with zipfile.ZipFile(backup_file, "r") as zf:
+                if "finance.db" not in zf.namelist():
+                    raise ValueError("Invalid backup archive: finance.db missing")
+                if "metadata.json" in zf.namelist():
+                    try:
+                        meta = json.loads(zf.read("metadata.json").decode("utf-8"))
+                        fmt_ver = meta.get("format_version", 1)
+                        if fmt_ver > 2:
+                            raise ValueError(f"Unsupported backup format version ({fmt_ver}). Please upgrade FinScope.")
+                        sch_ver = meta.get("schema_version")
+                        if sch_ver and sch_ver > MAX_SUPPORTED_SCHEMA_VERSION:
+                            raise ValueError(
+                                f"Backup schema version ({sch_ver}) is newer than application supported version ({MAX_SUPPORTED_SCHEMA_VERSION}). "
+                                "Please upgrade FinScope before restoring this backup."
+                            )
+                    except json.JSONDecodeError:
+                        raise ValueError("Corrupted backup metadata: invalid JSON")
+        except zipfile.BadZipFile:
+            raise ValueError("Corrupted backup archive: Not a valid ZIP file")
+
+        # 2. Create safety backup snapshot of live database
         safety_res = BackupService.create_backup(is_safety_snapshot=True)
+        safety_backup_path = Path(safety_res["filepath"])
 
         temp_extract_db = config.BACKUPS_DIR / f"temp_restore_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
-        try:
-            # 2. Verify zip structure
-            try:
-                with zipfile.ZipFile(backup_file, "r") as zf:
-                    if "finance.db" not in zf.namelist():
-                        raise ValueError("Invalid backup archive: finance.db missing")
-                    with open(temp_extract_db, "wb") as f:
-                        f.write(zf.read("finance.db"))
-            except zipfile.BadZipFile:
-                raise ValueError("Corrupted backup archive: Not a valid ZIP file")
+        live_db_swapped = False
 
-            # 3. Validate extracted database with integrity check before replacing active DB
+        try:
+            # 3. Extract database to temp file for pre-swap validation
+            with zipfile.ZipFile(backup_file, "r") as zf:
+                with open(temp_extract_db, "wb") as f:
+                    f.write(zf.read("finance.db"))
+
+            # 4. Validate extracted database with integrity check and schema verification
             check_conn = sqlite3.connect(str(temp_extract_db))
             try:
                 cur = check_conn.cursor()
@@ -154,16 +181,24 @@ class BackupService:
                 if status != "ok":
                     raise ValueError(f"Corrupted backup database: {status}")
 
-                # Check schema version
                 cur.execute("SELECT MAX(version) FROM schema_migrations")
                 row = cur.fetchone()
                 if not row or row[0] is None:
                     raise ValueError("Corrupted backup database: Missing schema migrations table")
+
+                db_schema_version = row[0]
+                if db_schema_version > MAX_SUPPORTED_SCHEMA_VERSION:
+                    raise ValueError(
+                        f"Database schema version ({db_schema_version}) is newer than supported version ({MAX_SUPPORTED_SCHEMA_VERSION})."
+                    )
+
+                # Upgrade extracted db to latest migrations if it is from an older schema version
+                run_migrations(check_conn)
             finally:
                 check_conn.close()
 
-            # 4. Atomic restore into live database using SQLite native backup API
-            # This safely overwrites all database pages and checkpoints the WAL log without Windows file-locking conflicts
+            # 5. Swap validated database into live database using SQLite native backup API
+            live_db_swapped = True
             src_conn = sqlite3.connect(str(temp_extract_db))
             try:
                 dest_conn = sqlite3.connect(str(config.DB_PATH))
@@ -175,7 +210,7 @@ class BackupService:
             finally:
                 src_conn.close()
 
-            # 5. Post-restore integrity verification
+            # 6. Post-restore integrity verification on live database
             post_conn = sqlite3.connect(str(config.DB_PATH))
             try:
                 post_cur = post_conn.cursor()
@@ -195,7 +230,34 @@ class BackupService:
             }
 
         except Exception as e:
-            logger.exception("Restore failed: %s. Preserving original database.", e)
+            logger.exception("Restore failed: %s.", e)
+            # Automatic Rollback if failure occurred after live DB was modified (AUD-008)
+            if live_db_swapped:
+                logger.warning("Attempting automatic live database rollback from safety snapshot: %s", safety_backup_path)
+                rollback_temp_db = config.BACKUPS_DIR / f"temp_rollback_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
+                try:
+                    with zipfile.ZipFile(safety_backup_path, "r") as szf:
+                        with open(rollback_temp_db, "wb") as rf:
+                            rf.write(szf.read("finance.db"))
+                    r_src = sqlite3.connect(str(rollback_temp_db))
+                    try:
+                        r_dest = sqlite3.connect(str(config.DB_PATH))
+                        try:
+                            r_src.backup(r_dest)
+                            r_dest.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                        finally:
+                            r_dest.close()
+                    finally:
+                        r_src.close()
+                    logger.info("Live database successfully rolled back to pre-restore state.")
+                except Exception as rb_err:
+                    logger.critical("CRITICAL: Failed to rollback live database from safety backup: %s", rb_err)
+                finally:
+                    if rollback_temp_db.exists():
+                        try:
+                            os.remove(rollback_temp_db)
+                        except OSError:
+                            pass
             raise
 
         finally:
