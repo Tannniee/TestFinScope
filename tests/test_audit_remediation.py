@@ -94,3 +94,61 @@ def test_aud_002_soft_deleted_transaction_excluded_from_changes_and_anomalies(is
         """, (cat_id,))
         row = cur.fetchone()
         assert row["total_net"] == 15000
+
+
+def test_aud_001_account_currency_must_match_base_currency(isolated_db):
+    """
+    AUD-001: All accounts must use the application's base currency.
+    Creating or updating an account with a mismatched currency must be rejected.
+    """
+    from app.backend.services.settings_service import SettingsService
+
+    # Base currency is USD by default
+    base_curr = SettingsService.get_setting("currency", "USD")
+    assert base_curr == "USD"
+
+    # Creating account with USD or None succeeds
+    acc1 = AccountRepository.create("Checking USD", "checking", opening_balance=500.0, currency="USD")
+    acc_data = AccountRepository.get_by_id(acc1)
+    assert acc_data["currency"] == "USD"
+
+    # Creating account with non-base currency (e.g. VND) is rejected
+    with pytest.raises(ValueError, match="does not match application base currency"):
+        AccountRepository.create("Savings VN", "savings", opening_balance=1000000.0, currency="VND")
+
+    # Updating account currency to non-base currency is rejected
+    with pytest.raises(ValueError, match="cannot be changed away from base currency"):
+        AccountRepository.update(acc1, currency="EUR")
+
+
+def test_aud_001_cannot_change_currency_after_transactions_exist(isolated_db):
+    """
+    AUD-001: Changing the application base currency is prohibited once
+    financial transactions exist in the database.
+    """
+    from app.backend.services.settings_service import SettingsService
+
+    acc_id = AccountRepository.create("Everyday Acc", "checking", opening_balance=100.0)
+
+    # 1. Before any transactions exist, changing currency succeeds and updates existing accounts
+    SettingsService.update_settings({"currency": "EUR"})
+    assert SettingsService.get_setting("currency") == "EUR"
+    acc = AccountRepository.get_by_id(acc_id)
+    assert acc["currency"] == "EUR"
+
+    # 2. Record an active transaction
+    TransactionRepository.create({
+        "account_id": acc_id,
+        "amount": 25.0,
+        "transaction_type": "expense",
+        "merchant_name": "Cafe Paris",
+        "transaction_date": "2026-08-01"
+    })
+
+    # 3. Attempting to change currency after transactions exist must be rejected
+    with pytest.raises(ValueError, match="Base currency cannot be changed after financial transactions"):
+        SettingsService.update_settings({"currency": "USD"})
+
+    with pytest.raises(ValueError, match="Base currency cannot be changed after financial transactions"):
+        SettingsService.set_setting("currency", "USD")
+

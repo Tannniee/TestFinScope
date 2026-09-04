@@ -203,9 +203,9 @@ class TestFinScopeSafety(unittest.TestCase):
 
     def test_06_configurable_currency(self):
         """Verifies currency setting can be saved and retrieved."""
-        SettingsService.set_setting("currency", "VND")
+        SettingsService.set_setting("currency", "VND", force=True)
         self.assertEqual(SettingsService.get_setting("currency"), "VND")
-        SettingsService.set_setting("currency", "USD")
+        SettingsService.set_setting("currency", "USD", force=True)
         self.assertEqual(SettingsService.get_setting("currency"), "USD")
 
 if __name__ == "__main__":

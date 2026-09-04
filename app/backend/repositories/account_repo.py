@@ -63,7 +63,12 @@ class AccountRepository:
         return 0.0
 
     @staticmethod
-    def create(name: str, account_type: str, institution: str = "", opening_balance: float = 0.0, currency: str = "USD") -> int:
+    def create(name: str, account_type: str, institution: str = "", opening_balance: float = 0.0, currency: Optional[str] = None) -> int:
+        from app.backend.services.settings_service import SettingsService
+        base_currency = SettingsService.get_setting("currency", "USD") or "USD"
+        if currency and currency != base_currency:
+            raise ValueError(f"Account currency '{currency}' does not match application base currency '{base_currency}'.")
+        target_currency = base_currency
         opening_minor = int(round(float(opening_balance) * 100))
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -72,13 +77,19 @@ class AccountRepository:
                 INSERT INTO accounts (name, account_type, institution, opening_balance_minor, currency)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (name, account_type, institution, opening_minor, currency)
+                (name, account_type, institution, opening_minor, target_currency)
             )
             conn.commit()
             return cur.lastrowid
 
     @staticmethod
     def update(account_id: int, **fields) -> bool:
+        if "currency" in fields:
+            from app.backend.services.settings_service import SettingsService
+            base_currency = SettingsService.get_setting("currency", "USD") or "USD"
+            if fields["currency"] != base_currency:
+                raise ValueError(f"Account currency cannot be changed away from base currency '{base_currency}'.")
+
         allowed = {"name", "account_type", "institution", "currency", "is_archived"}
         updates = {k: v for k, v in fields.items() if k in allowed}
 
