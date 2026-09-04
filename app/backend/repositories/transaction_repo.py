@@ -151,14 +151,14 @@ class TransactionRepository:
             orig_id = data["refund_of_transaction_id"]
             orig = TransactionRepository.get_by_id(orig_id)
             if orig:
-                with get_db_connection() as conn:
-                    cur = conn.cursor()
-                    cur.execute("""
+                with get_db_connection() as check_conn:
+                    check_cur = check_conn.cursor()
+                    check_cur.execute("""
                         SELECT COALESCE(SUM(amount_minor), 0)
                         FROM active_transactions
                         WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
                     """, (orig_id,))
-                    existing_refunded_minor = cur.fetchone()[0]
+                    existing_refunded_minor = check_cur.fetchone()[0]
                 remaining_minor = orig["amount_minor"] - existing_refunded_minor
                 if amount_minor > remaining_minor:
                     raise ValueError(
@@ -166,47 +166,73 @@ class TransactionRepository:
                     )
 
         with get_db_connection() as conn:
-            cur = conn.cursor()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.cursor()
 
-            # Handle Uncategorized for expense if category is missing
-            if tx_type == "expense" and not category_id:
-                cur.execute("SELECT id FROM categories WHERE name = 'Uncategorized'")
-                uncat_row = cur.fetchone()
-                if uncat_row:
-                    category_id = uncat_row["id"]
-                    needs_review = 1
+                # Re-validate refund bounds inside transaction lock if refund
+                if tx_type == "refund" and data.get("refund_of_transaction_id"):
+                    orig_id = data["refund_of_transaction_id"]
+                    cur.execute("SELECT * FROM transactions WHERE id = ?", (orig_id,))
+                    locked_orig = cur.fetchone()
+                    if locked_orig:
+                        if locked_orig["transaction_type"] != "expense":
+                            raise ValueError(f"Cannot refund a transaction of type '{locked_orig['transaction_type']}'; only expenses can be refunded.")
+                        cur.execute("""
+                            SELECT COALESCE(SUM(amount_minor), 0)
+                            FROM active_transactions
+                            WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
+                        """, (orig_id,))
+                        locked_existing = cur.fetchone()[0]
+                        locked_remaining = locked_orig["amount_minor"] - locked_existing
+                        if amount_minor > locked_remaining:
+                            raise ValueError(
+                                f"Cumulative refunds exceed original expense amount (Remaining: ${locked_remaining / 100:.2f}, Attempted: ${amount_minor / 100:.2f})."
+                            )
 
-            cur.execute("""
-                INSERT INTO transactions (
-                    account_id, category_id, merchant_id, merchant_name, transaction_type,
-                    amount_minor, transaction_date, transaction_time, description,
-                    note, is_recurring, payment_method, essentiality,
-                    transfer_group_id, transfer_role, linked_transaction_id,
-                    refund_of_transaction_id, source, needs_review, is_deleted
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-            """, (
-                data["account_id"],
-                category_id,
-                merchant_id,
-                clean_merchant or raw_merchant,
-                tx_type,
-                amount_minor,
-                data["transaction_date"],
-                data.get("transaction_time", "12:00"),
-                data.get("description", "") or clean_merchant,
-                data.get("note", ""),
-                1 if data.get("is_recurring") else 0,
-                data.get("payment_method", "Card"),
-                data.get("essentiality", "discretionary"),
-                data.get("transfer_group_id"),
-                data.get("transfer_role"),
-                data.get("linked_transaction_id"),
-                data.get("refund_of_transaction_id"),
-                data.get("source", "manual"),
-                needs_review
-            ))
-            conn.commit()
-            return cur.lastrowid
+                # Handle Uncategorized for expense if category is missing
+                if tx_type == "expense" and not category_id:
+                    cur.execute("SELECT id FROM categories WHERE name = 'Uncategorized'")
+                    uncat_row = cur.fetchone()
+                    if uncat_row:
+                        category_id = uncat_row["id"]
+                        needs_review = 1
+
+                cur.execute("""
+                    INSERT INTO transactions (
+                        account_id, category_id, merchant_id, merchant_name, transaction_type,
+                        amount_minor, transaction_date, transaction_time, description,
+                        note, is_recurring, payment_method, essentiality,
+                        transfer_group_id, transfer_role, linked_transaction_id,
+                        refund_of_transaction_id, source, needs_review, is_deleted
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """, (
+                    data["account_id"],
+                    category_id,
+                    merchant_id,
+                    clean_merchant or raw_merchant,
+                    tx_type,
+                    amount_minor,
+                    data["transaction_date"],
+                    data.get("transaction_time", "12:00"),
+                    data.get("description", "") or clean_merchant,
+                    data.get("note", ""),
+                    1 if data.get("is_recurring") else 0,
+                    data.get("payment_method", "Card"),
+                    data.get("essentiality", "discretionary"),
+                    data.get("transfer_group_id"),
+                    data.get("transfer_role"),
+                    data.get("linked_transaction_id"),
+                    data.get("refund_of_transaction_id"),
+                    data.get("source", "manual"),
+                    needs_review
+                ))
+                new_id = cur.lastrowid
+                conn.commit()
+                return new_id
+            except Exception:
+                conn.rollback()
+                raise
 
     @staticmethod
     def create_transfer(
@@ -239,60 +265,76 @@ class TransactionRepository:
         note: str = ""
     ) -> int:
         """
-        Creates a refund linked to an original expense transaction.
+        Creates a refund linked to an original expense transaction atomically under BEGIN IMMEDIATE.
         Enforces:
         1. Original transaction exists.
         2. Original transaction is an expense.
         3. Refund amount is strictly positive.
         4. Cumulative active refunds do not exceed the original expense amount.
         """
-        orig = TransactionRepository.get_by_id(original_tx_id)
-        if not orig:
-            raise ValueError(f"Original transaction {original_tx_id} not found.")
-
-        if orig["transaction_type"] != "expense":
-            raise ValueError(f"Cannot refund a transaction of type '{orig['transaction_type']}'; only expenses can be refunded.")
-
         refund_minor = int(round(float(amount) * 100))
         if refund_minor <= 0:
             raise ValueError("Refund amount must be strictly positive.")
 
-        # Check cumulative refund limit against active transactions
         with get_db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT COALESCE(SUM(amount_minor), 0)
-                FROM active_transactions
-                WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
-            """, (original_tx_id,))
-            existing_refunded_minor = cur.fetchone()[0]
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM transactions WHERE id = ?", (original_tx_id,))
+                orig = cur.fetchone()
+                if not orig:
+                    raise ValueError(f"Original transaction {original_tx_id} not found.")
 
-        remaining_refundable_minor = orig["amount_minor"] - existing_refunded_minor
-        if refund_minor > remaining_refundable_minor:
-            raise ValueError(
-                f"Refund amount of ${refund_minor / 100:.2f} exceeds remaining refundable balance of ${remaining_refundable_minor / 100:.2f} "
-                f"(Original: ${orig['amount_minor'] / 100:.2f}, Prior Refunds: ${existing_refunded_minor / 100:.2f})."
-            )
+                if orig["transaction_type"] != "expense":
+                    raise ValueError(f"Cannot refund a transaction of type '{orig['transaction_type']}'; only expenses can be refunded.")
 
-        target_acc_id = account_id or orig["account_id"]
-        merchant_name = orig.get("merchant_name", "")
-        desc = f"Refund: {orig.get('description', merchant_name)}"
+                # Check cumulative refund limit against active transactions
+                cur.execute("""
+                    SELECT COALESCE(SUM(amount_minor), 0)
+                    FROM active_transactions
+                    WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
+                """, (original_tx_id,))
+                existing_refunded_minor = cur.fetchone()[0]
 
-        refund_data = {
-            "account_id": target_acc_id,
-            "category_id": orig["category_id"],
-            "merchant_name": merchant_name,
-            "transaction_type": "refund",
-            "amount": amount,
-            "transaction_date": transaction_date,
-            "transaction_time": datetime.now().strftime("%H:%M"),
-            "description": desc,
-            "note": note,
-            "essentiality": orig.get("essentiality", "discretionary"),
-            "refund_of_transaction_id": original_tx_id,
-            "source": "manual"
-        }
-        return TransactionRepository.create(refund_data)
+                remaining_refundable_minor = orig["amount_minor"] - existing_refunded_minor
+                if refund_minor > remaining_refundable_minor:
+                    raise ValueError(
+                        f"Refund amount of ${refund_minor / 100:.2f} exceeds remaining refundable balance of ${remaining_refundable_minor / 100:.2f} "
+                        f"(Original: ${orig['amount_minor'] / 100:.2f}, Prior Refunds: ${existing_refunded_minor / 100:.2f})."
+                    )
+
+                target_acc_id = account_id or orig["account_id"]
+                merchant_name = orig["merchant_name"] or ""
+                desc = f"Refund: {orig['description'] or merchant_name}"
+
+                cur.execute("""
+                    INSERT INTO transactions (
+                        account_id, category_id, merchant_id, merchant_name, transaction_type,
+                        amount_minor, transaction_date, transaction_time, description,
+                        note, is_recurring, payment_method, essentiality,
+                        transfer_group_id, transfer_role, linked_transaction_id,
+                        refund_of_transaction_id, source, needs_review, is_deleted
+                    ) VALUES (?, ?, ?, ?, 'refund', ?, ?, ?, ?, ?, 0, ?, ?, NULL, NULL, NULL, ?, 'manual', 0, 0)
+                """, (
+                    target_acc_id,
+                    orig["category_id"],
+                    orig["merchant_id"],
+                    merchant_name,
+                    refund_minor,
+                    transaction_date,
+                    datetime.now().strftime("%H:%M"),
+                    desc,
+                    note,
+                    orig["payment_method"] or "Card",
+                    orig["essentiality"] or "discretionary",
+                    original_tx_id
+                ))
+                new_id = cur.lastrowid
+                conn.commit()
+                return new_id
+            except Exception:
+                conn.rollback()
+                raise
 
     @staticmethod
     def update_refund(
@@ -303,47 +345,59 @@ class TransactionRepository:
         account_id: Optional[int] = None
     ) -> bool:
         """
-        Updates an existing refund transaction, enforcing that the updated amount
-        does not cause total cumulative refunds to exceed the original expense.
+        Updates an existing refund transaction atomically under BEGIN IMMEDIATE,
+        enforcing that the updated amount does not cause total cumulative refunds
+        to exceed the original expense.
         """
-        orig_refund = TransactionRepository.get_by_id(tx_id)
-        if not orig_refund:
-            raise ValueError(f"Refund transaction {tx_id} not found.")
-        if orig_refund["transaction_type"] != "refund":
-            raise ValueError(f"Transaction {tx_id} is not a refund.")
+        with get_db_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,))
+                orig_refund = cur.fetchone()
+                if not orig_refund:
+                    raise ValueError(f"Refund transaction {tx_id} not found.")
+                if orig_refund["transaction_type"] != "refund":
+                    raise ValueError(f"Transaction {tx_id} is not a refund.")
 
-        new_amount_minor = int(round(float(amount) * 100)) if amount is not None else orig_refund["amount_minor"]
-        if new_amount_minor <= 0:
-            raise ValueError("Refund amount must be strictly positive.")
+                new_amount_minor = int(round(float(amount) * 100)) if amount is not None else orig_refund["amount_minor"]
+                if new_amount_minor <= 0:
+                    raise ValueError("Refund amount must be strictly positive.")
 
-        parent_id = orig_refund.get("refund_of_transaction_id")
-        if parent_id:
-            parent_tx = TransactionRepository.get_by_id(parent_id)
-            if parent_tx:
-                with get_db_connection() as conn:
-                    cur = conn.cursor()
-                    cur.execute("""
-                        SELECT COALESCE(SUM(amount_minor), 0)
-                        FROM active_transactions
-                        WHERE refund_of_transaction_id = ? AND transaction_type = 'refund' AND id != ?
-                    """, (parent_id, tx_id))
-                    other_refunds = cur.fetchone()[0]
-                
-                remaining = parent_tx["amount_minor"] - other_refunds
-                if new_amount_minor > remaining:
-                    raise ValueError(
-                        f"Updated refund amount of ${new_amount_minor / 100:.2f} exceeds remaining refundable balance of ${remaining / 100:.2f}."
-                    )
+                parent_id = orig_refund["refund_of_transaction_id"]
+                if parent_id:
+                    cur.execute("SELECT * FROM transactions WHERE id = ?", (parent_id,))
+                    parent_tx = cur.fetchone()
+                    if parent_tx:
+                        cur.execute("""
+                            SELECT COALESCE(SUM(amount_minor), 0)
+                            FROM active_transactions
+                            WHERE refund_of_transaction_id = ? AND transaction_type = 'refund' AND id != ?
+                        """, (parent_id, tx_id))
+                        other_refunds = cur.fetchone()[0]
 
-        update_payload: Dict[str, Any] = {"amount_minor": new_amount_minor}
-        if transaction_date:
-            update_payload["transaction_date"] = transaction_date
-        if note is not None:
-            update_payload["note"] = note
-        if account_id is not None:
-            update_payload["account_id"] = account_id
+                        remaining = parent_tx["amount_minor"] - other_refunds
+                        if new_amount_minor > remaining:
+                            raise ValueError(
+                                f"Updated refund amount of ${new_amount_minor / 100:.2f} exceeds remaining refundable balance of ${remaining / 100:.2f}."
+                            )
 
-        return TransactionRepository._update_fields(tx_id, update_payload)
+                updates: Dict[str, Any] = {"amount_minor": new_amount_minor, "updated_at": datetime.now().isoformat()}
+                if transaction_date:
+                    updates["transaction_date"] = transaction_date
+                if note is not None:
+                    updates["note"] = note
+                if account_id is not None:
+                    updates["account_id"] = account_id
+
+                set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+                values = list(updates.values()) + [tx_id]
+                cur.execute(f"UPDATE transactions SET {set_clause} WHERE id = ?", values)
+                conn.commit()
+                return cur.rowcount > 0
+            except Exception:
+                conn.rollback()
+                raise
 
     @staticmethod
     def _update_fields(tx_id: int, data: Dict[str, Any]) -> bool:

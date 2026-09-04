@@ -152,3 +152,151 @@ def test_aud_001_cannot_change_currency_after_transactions_exist(isolated_db):
     with pytest.raises(ValueError, match="Base currency cannot be changed after financial transactions"):
         SettingsService.set_setting("currency", "USD")
 
+
+def test_aud_003_create_refund_is_atomic(isolated_db):
+    """
+    AUD-003: create_refund enforces bounds atomically.
+    Over-refund is rejected, and failed refund attempts leave no dirty state.
+    """
+    acc_id = AccountRepository.create("Expense Acc", "checking", opening_balance=500.0)
+    cat_id = CategoryRepository.create("Electronics", "expense", icon="laptop", color="#2980B9")
+
+    orig_id = TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_id,
+        "amount": 100.0,
+        "transaction_type": "expense",
+        "merchant_name": "Gadget Store",
+        "transaction_date": "2026-08-15"
+    })
+
+    # 1. Partial refund of $40 succeeds
+    ref1_id = TransactionRepository.create_refund(orig_id, 40.0, "2026-08-16")
+    assert ref1_id > 0
+
+    # 2. Refund exceeding remaining balance ($70 > $60) must be rejected
+    with pytest.raises(ValueError, match="exceeds remaining refundable balance"):
+        TransactionRepository.create_refund(orig_id, 70.0, "2026-08-17")
+
+    # 3. Exact remaining balance ($60) succeeds
+    ref2_id = TransactionRepository.create_refund(orig_id, 60.0, "2026-08-18")
+    assert ref2_id > 0
+
+    # 4. Any further refund is completely rejected
+    with pytest.raises(ValueError, match="exceeds remaining refundable balance"):
+        TransactionRepository.create_refund(orig_id, 0.01, "2026-08-19")
+
+
+def test_aud_003_concurrent_refunds_cannot_over_refund(isolated_db):
+    """
+    AUD-003: Race condition test: Two concurrent threads attempting to refund $70
+    on a $100 expense. Exactly one must succeed, and the other must fail with over-refund error.
+    """
+    import concurrent.futures
+
+    acc_id = AccountRepository.create("Checking", "checking", opening_balance=500.0)
+    cat_id = CategoryRepository.create("Shopping", "expense", icon="shopping-bag", color="#8E44AD")
+
+    orig_id = TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_id,
+        "amount": 100.0,
+        "transaction_type": "expense",
+        "merchant_name": "Apple Store",
+        "transaction_date": "2026-08-20"
+    })
+
+    results = []
+    errors = []
+
+    def attempt_refund():
+        try:
+            rid = TransactionRepository.create_refund(orig_id, 70.0, "2026-08-21")
+            results.append(rid)
+        except Exception as e:
+            errors.append(e)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(attempt_refund)
+        f2 = executor.submit(attempt_refund)
+        concurrent.futures.wait([f1, f2])
+
+    # Exactly 1 success and 1 failure
+    assert len(results) == 1, f"Expected exactly 1 success, got {len(results)}"
+    assert len(errors) == 1, f"Expected exactly 1 failure, got {len(errors)}"
+    assert "exceeds remaining refundable balance" in str(errors[0]) or "database is locked" in str(errors[0])
+
+    # Total refunded in DB must be exactly 7000 minor ($70.00)
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT SUM(amount_minor) FROM active_transactions
+            WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
+        """, (orig_id,))
+        total = cur.fetchone()[0]
+        assert total == 7000
+
+
+def test_aud_003_refund_update_is_atomic(isolated_db):
+    """
+    AUD-003: Updating a refund transaction amount cannot exceed the parent expense limit.
+    """
+    acc_id = AccountRepository.create("Card Acc", "credit", opening_balance=0.0)
+    cat_id = CategoryRepository.create("Apparel", "expense", icon="shirt", color="#16A085")
+
+    orig_id = TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_id,
+        "amount": 100.0,
+        "transaction_type": "expense",
+        "merchant_name": "Zara",
+        "transaction_date": "2026-08-20"
+    })
+
+    ref1_id = TransactionRepository.create_refund(orig_id, 30.0, "2026-08-21")
+    ref2_id = TransactionRepository.create_refund(orig_id, 40.0, "2026-08-22")
+
+    # Current: 30 + 40 = 70. Remaining is 30.
+    # Increasing ref1 to 50: 50 + 40 = 90 <= 100 -> Succeeds
+    assert TransactionRepository.update_refund(ref1_id, amount=50.0) is True
+
+    # Increasing ref2 to 60: 50 + 60 = 110 > 100 -> Must raise ValueError
+    with pytest.raises(ValueError, match="exceeds remaining refundable balance"):
+        TransactionRepository.update_refund(ref2_id, amount=60.0)
+
+    # Verify ref2 is unchanged (still 4000 minor)
+    ref2 = TransactionRepository.get_by_id(ref2_id)
+    assert ref2["amount_minor"] == 4000
+
+
+def test_aud_003_deleted_refund_restores_refundable_amount(isolated_db):
+    """
+    AUD-003: Soft-deleting a refund excludes it from active_transactions and
+    restores the available refundable balance on the parent expense.
+    """
+    acc_id = AccountRepository.create("Wallet", "cash", opening_balance=200.0)
+    cat_id = CategoryRepository.create("Books", "expense", icon="book", color="#D35400")
+
+    orig_id = TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_id,
+        "amount": 50.0,
+        "transaction_type": "expense",
+        "merchant_name": "Bookstore",
+        "transaction_date": "2026-08-20"
+    })
+
+    ref_id = TransactionRepository.create_refund(orig_id, 50.0, "2026-08-21")
+
+    # Fully refunded, cannot refund more
+    with pytest.raises(ValueError, match="exceeds remaining refundable balance"):
+        TransactionRepository.create_refund(orig_id, 10.0, "2026-08-22")
+
+    # Soft-delete the refund
+    TransactionRepository.delete(ref_id)
+
+    # Now refundable balance is restored, can refund $30
+    new_ref_id = TransactionRepository.create_refund(orig_id, 30.0, "2026-08-23")
+    assert new_ref_id > 0
+
+
