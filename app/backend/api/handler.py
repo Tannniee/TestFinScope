@@ -298,13 +298,15 @@ class ApiHandler:
         csv_content: str,
         mapping: Optional[Dict[str, str]] = None,
         account_id: Optional[int] = None,
+        date_format: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
         from app.backend.services.import_service import ImportService
         return ImportService.preview_csv(
             csv_content=csv_content,
             mapping=mapping or kwargs.get("mapping"),
-            account_id=account_id or kwargs.get("account_id")
+            account_id=account_id or kwargs.get("account_id"),
+            date_format=date_format or kwargs.get("date_format")
         )
 
     def commit_csv_import(
@@ -313,6 +315,7 @@ class ApiHandler:
         mapping: Optional[Dict[str, str]] = None,
         account_id: Optional[int] = None,
         deduplicate: bool = True,
+        date_format: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
         from app.backend.services.import_service import ImportService
@@ -323,7 +326,8 @@ class ApiHandler:
             csv_content=csv_content,
             mapping=mapping or kwargs.get("mapping", {}),
             account_id=acc_id,
-            deduplicate=deduplicate if deduplicate is not None else kwargs.get("deduplicate", True)
+            deduplicate=deduplicate if deduplicate is not None else kwargs.get("deduplicate", True),
+            date_format=date_format or kwargs.get("date_format")
         )
 
     # --- Recurring Rules & Bills ---

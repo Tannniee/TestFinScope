@@ -29,11 +29,83 @@ class ImportService:
         return ","
 
     @staticmethod
-    def parse_date(date_str: str) -> Optional[str]:
-        """Parses diverse date formats into standard YYYY-MM-DD. Returns None if unparseable."""
+    def parse_date(date_str: str, date_format: Optional[str] = None) -> Optional[str]:
+        """
+        Parses diverse date formats into standard YYYY-MM-DD.
+        Supports explicit date_format: 'auto', 'DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'.
+        In 'auto' mode, if date is ambiguous (e.g. 01/02/2026 where both day and month <= 12 and day != month),
+        raises ValueError prompting the user to select an explicit format.
+        """
         if not date_str:
             return None
         cleaned = date_str.strip().split()[0]  # Strip time component if present
+
+        mode = (date_format or "auto").strip().upper()
+
+        if mode in ("DD/MM/YYYY", "DMY", "DD-MM-YYYY"):
+            formats = ["%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"]
+            for fmt in formats:
+                try:
+                    return datetime.strptime(cleaned, fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+            return None
+
+        if mode in ("MM/DD/YYYY", "MDY", "MM-DD-YYYY"):
+            formats = ["%m/%d/%Y", "%m-%d-%Y", "%m.%d.%Y"]
+            for fmt in formats:
+                try:
+                    return datetime.strptime(cleaned, fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+            return None
+
+        if mode in ("YYYY-MM-DD", "YMD", "YYYY/MM/DD"):
+            formats = ["%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"]
+            for fmt in formats:
+                try:
+                    return datetime.strptime(cleaned, fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+            return None
+
+        # Mode is 'AUTO':
+        # 1. Unambiguous ISO format (Year is 4 digits first)
+        iso_match = re.match(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$", cleaned)
+        if iso_match:
+            try:
+                y, m, d = int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3))
+                return datetime(y, m, d).strftime("%Y-%m-%d")
+            except ValueError:
+                return None
+
+        # 2. 3 parts with 4-digit year at end: e.g. 01/02/2026 or 25-12-2026
+        dmy_match = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$", cleaned)
+        if dmy_match:
+            p1, p2, year = int(dmy_match.group(1)), int(dmy_match.group(2)), int(dmy_match.group(3))
+            # If both p1 and p2 <= 12 and p1 != p2: AMBIGUOUS!
+            if 1 <= p1 <= 12 and 1 <= p2 <= 12 and p1 != p2:
+                raise ValueError(f"Ambiguous date '{cleaned}': could be DD/MM/YYYY or MM/DD/YYYY. Please select an explicit date format in Step 2.")
+            elif p1 > 12 and 1 <= p2 <= 12:
+                # Unambiguously DD/MM/YYYY (day > 12)
+                try:
+                    return datetime(year, p2, p1).strftime("%Y-%m-%d")
+                except ValueError:
+                    return None
+            elif p2 > 12 and 1 <= p1 <= 12:
+                # Unambiguously MM/DD/YYYY (day > 12 in second slot)
+                try:
+                    return datetime(year, p1, p2).strftime("%Y-%m-%d")
+                except ValueError:
+                    return None
+            elif p1 == p2 and 1 <= p1 <= 12:
+                # Same day and month e.g. 05/05/2026
+                try:
+                    return datetime(year, p1, p2).strftime("%Y-%m-%d")
+                except ValueError:
+                    return None
+
+        # Fallback formats for auto mode
         formats = [
             "%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%d-%m-%Y",
             "%m/%d/%Y", "%m-%d-%Y", "%d.%m.%Y", "%Y.%m.%d"
@@ -179,11 +251,13 @@ class ImportService:
         desc: str = ""
     ) -> Tuple:
         """
-        Creates a scoped deduplication fingerprint.
-        Avoids false duplicates between different payees on the same date/amount.
+        Creates a scoped deduplication fingerprint (AUD-004C).
+        Avoids false duplicates between different payees or distinct descriptions on the same date/amount,
+        while seamlessly matching records where payee or description is used as the primary identifier.
         """
-        norm_key = (normalize_merchant_name(payee) or normalize_merchant_name(desc) or "").lower()
-        return (account_id, date_str, amount_minor, tx_type, norm_key)
+        effective_merchant = (normalize_merchant_name(payee) or normalize_merchant_name(desc) or "").lower().strip()
+        effective_desc = re.sub(r'\s+', ' ', (desc or payee or "").lower().strip())
+        return (account_id, date_str, amount_minor, tx_type, effective_merchant, effective_desc)
 
     @classmethod
     def _parse_csv_row(
@@ -192,7 +266,8 @@ class ImportService:
         headers: List[str],
         indices: Dict[str, Optional[int]],
         existing_fingerprints: set,
-        account_id: Optional[int]
+        account_id: Optional[int],
+        date_format: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Unified parser for a single CSV row.
@@ -203,9 +278,15 @@ class ImportService:
         # 1. Date parsing
         idx_date = indices.get("date")
         raw_date = row[idx_date].strip() if idx_date is not None and idx_date < len(row) else ""
-        parsed_date = cls.parse_date(raw_date)
-        if not parsed_date:
-            errors.append(f"Invalid date: '{raw_date}'" if raw_date else "Missing date")
+        parsed_date = None
+        try:
+            parsed_date = cls.parse_date(raw_date, date_format=date_format)
+            if not parsed_date and raw_date:
+                errors.append(f"Invalid date: '{raw_date}'")
+            elif not raw_date:
+                errors.append("Missing date")
+        except ValueError as ve:
+            errors.append(str(ve))
 
         # 2. Amount and Type
         idx_amt = indices.get("amount")
@@ -268,11 +349,13 @@ class ImportService:
         cls,
         csv_content: str,
         mapping: Optional[Dict[str, str]] = None,
-        account_id: Optional[int] = None
+        account_id: Optional[int] = None,
+        date_format: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Parses CSV, suggests column mapping if missing, normalizes fields,
         and identifies duplicate transactions against the target account.
+        Uses working_fingerprints to detect in-file duplicates during preview (AUD-004A).
         """
         if not csv_content or not csv_content.strip():
             raise ValueError("CSV content is empty.")
@@ -312,6 +395,9 @@ class ImportService:
                     )
                     existing_fingerprints.add(fp)
 
+        # Working set for in-file duplicate detection (AUD-004A)
+        working_fingerprints = set(existing_fingerprints)
+
         def get_col_idx(col_name: Optional[str]) -> Optional[int]:
             if not col_name:
                 return None
@@ -336,13 +422,15 @@ class ImportService:
         invalid_count = 0
 
         for row_idx, row in enumerate(data_rows):
-            parsed = cls._parse_csv_row(row, headers, indices, existing_fingerprints, account_id)
+            parsed = cls._parse_csv_row(row, headers, indices, working_fingerprints, account_id, date_format=date_format)
             if not parsed["is_valid"]:
                 invalid_count += 1
             elif parsed["is_duplicate"]:
                 duplicate_count += 1
             else:
                 valid_count += 1
+                if parsed["fingerprint"]:
+                    working_fingerprints.add(parsed["fingerprint"])
 
             preview_rows.append({
                 "row_index": row_idx,
@@ -366,7 +454,8 @@ class ImportService:
             "total_rows": len(data_rows),
             "duplicate_count": duplicate_count,
             "valid_count": valid_count,
-            "invalid_count": invalid_count
+            "invalid_count": invalid_count,
+            "date_format": date_format or "auto"
         }
 
     @classmethod
@@ -375,7 +464,8 @@ class ImportService:
         csv_content: str,
         mapping: Dict[str, str],
         account_id: int,
-        deduplicate: bool = True
+        deduplicate: bool = True,
+        date_format: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Parses and inserts transactions atomically using unified _parse_csv_row logic.
@@ -441,7 +531,7 @@ class ImportService:
             invalid_count = 0
 
             for row in data_rows:
-                parsed = cls._parse_csv_row(row, headers, indices, existing_fingerprints, account_id)
+                parsed = cls._parse_csv_row(row, headers, indices, existing_fingerprints, account_id, date_format=date_format)
 
                 if not parsed["is_valid"]:
                     invalid_count += 1

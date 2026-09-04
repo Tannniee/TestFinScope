@@ -18,10 +18,12 @@ let selectedAccountId = null;
 let detectedHeaders = [];
 let currentMapping = {};
 let previewData = null;
+let selectedDateFormat = 'auto';
 
 export async function renderImportPage(container) {
   importStep = 1;
   rawCsvText = '';
+  selectedDateFormat = 'auto';
   selectedAccountId = state.accountId || (state.accounts[0]?.id || null);
 
   container.innerHTML = `
@@ -250,6 +252,19 @@ function renderStep2Html() {
             ${headerOptions(currentMapping.description)}
           </select>
         </div>
+
+        <div style="grid-column: 1 / -1; background: var(--bg-card-subtle); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+          <label class="form-label" style="font-weight: 600; margin-bottom: 6px; display: block;">Date Format Interpretation (AUD-004B)</label>
+          <div style="display: flex; gap: 16px; align-items: center;">
+            <select id="map-date-format" class="form-select" style="max-width: 320px;">
+              <option value="auto" ${selectedDateFormat === 'auto' ? 'selected' : ''}>Auto Detect (ISO / Explicit)</option>
+              <option value="DD/MM/YYYY" ${selectedDateFormat === 'DD/MM/YYYY' ? 'selected' : ''}>DD/MM/YYYY (UK / AU / VN / EU)</option>
+              <option value="MM/DD/YYYY" ${selectedDateFormat === 'MM/DD/YYYY' ? 'selected' : ''}>MM/DD/YYYY (US Standard)</option>
+              <option value="YYYY-MM-DD" ${selectedDateFormat === 'YYYY-MM-DD' ? 'selected' : ''}>YYYY-MM-DD (ISO Standard)</option>
+            </select>
+            <span style="font-size: 12px; color: var(--text-muted);">Pick an explicit format if your bank CSV uses ambiguous dates like 01/02/2026.</span>
+          </div>
+        </div>
       </div>
 
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 30px; border-top: 1px solid var(--border-subtle); padding-top: 20px;">
@@ -276,6 +291,7 @@ function attachStep2Listeners() {
       payee: document.getElementById('map-payee')?.value || '',
       description: document.getElementById('map-desc')?.value || ''
     };
+    selectedDateFormat = document.getElementById('map-date-format')?.value || 'auto';
 
     if (!currentMapping.date) {
       showToast('Date column is required', 'error');
@@ -288,7 +304,7 @@ function attachStep2Listeners() {
 
     try {
       showToast('Validating rows & checking duplicates...', 'info');
-      previewData = await api.previewCsvImport(rawCsvText, currentMapping, selectedAccountId);
+      previewData = await api.previewCsvImport(rawCsvText, currentMapping, selectedAccountId, selectedDateFormat);
       goToStep(3);
     } catch (err) {
       showToast(`Error preparing preview: ${err.message}`, 'error');
@@ -406,7 +422,7 @@ function attachStep3Listeners() {
     }
 
     try {
-      const res = await api.commitCsvImport(rawCsvText, currentMapping, selectedAccountId, deduplicate);
+      const res = await api.commitCsvImport(rawCsvText, currentMapping, selectedAccountId, deduplicate, selectedDateFormat);
       goToStep(4, res);
       state.notify({ type: 'data_changed' });
     } catch (err) {

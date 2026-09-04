@@ -338,4 +338,93 @@ def test_aud_007_sample_data_transfers_pass_production_invariants(isolated_db):
             assert tx["amount_minor"] == 50000  # $500.00
 
 
+def test_aud_004a_csv_preview_matches_commit_for_in_file_duplicates(isolated_db):
+    """
+    AUD-004A: CSV preview must flag in-file duplicates identically to commit_import.
+    Preview counts (valid, duplicate) must equal commit counts (imported, skipped).
+    """
+    from app.backend.services.import_service import ImportService
+
+    acc_id = AccountRepository.create("Checking AUD-004", "checking", opening_balance=1000.0)
+
+    # A CSV containing two identical rows
+    csv_data = """Date,Payee,Amount
+2026-09-01,Starbucks,-5.00
+2026-09-01,Starbucks,-5.00
+2026-09-02,Trader Joes,-35.00
+"""
+    mapping = {"date": "Date", "payee": "Payee", "amount": "Amount"}
+
+    preview = ImportService.preview_csv(csv_data, mapping=mapping, account_id=acc_id)
+    assert preview["total_rows"] == 3
+    assert preview["valid_count"] == 2
+    assert preview["duplicate_count"] == 1
+    assert preview["preview_rows"][0]["is_duplicate"] is False
+    assert preview["preview_rows"][1]["is_duplicate"] is True
+    assert preview["preview_rows"][2]["is_duplicate"] is False
+
+    # Commit must match preview exactly
+    commit_res = ImportService.commit_import(csv_data, mapping=mapping, account_id=acc_id, deduplicate=True)
+    assert commit_res["success"] is True
+    assert commit_res["imported_count"] == preview["valid_count"] == 2
+    assert commit_res["skipped_duplicates"] == preview["duplicate_count"] == 1
+
+
+def test_aud_004b_explicit_date_formats_and_ambiguity_rejection(isolated_db):
+    """
+    AUD-004B: Explicit date format parsing and ambiguous date rejection in 'auto' mode.
+    """
+    from app.backend.services.import_service import ImportService
+
+    acc_id = AccountRepository.create("Date Test Acc", "checking", opening_balance=1000.0)
+    mapping = {"date": "Date", "payee": "Payee", "amount": "Amount"}
+
+    # 1. Ambiguous date 01/02/2026 in auto mode -> flagged as error
+    ambiguous_csv = """Date,Payee,Amount
+01/02/2026,Coffee Shop,-4.50
+"""
+    preview_auto = ImportService.preview_csv(ambiguous_csv, mapping=mapping, account_id=acc_id, date_format="auto")
+    assert preview_auto["invalid_count"] == 1
+    assert preview_auto["valid_count"] == 0
+    assert "Ambiguous date" in preview_auto["preview_rows"][0]["errors"][0]
+
+    # 2. Same CSV with explicit DD/MM/YYYY -> parsed as 2026-02-01 (1st February)
+    preview_dmy = ImportService.preview_csv(ambiguous_csv, mapping=mapping, account_id=acc_id, date_format="DD/MM/YYYY")
+    assert preview_dmy["valid_count"] == 1
+    assert preview_dmy["preview_rows"][0]["date"] == "2026-02-01"
+
+    # 3. Same CSV with explicit MM/DD/YYYY -> parsed as 2026-01-02 (2nd January)
+    preview_mdy = ImportService.preview_csv(ambiguous_csv, mapping=mapping, account_id=acc_id, date_format="MM/DD/YYYY")
+    assert preview_mdy["valid_count"] == 1
+    assert preview_mdy["preview_rows"][0]["date"] == "2026-01-02"
+
+
+def test_aud_004c_same_merchant_different_description_not_duplicate(isolated_db):
+    """
+    AUD-004C: Same merchant on same date and amount with different descriptions
+    must NOT be falsely flagged as duplicates.
+    """
+    from app.backend.services.import_service import ImportService
+
+    acc_id = AccountRepository.create("Shopping Acc", "checking", opening_balance=500.0)
+
+    csv_data = """Date,Payee,Description,Amount
+2026-09-04,Starbucks,Morning Coffee,-5.00
+2026-09-04,Starbucks,Afternoon Coffee,-5.00
+2026-09-04,Starbucks,Morning Coffee,-5.00
+"""
+    mapping = {"date": "Date", "payee": "Payee", "description": "Description", "amount": "Amount"}
+
+    preview = ImportService.preview_csv(csv_data, mapping=mapping, account_id=acc_id)
+    assert preview["total_rows"] == 3
+    # Row 1 and Row 2 are distinct purchases (morning vs afternoon) -> both valid!
+    # Row 3 is an identical duplicate of Row 1 -> duplicate!
+    assert preview["preview_rows"][0]["is_duplicate"] is False
+    assert preview["preview_rows"][1]["is_duplicate"] is False
+    assert preview["preview_rows"][2]["is_duplicate"] is True
+    assert preview["valid_count"] == 2
+    assert preview["duplicate_count"] == 1
+
+
+
 

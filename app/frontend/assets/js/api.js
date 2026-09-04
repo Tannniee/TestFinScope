@@ -202,11 +202,11 @@ export const api = {
   },
 
   // Bank CSV Import Wizard
-  previewCsvImport(csvContent, mapping = {}, accountId = null) {
-    return this.call('preview_csv_import', { csv_content: csvContent, mapping, account_id: accountId });
+  previewCsvImport(csvContent, mapping = {}, accountId = null, dateFormat = 'auto') {
+    return this.call('preview_csv_import', { csv_content: csvContent, mapping, account_id: accountId, date_format: dateFormat });
   },
-  commitCsvImport(csvContent, mapping = {}, accountId = null, deduplicate = true) {
-    return this.call('commit_csv_import', { csv_content: csvContent, mapping, account_id: accountId, deduplicate });
+  commitCsvImport(csvContent, mapping = {}, accountId = null, deduplicate = true, dateFormat = 'auto') {
+    return this.call('commit_csv_import', { csv_content: csvContent, mapping, account_id: accountId, deduplicate, date_format: dateFormat });
   },
 
   // Recurring Rules & Bills
