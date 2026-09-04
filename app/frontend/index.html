@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FinScope — Personal Finance Analytics</title>
+  <meta name="description" content="Offline-first personal finance BI and analytics application for Windows." />
+
+  <!-- FinScope Design System Stylesheets -->
+  <link rel="stylesheet" href="assets/css/theme.css" />
+  <link rel="stylesheet" href="assets/css/layout.css" />
+  <link rel="stylesheet" href="assets/css/components.css" />
+
+  <!-- Vendor Libraries (Bundled locally for 100% offline functionality) -->
+  <script src="assets/vendor/echarts.min.js"></script>
+  <script src="assets/vendor/lucide.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar Navigation -->
+    <aside id="sidebar">
+      <div class="brand-container">
+        <div class="brand-logo">
+          <i data-lucide="trending-up" style="width: 20px; height: 20px;"></i>
+        </div>
+        <div class="brand-info">
+          <h1>FinScope</h1>
+          <span>BI Analytics</span>
+        </div>
+      </div>
+
+      <nav class="nav-section">
+        <div class="nav-label">Navigation</div>
+        <a href="#overview" class="nav-item active" id="nav-overview">
+          <i data-lucide="layout-dashboard"></i>
+          <span>Overview</span>
+        </a>
+        <a href="#transactions" class="nav-item" id="nav-transactions">
+          <i data-lucide="receipt"></i>
+          <span>Transactions</span>
+        </a>
+        <a href="#calendar" class="nav-item" id="nav-calendar">
+          <i data-lucide="calendar"></i>
+          <span>Calendar</span>
+        </a>
+        <a href="#analytics" class="nav-item" id="nav-analytics">
+          <i data-lucide="bar-chart-3"></i>
+          <span>Analytics BI</span>
+        </a>
+        <a href="#budget" class="nav-item" id="nav-budget">
+          <i data-lucide="target"></i>
+          <span>Budget</span>
+        </a>
+        <a href="#reports" class="nav-item" id="nav-reports">
+          <i data-lucide="file-text"></i>
+          <span>Reports</span>
+        </a>
+
+        <div class="nav-label" style="margin-top: 14px;">System</div>
+        <a href="#settings" class="nav-item" id="nav-settings">
+          <i data-lucide="database"></i>
+          <span>Data & Storage</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button id="sidebar-quick-add" class="btn-quick-add" title="Shortcut: Ctrl+N">
+          <i data-lucide="plus" style="width: 16px; height: 16px;"></i>
+          <span>Record Expense</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Viewport -->
+    <div id="main-viewport">
+      <!-- Top Action & Filter Header -->
+      <header id="top-header">
+        <div class="header-title-box">
+          <h2 id="page-title">Overview Dashboard</h2>
+          <p id="page-subtitle">Personal financial snapshot & core metrics</p>
+        </div>
+
+        <div class="header-controls">
+          <!-- Month Period Picker -->
+          <div class="period-picker">
+            <button id="btn-period-prev" class="period-btn" title="Previous Month">
+              <i data-lucide="chevron-left" style="width: 16px; height: 16px;"></i>
+            </button>
+            <div id="period-display" class="period-display">September 2026</div>
+            <button id="btn-period-next" class="period-btn" title="Next Month">
+              <i data-lucide="chevron-right" style="width: 16px; height: 16px;"></i>
+            </button>
+          </div>
+
+          <!-- Account Filter -->
+          <select id="header-account-select" class="header-select">
+            <option value="">All Accounts</option>
+          </select>
+
+          <!-- Privacy Mode Toggle -->
+          <button id="btn-privacy-toggle" class="icon-btn-toggle" title="Privacy Mode (Mask Amounts)">
+            <i data-lucide="eye" style="width: 16px; height: 16px;"></i>
+          </button>
+        </div>
+      </header>
+
+      <!-- Dynamic Page Container -->
+      <main id="page-container"></main>
+    </div>
+  </div>
+
+  <!-- Add / Edit Transaction Modal -->
+  <div class="modal-overlay" id="tx-modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="tx-modal-title">Record Transaction</h3>
+        <button id="tx-modal-close" class="modal-close" type="button">
+          <i data-lucide="x" style="width: 20px; height: 20px;"></i>
+        </button>
+      </div>
+
+      <form id="tx-form">
+        <!-- Transaction Type Switcher -->
+        <input type="hidden" id="tx-type" value="expense" />
+        <div class="form-group">
+          <div class="segmented-control">
+            <button type="button" class="segmented-btn active expense" data-type="expense">Expense</button>
+            <button type="button" class="segmented-btn income" data-type="income">Income</button>
+            <button type="button" class="segmented-btn transfer" data-type="transfer">Transfer</button>
+          </div>
+        </div>
+
+        <!-- Amount & Date -->
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="tx-amount">Amount ($)</label>
+            <input type="number" id="tx-amount" class="form-input" placeholder="0.00" step="0.01" min="0.01" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="tx-date">Date</label>
+            <input type="date" id="tx-date" class="form-input" required />
+          </div>
+        </div>
+
+        <!-- Account & Category -->
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="tx-account">Account</label>
+            <select id="tx-account" class="form-select" required>
+              <option value="">Select Account...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="tx-category">Category</label>
+            <select id="tx-category" class="form-select">
+              <option value="">Select Category...</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Merchant / Payee -->
+        <div class="form-group">
+          <label class="form-label" for="tx-merchant">Merchant / Payee</label>
+          <input type="text" id="tx-merchant" class="form-input" placeholder="e.g. Woolworths, Starbucks, City Rent" />
+        </div>
+
+        <!-- Description & Time -->
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="tx-description">Description</label>
+            <input type="text" id="tx-description" class="form-input" placeholder="e.g. Grocery restock" />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="tx-time">Time</label>
+            <input type="time" id="tx-time" class="form-input" value="12:00" />
+          </div>
+        </div>
+
+        <!-- Essentiality & Recurring -->
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="tx-essentiality">Essentiality</label>
+            <select id="tx-essentiality" class="form-select">
+              <option value="discretionary">Discretionary (Lifestyle)</option>
+              <option value="essential">Essential (Needs)</option>
+              <option value="savings">Savings / Investment</option>
+            </select>
+          </div>
+          <div class="form-group" style="justify-content: flex-end; padding-bottom: 8px;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--text-secondary);">
+              <input type="checkbox" id="tx-recurring" style="accent-color: var(--accent-blue);" />
+              <span>Recurring payment (Subscription)</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Note -->
+        <div class="form-group">
+          <label class="form-label" for="tx-note">Personal Note</label>
+          <input type="text" id="tx-note" class="form-input" placeholder="Optional details, tag #reimbursable, etc." />
+        </div>
+
+        <!-- Modal Actions -->
+        <div class="modal-actions">
+          <button type="button" id="tx-modal-cancel" class="btn btn-secondary">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Transaction</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Set Category Budget Modal -->
+  <div class="modal-overlay" id="budget-modal-overlay">
+    <div class="modal-card" style="width: 420px;">
+      <div class="modal-header">
+        <h3>Set Category Budget</h3>
+        <button id="budget-modal-close" class="modal-close" type="button">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <form id="budget-form">
+        <input type="hidden" id="budget-category-id" />
+        <div class="form-group">
+          <label class="form-label">Category</label>
+          <div id="budget-category-name" style="font-size: 16px; font-weight: 700; color: var(--text-primary); margin-top: 4px;"></div>
+          <div id="budget-month-label" style="font-size: 12px; color: var(--text-muted);"></div>
+        </div>
+
+        <div class="form-group" style="margin-top: 14px;">
+          <label class="form-label" for="budget-amount">Monthly Budget Limit ($)</label>
+          <input type="number" id="budget-amount" class="form-input" placeholder="e.g. 500" step="10" min="0" required />
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" id="budget-modal-cancel" class="btn btn-secondary">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Budget</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container"></div>
+
+  <!-- App Bootstrap Module -->
+  <script type="module">
+    import { state } from './assets/js/state.js';
+    import { router } from './assets/js/router.js';
+    import { modals } from './assets/js/components/modals.js';
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      // 1. Initialize Icons
+      if (window.lucide) window.lucide.createIcons();
+
+      // 2. Initialize Modals
+      modals.init();
+
+      // 3. Load Accounts & Categories Metadata
+      await state.loadInitialData();
+
+      // Populate Topbar Account dropdown
+      const accSelect = document.getElementById('header-account-select');
+      if (accSelect) {
+        accSelect.innerHTML = '<option value="">All Accounts</option>' +
+          state.accounts.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+        accSelect.addEventListener('change', (e) => {
+          state.setAccountId(e.target.value);
+        });
+      }
+
+      // Update Period display
+      const updatePeriodLabel = () => {
+        const periodDisplay = document.getElementById('period-display');
+        if (periodDisplay) {
+          periodDisplay.textContent = state.formatMonthLabel(state.month);
+        }
+      };
+      updatePeriodLabel();
+
+      document.getElementById('btn-period-prev')?.addEventListener('click', () => {
+        state.prevMonth();
+        updatePeriodLabel();
+      });
+
+      document.getElementById('btn-period-next')?.addEventListener('click', () => {
+        state.nextMonth();
+        updatePeriodLabel();
+      });
+
+      // Privacy Mode Toggle
+      const privBtn = document.getElementById('btn-privacy-toggle');
+      if (privBtn) {
+        privBtn.classList.toggle('active', state.privacyMode);
+        document.body.classList.toggle('privacy-active', state.privacyMode);
+        privBtn.addEventListener('click', () => {
+          state.togglePrivacyMode();
+          privBtn.classList.toggle('active', state.privacyMode);
+        });
+      }
+
+      // Quick Add Button in Sidebar
+      document.getElementById('sidebar-quick-add')?.addEventListener('click', () => {
+        modals.openTransactionModal();
+      });
+
+      // Global Keyboard Shortcut: Ctrl + N -> Add Transaction
+      window.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+          e.preventDefault();
+          modals.openTransactionModal();
+        }
+      });
+
+      // 4. Start Router
+      router.init();
+    });
+  </script>
+</body>
+</html>

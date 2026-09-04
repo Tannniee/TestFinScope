@@ -1,0 +1,86 @@
+import sys
+import os
+import threading
+import argparse
+import webbrowser
+import logging
+from pathlib import Path
+
+# Add project root to sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.backend.database.connection import init_db, get_db_connection
+from app.backend.server import start_server
+from app.backend.services.sample_data import seed_sample_data
+from app.backend.api.handler import ApiHandler
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("FinScope")
+
+def main():
+    parser = argparse.ArgumentParser(description="FinScope — Personal Finance Analytics")
+    parser.add_argument("--browser", action="store_true", help="Launch in default web browser instead of desktop window")
+    parser.add_argument("--port", type=int, default=8000, help="Local server port (default: 8000)")
+    parser.add_argument("--seed", action="store_true", help="Force populate sample demo data")
+    args = parser.parse_args()
+
+    # 1. Initialize SQLite Database
+    logger.info("Initializing database...")
+    init_db()
+
+    # Check if we should seed initial transactions
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM transactions")
+        count = cur.fetchone()[0]
+
+    if count == 0 or args.seed:
+        logger.info("Populating realistic demo data for initial exploration...")
+        seed_sample_data(clear_existing=args.seed)
+
+    # 2. Start Local Server
+    server, actual_port = start_server(port=args.port)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    url = f"http://127.0.0.1:{actual_port}"
+    logger.info("FinScope frontend ready at %s", url)
+
+    # 3. Launch App Window or Browser
+    if args.browser:
+        logger.info("Opening in system web browser...")
+        webbrowser.open(url)
+        try:
+            while True:
+                server_thread.join(timeout=1.0)
+        except KeyboardInterrupt:
+            logger.info("Shutting down FinScope...")
+            server.shutdown()
+    else:
+        try:
+            import webview
+            logger.info("Opening desktop application window via WebView2...")
+            handler = ApiHandler()
+            window = webview.create_window(
+                title="FinScope — Personal Finance Analytics",
+                url=url,
+                js_api=handler,
+                width=1400,
+                height=880,
+                min_size=(1080, 720),
+                background_color="#0E1324"
+            )
+            webview.start(gui="edgechromium", debug=False)
+            server.shutdown()
+        except Exception as e:
+            logger.warning("Could not launch pywebview window (%s). Falling back to browser mode...", e)
+            webbrowser.open(url)
+            try:
+                while True:
+                    server_thread.join(timeout=1.0)
+            except KeyboardInterrupt:
+                server.shutdown()
+
+if __name__ == "__main__":
+    main()
