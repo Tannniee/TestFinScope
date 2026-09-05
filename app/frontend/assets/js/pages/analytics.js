@@ -847,7 +847,15 @@ async function renderForecastTab(container) {
         <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #FF9F43;">
           ${state.formatCurrency(fc.expected_variable)}
         </div>
-        <span class="kpi-footer">Dynamic weekday occurrence rate</span>
+        <span class="kpi-footer">${escapeHtml(
+          {
+            'current_pace': 'Based on non-recurring pace this month',
+            'three_month_median': 'Based on recent complete-month variable spending',
+            'robust_weekly': 'Based on median complete-week variable spending',
+            'weekday_hybrid': 'Based on robust weekday spending patterns',
+            'seasonal_naive': 'Based on the same month last year'
+          }[fc.model_method] || (fc.diagnostics?.selection_reason || 'Statistical variable projection')
+        )}</span>
       </div>
     </div>
 
@@ -995,7 +1003,11 @@ async function renderForecastTab(container) {
           <h3>Forecast Model Evaluation Leaderboard (Rolling-Origin Backtest)</h3>
           <p>${backtest.evaluations_count ? `Replayed across historical cutoffs (${backtest.evaluations_count} evaluations)` : 'Deterministic historical accuracy comparison across origins'}</p>
         </div>
-        <span class="delta-badge positive" style="font-size: 11.5px;">Lowest MAE (Comparable Origins): ${(backtest.best_model || 'production_policy').replace(/_/g, ' ')}</span>
+        ${((backtest.comparable_origin_count || 0) >= (backtest.minimum_comparable_origins || 6)) ? `
+          <span class="delta-badge positive" style="font-size: 11.5px;">Lowest Median AE (${backtest.comparable_origin_count} Comparable Origins): ${(backtest.best_candidate || backtest.best_model || 'weekday_hybrid').replace(/_/g, ' ')}</span>
+        ` : `
+          <span class="delta-badge neutral" style="font-size: 11.5px;">Gathering Replay Evidence (${backtest.comparable_origin_count || 0}/${backtest.minimum_comparable_origins || 6} Origins)</span>
+        `}
       </div>
 
       <div class="table-container">
@@ -1013,7 +1025,11 @@ async function renderForecastTab(container) {
           </thead>
           <tbody>
             ${Object.entries(models).map(([name, m]) => {
-              const isBest = (name === backtest.best_model);
+              const hasSuffOrigins = (backtest.comparable_origin_count || 0) >= (backtest.minimum_comparable_origins || 6);
+              const isBest = (name === backtest.best_candidate && hasSuffOrigins);
+              const isCandidate = ["current_pace", "three_month_median", "robust_weekly", "weekday_hybrid", "seasonal_naive"].includes(name);
+              const isProdPolicy = (name === "production_policy");
+              const rankLabel = isBest ? 'Rank 1' : (isProdPolicy ? 'Live Policy' : (isCandidate ? 'Candidate' : 'Baseline'));
               return `
                 <tr style="${isBest ? 'background: rgba(77, 213, 165, 0.08);' : ''}">
                   <td style="font-weight: 600; text-transform: uppercase;">
@@ -1029,7 +1045,7 @@ async function renderForecastTab(container) {
                   </td>
                   <td>
                     <span class="delta-badge ${isBest ? 'positive' : 'neutral'}" style="font-size: 11px;">
-                      ${isBest ? 'Rank 1' : 'Baseline'}
+                      ${rankLabel}
                     </span>
                   </td>
                 </tr>

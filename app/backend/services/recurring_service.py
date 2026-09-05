@@ -179,15 +179,32 @@ class RecurringService:
             rule_acc = r.get("account_id")
             rule_type = r.get("transaction_type") or "expense"
 
+            if not r.get("next_due_date"):
+                bills.append({
+                    "rule_id": r["id"],
+                    "name": r["name"],
+                    "transaction_type": r["transaction_type"],
+                    "amount": r["amount"],
+                    "amount_minor": amt_minor,
+                    "category_id": r["category_id"],
+                    "category_name": r["category_name"],
+                    "category_color": r["category_color"],
+                    "account_id": r["account_id"],
+                    "account_name": r["account_name"],
+                    "due_date": None,
+                    "due_day": None,
+                    "is_paid": False,
+                    "paid_date": None,
+                    "status": "unscheduled"
+                })
+                continue
+
             occs = generate_occurrences(
                 next_due_date=r.get("next_due_date"),
                 frequency=r.get("frequency") or "monthly",
                 start_date=window_start,
                 end_date=month_end
             )
-            # Fallback if no occurrences could be generated and rule has no valid next_due_date
-            if not occs and not r.get("next_due_date"):
-                occs = [date(year, m_int, min(15, total_days))]
 
             for occ_date in sorted(occs):
                 due_day = occ_date.day
@@ -231,8 +248,9 @@ class RecurringService:
                     "status": status
                 })
 
-        bills.sort(key=lambda b: (b["due_date"], b["rule_id"]))
+        bills.sort(key=lambda b: (b["due_date"] or "9999-99-99", b["rule_id"]))
         return bills
+
 
     # Convenience alias
     get_upcoming_bills = get_upcoming_bills_for_month

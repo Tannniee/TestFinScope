@@ -172,3 +172,50 @@ BEGIN
     SET valid_to = date('now'), change_type = 'deleted'
     WHERE rule_id = OLD.id AND valid_to IS NULL;
 END;
+
+-- Analytics State Revision Tracking for Replay Cache Freshness (Migration 007)
+CREATE TABLE IF NOT EXISTS analytics_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    revision INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT OR IGNORE INTO analytics_state (id, revision)
+VALUES (1, 0);
+
+CREATE TRIGGER IF NOT EXISTS trg_analytics_state_tx_insert
+AFTER INSERT ON transactions
+BEGIN
+    UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_analytics_state_tx_update
+AFTER UPDATE ON transactions
+BEGIN
+    UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_analytics_state_tx_delete
+AFTER DELETE ON transactions
+BEGIN
+    UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_analytics_state_rec_insert
+AFTER INSERT ON recurring_rules
+BEGIN
+    UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_analytics_state_rec_update
+AFTER UPDATE ON recurring_rules
+BEGIN
+    UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_analytics_state_rec_delete
+AFTER DELETE ON recurring_rules
+BEGIN
+    UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+END;
+

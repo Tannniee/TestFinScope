@@ -7,7 +7,7 @@ from app.backend.config import DB_PATH
 logger = logging.getLogger(__name__)
 
 MIGRATIONS: List[tuple[int, str, Callable[[sqlite3.Connection], None]]] = []
-MAX_SUPPORTED_SCHEMA_VERSION = 6
+MAX_SUPPORTED_SCHEMA_VERSION = 7
 
 def migration(version: int, name: str):
     def decorator(fn: Callable[[sqlite3.Connection], None]):
@@ -372,6 +372,62 @@ def migration_006_recurring_rule_versioning(conn: sqlite3.Connection):
             WHERE rule_id = OLD.id AND valid_to IS NULL;
         END;
     """)
+
+@migration(7, "analytics_revision_tracking")
+def migration_007_analytics_revision_tracking(conn: sqlite3.Connection):
+    """
+    Creates analytics_state table and automatic mutation triggers on transactions
+    and recurring_rules to enable deterministic replay cache invalidation (F108-15).
+    """
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS analytics_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            revision INTEGER NOT NULL DEFAULT 0,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        INSERT OR IGNORE INTO analytics_state (id, revision)
+        VALUES (1, 0);
+
+        -- Transaction mutation triggers
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_tx_insert
+        AFTER INSERT ON transactions
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_tx_update
+        AFTER UPDATE ON transactions
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_tx_delete
+        AFTER DELETE ON transactions
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+
+        -- Recurring rules mutation triggers
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_rec_insert
+        AFTER INSERT ON recurring_rules
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_rec_update
+        AFTER UPDATE ON recurring_rules
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_rec_delete
+        AFTER DELETE ON recurring_rules
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+    """)
+
 
 def run_migrations(conn: sqlite3.Connection):
     """Executes any pending migrations safely."""

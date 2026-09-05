@@ -62,7 +62,8 @@ class ForecastingEngine:
         as_of_date: Optional[str] = None,
         context: Optional[AnalyticsContext] = None,
         replay_mode: bool = False,
-        forced_method: Optional[str] = None
+        forced_method: Optional[str] = None,
+        replay_evidence: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Generates explainable month-end forecast for `month` (YYYY-MM).
@@ -95,6 +96,7 @@ class ForecastingEngine:
             as_of_cutoff = f"{context.as_of_month}-{elapsed_day:02d}"
 
         remaining_days = max(0, num_days - elapsed_day)
+        remaining_calendar_dates = tuple(f"{context.as_of_month}-{d:02d}" for d in range(elapsed_day + 1, num_days + 1))
 
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -121,10 +123,12 @@ class ForecastingEngine:
                 actual_rows = cur.fetchall()
 
             actual_expense_minor = 0
+            actual_non_recurring_expense_minor = 0
+            actual_recurring_minor = 0
             actual_income_to_date_minor = 0
             actual_refund_minor = 0
-            actual_recurring_minor = 0
-            actual_cat_spends: Dict[int, int] = {}
+            actual_cat_spends_net: Dict[int, int] = {}
+            actual_cat_non_recurring_expense: Dict[int, int] = {}
             cat_metadata: Dict[int, Dict[str, Any]] = {}
 
             for r in actual_rows:
@@ -139,19 +143,21 @@ class ForecastingEngine:
 
                 if tt == "expense":
                     actual_expense_minor += amt
-                    actual_cat_spends[cid] = actual_cat_spends.get(cid, 0) + amt
+                    actual_cat_spends_net[cid] = actual_cat_spends_net.get(cid, 0) + amt
                     if r["is_recurring"]:
                         actual_recurring_minor += amt
+                    else:
+                        actual_non_recurring_expense_minor += amt
+                        actual_cat_non_recurring_expense[cid] = actual_cat_non_recurring_expense.get(cid, 0) + amt
                 elif tt == "income":
                     actual_income_to_date_minor += amt
                 elif tt == "refund":
                     actual_refund_minor += amt
-                    actual_cat_spends[cid] = actual_cat_spends.get(cid, 0) - amt
+                    actual_cat_spends_net[cid] = actual_cat_spends_net.get(cid, 0) - amt
 
             actual_net_spend_to_date = calculate_net_spending(actual_expense_minor, actual_refund_minor)
 
             # 2. Known Upcoming Recurring Expenses & Income (F105-02 & F105-03)
-            # Schedule expansion window: strictly after current elapsed cutoff, up to end of target month
             window_start = cur_dt if (cur_dt.year == year and cur_dt.month == m_int) else (
                 date(year, m_int, 1) - timedelta(days=1) if cur_dt < date(year, m_int, 1) else date(year, m_int, elapsed_day)
             )
@@ -162,6 +168,7 @@ class ForecastingEngine:
             upcoming_by_cat: Dict[int, int] = {}
             seen_rules = set()
             seen_bills = set()
+            suppressed_inactive_rule_fallback_count = 0
 
             # 2a. Explicit rules from recurring_rules / recurring_rule_versions (point-in-time anti-leakage)
             rec_acc_clause = " AND account_id = ?" if context.account_id else ""
@@ -184,7 +191,7 @@ class ForecastingEngine:
                     WHERE active = 1 {rec_acc_clause}
                     ORDER BY id ASC
                 """, rec_params)
-            
+
             for r in cur.fetchall():
                 rule_id = r["id"]
                 rule_acc_id = r["account_id"]
@@ -192,6 +199,10 @@ class ForecastingEngine:
                 key = recurring_key(rule_acc_id, rule_name)
                 seen_rules.add(rule_id)
                 seen_bills.add(key)
+
+                # Active rules without next_due_date are unscheduled (F108-20) -> no occurrences generated
+                if not r["next_due_date"]:
+                    continue
 
                 occs = generate_occurrences(
                     next_due_date=r["next_due_date"],
@@ -209,8 +220,7 @@ class ForecastingEngine:
                     elif r["transaction_type"] == "income":
                         upcoming_recurring_income_minor += r["amount_minor"] * occ_count
 
-            # 2b. Historical recurring transactions (AUD-006B: deterministic latest selection)
-            # Query recurring transactions from past 3 months strictly before target month and <= as_of_cutoff
+            # 2b. Historical recurring transactions fallback (AUD-006B & F108-13)
             cur.execute(f"""
                 SELECT 
                     t.account_id,
@@ -231,8 +241,15 @@ class ForecastingEngine:
             historical_recurring = cur.fetchall()
             for r in historical_recurring:
                 rule_id = r["recurring_rule_id"]
-                if rule_id is not None and rule_id in seen_rules:
-                    continue
+                # F108-13: If historical transaction had an explicit rule_id, it is governed by explicit rule state.
+                # If that rule is active, it was already handled in 2a (in seen_rules).
+                # If that rule is inactive or deleted, do NOT resurrect it!
+                if rule_id is not None:
+                    if rule_id in seen_rules:
+                        continue
+                    else:
+                        suppressed_inactive_rule_fallback_count += 1
+                        continue
 
                 raw_b_name = r["bill_name"]
                 acc_id = r["account_id"]
@@ -241,8 +258,6 @@ class ForecastingEngine:
                     continue
 
                 seen_bills.add(key)
-                if rule_id is not None:
-                    seen_rules.add(rule_id)
 
                 day_num = r["usual_day"]
                 if day_num > elapsed_day and day_num <= num_days:
@@ -251,7 +266,7 @@ class ForecastingEngine:
                     cid = r["category_id"] or 0
                     upcoming_by_cat[cid] = upcoming_by_cat.get(cid, 0) + amt
 
-            # 3. Dynamic Historical Weekday Rates (past 3 completed months strictly before target month)
+            # 3. Dynamic Historical Weekday Rates & Dense Series (past 3 completed months strictly before target month)
             hist_start_str = f"{year - 1 if m_int <= 3 else year}-{(m_int - 4) % 12 + 1:02d}-01"
             h_sy, h_sm = map(int, hist_start_str.split("-")[:2])
             h_start_date = date(h_sy, h_sm, 1)
@@ -261,7 +276,7 @@ class ForecastingEngine:
 
             actual_wday_counts = count_weekdays_in_historical_window(h_start_date, h_end_date)
 
-            # Robust Expense rates (F105-08: grouped by transaction_date to cap extreme single-day outliers)
+            # Query non-recurring expenses in the weekday window
             cur.execute(f"""
                 SELECT 
                     transaction_date,
@@ -274,18 +289,11 @@ class ForecastingEngine:
                 GROUP BY transaction_date, wday
             """, [h_start_date.isoformat(), h_end_date.isoformat()] + acc_params)
 
-            dense_daily_non_recurring: Dict[str, int] = {}
-            day_cursor = h_start_date
-            while day_cursor <= h_end_date:
-                dense_daily_non_recurring[day_cursor.isoformat()] = 0
-                day_cursor += timedelta(days=1)
-
             wday_daily_spends: Dict[int, List[int]] = {w: [] for w in range(7)}
             for r in cur.fetchall():
                 w = int(r["wday"])
                 amt = r["day_total_minor"]
                 wday_daily_spends[w].append(amt)
-                dense_daily_non_recurring[r["transaction_date"]] = amt
 
             weekday_avg_minor: Dict[int, int] = {}
             for w in range(7):
@@ -294,20 +302,23 @@ class ForecastingEngine:
                 if not spends:
                     weekday_avg_minor[w] = 0
                 elif occ >= 4 and len(spends) >= 2:
-                    # Robust estimator: median daily spend blended with MAD-capped mean
                     med = calculate_median(spends)
                     devs = [abs(x - med) for x in spends]
                     mad = calculate_median(devs)
                     cap = med + max(1000, round(3.0 * mad))
                     capped_spends = [min(x, cap) for x in spends]
                     capped_mean = round(sum(capped_spends) / float(occ))
-                    # Blend 60% median rate with 40% capped mean
                     weekday_avg_minor[w] = round(0.60 * (med * len(spends) / float(occ)) + 0.40 * capped_mean)
                 else:
                     tot = sum(spends)
                     weekday_avg_minor[w] = round(tot / float(occ)) if tot > 0 else 0
 
-            # Income rates (F105-03: explicitly filter is_recurring = 0 to prevent salary double counting)
+            tot_window_spend = sum(sum(s) for s in wday_daily_spends.values())
+            tot_window_days = max(1, sum(actual_wday_counts.values()))
+            global_non_recurring_daily_rate = round(tot_window_spend / float(tot_window_days)) if tot_window_spend > 0 else 0
+            weekday_sample_counts = {w: len(wday_daily_spends[w]) for w in range(7)}
+
+            # Income rates
             cur.execute(f"""
                 SELECT 
                     strftime('%w', transaction_date) as wday,
@@ -325,34 +336,85 @@ class ForecastingEngine:
                 occ = max(1, actual_wday_counts.get(w, 1))
                 weekday_income_avg[w] = round(tot / float(occ)) if tot > 0 else 0
 
-            # 4. Model Eligibility by Data Sufficiency (F105-07)
+            # 4. Dense Historical Daily & Monthly Non-Recurring Series (F108-02, F108-05, F108-06)
+            from app.backend.analytics.forecast_strategies.series import (
+                build_dense_daily_series,
+                build_dense_monthly_series,
+                generate_calendar_months,
+                same_month_previous_year
+            )
+            from app.backend.analytics.forecast_strategies.config import FORECAST_CONFIG
+
             cur.execute(f"""
-                SELECT COUNT(DISTINCT strftime('%Y-%m', t.transaction_date)) as m_count,
-                       COUNT(t.id) as tx_count
+                SELECT MIN(transaction_date) as min_d, COUNT(t.id) as tx_count
                 FROM active_transactions t 
                 WHERE t.transaction_type = 'expense'
+                  AND is_recurring = 0
                   AND transaction_date < ? || '-01'
                   AND transaction_date <= ? {acc_clause}
             """, [context.as_of_month, as_of_cutoff] + acc_params)
             m_row = cur.fetchone()
-            completed_months = m_row["m_count"] if m_row else 0
+            min_d = m_row["min_d"] if m_row else None
             tx_count = m_row["tx_count"] if m_row else 0
 
-            # Historical monthly spends for stability and model baseline
+            hist_monthly_non_recurring_expense: Dict[str, int] = {}
+            dense_daily_non_recurring_expense: Dict[str, int] = {}
+            completed_months = 0
+
+            if min_d:
+                prev_m_date = date(year, m_int, 1) - timedelta(days=1)
+                end_m = f"{prev_m_date.year:04d}-{prev_m_date.month:02d}"
+                start_m = min_d[:7]
+
+                if start_m <= end_m:
+                    cur.execute(f"""
+                        SELECT 
+                            strftime('%Y-%m', t.transaction_date) as m,
+                            SUM(t.amount_minor) as total_minor
+                        FROM active_transactions t
+                        WHERE t.transaction_type = 'expense'
+                          AND is_recurring = 0
+                          AND transaction_date < ? || '-01'
+                          AND transaction_date <= ? {acc_clause}
+                        GROUP BY m
+                    """, [context.as_of_month, as_of_cutoff] + acc_params)
+                    sparse_monthly = {r["m"]: r["total_minor"] for r in cur.fetchall()}
+                    hist_monthly_non_recurring_expense = build_dense_monthly_series(start_m, end_m, sparse_monthly)
+                    completed_months = len(hist_monthly_non_recurring_expense)
+
+                # Daily non-recurring series for robust weekly analysis (up to past 12 months)
+                twelve_m_ago = date(year, m_int, 1) - timedelta(days=365)
+                start_daily = max(datetime.strptime(min_d, "%Y-%m-%d").date(), twelve_m_ago)
+                end_daily = min(prev_m_date, cur_dt)
+
+                if start_daily <= end_daily:
+                    cur.execute(f"""
+                        SELECT 
+                            transaction_date,
+                            SUM(amount_minor) as total_minor
+                        FROM active_transactions t
+                        WHERE t.transaction_type = 'expense'
+                          AND is_recurring = 0
+                          AND transaction_date >= ? AND transaction_date <= ? {acc_clause}
+                        GROUP BY transaction_date
+                    """, [start_daily.isoformat(), end_daily.isoformat()] + acc_params)
+                    daily_map = {r["transaction_date"]: r["total_minor"] for r in cur.fetchall()}
+                    dense_daily_non_recurring_expense = build_dense_daily_series(start_daily, end_daily, daily_map)
+
+            # Category historical non-recurring rates
             cur.execute(f"""
                 SELECT 
-                    strftime('%Y-%m', t.transaction_date) as m,
-                    COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount_minor ELSE 0 END), 0) -
-                    COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN t.amount_minor ELSE 0 END), 0) as net_spend
+                    category_id,
+                    SUM(amount_minor) as total_minor
                 FROM active_transactions t
-                WHERE t.transaction_date < ? || '-01'
-                  AND t.transaction_date <= ? {acc_clause}
-                GROUP BY m
-                ORDER BY m ASC
-            """, [context.as_of_month, as_of_cutoff] + acc_params)
-            hist_monthly_spends = [max(0, r["net_spend"]) for r in cur.fetchall() if r["net_spend"] is not None]
+                WHERE t.transaction_type = 'expense'
+                  AND is_recurring = 0
+                  AND transaction_date >= ? AND transaction_date <= ? {acc_clause}
+                GROUP BY category_id
+            """, [h_start_date.isoformat(), h_end_date.isoformat()] + acc_params)
+            cat_hist_totals = {row["category_id"]: row["total_minor"] for row in cur.fetchall()}
 
-            # Build consolidated ForecastContext (Phase 2)
+            # Build consolidated ForecastContext (v1.0.8 canonical)
             f_ctx = ForecastContext(
                 target_month=context.as_of_month,
                 as_of_date=as_of_cutoff,
@@ -360,30 +422,32 @@ class ForecastingEngine:
                 elapsed_day=elapsed_day,
                 remaining_days=remaining_days,
                 num_days=num_days,
+                remaining_calendar_dates=remaining_calendar_dates,
                 actual_expense_minor=actual_expense_minor,
                 actual_income_minor=actual_income_to_date_minor,
                 actual_refund_minor=actual_refund_minor,
-                actual_net_spend_to_date=actual_net_spend_to_date,
-                actual_recurring_minor=actual_recurring_minor,
-                upcoming_recurring_minor=upcoming_recurring_minor,
+                actual_net_spend_to_date_minor=actual_net_spend_to_date,
+                actual_non_recurring_expense_minor=actual_non_recurring_expense_minor,
+                actual_recurring_expense_minor=actual_recurring_minor,
+                upcoming_recurring_expense_minor=upcoming_recurring_minor,
                 upcoming_recurring_income_minor=upcoming_recurring_income_minor,
-                actual_cat_spends=actual_cat_spends,
+                hist_monthly_non_recurring_expense=hist_monthly_non_recurring_expense,
+                dense_daily_non_recurring_expense=dense_daily_non_recurring_expense,
+                weekday_rates=weekday_avg_minor,
+                weekday_sample_counts=weekday_sample_counts,
+                global_non_recurring_daily_rate=global_non_recurring_daily_rate,
+                actual_cat_spends_net=actual_cat_spends_net,
+                actual_cat_non_recurring_expense=actual_cat_non_recurring_expense,
+                historical_cat_non_recurring_expense=cat_hist_totals,
                 cat_metadata=cat_metadata,
-                upcoming_by_cat=upcoming_by_cat,
+                upcoming_recurring_by_cat=upcoming_by_cat,
                 completed_months=completed_months,
-                tx_count=tx_count,
-                hist_monthly_spends=hist_monthly_spends,
-                dense_daily_non_recurring=dense_daily_non_recurring,
-                actual_wday_counts=actual_wday_counts,
-                weekday_avg_minor=weekday_avg_minor,
-                weekday_income_avg=weekday_income_avg,
-                replay_mode=replay_mode,
-                forced_method=forced_method
+                transaction_count=tx_count
             )
 
-            # Retrieve replay summary if not in replay_mode (Phase 4 Adaptive Selection)
-            replay_summary = None
-            if not replay_mode:
+            # Retrieve replay summary if not in replay_mode and not explicitly provided
+            replay_summary = replay_evidence
+            if replay_summary is None and not replay_mode:
                 try:
                     from app.backend.analytics.forecast_replay import HistoricalReplayRunner
                     replay_summary = HistoricalReplayRunner.run_replay(
@@ -395,21 +459,19 @@ class ForecastingEngine:
 
             # Strategy Pattern model selection & execution
             selector = ModelSelector()
-            strategy, model_reason = selector.select(f_ctx, replay_scores=replay_summary)
+            strategy, model_reason = selector.select(f_ctx, replay_scores=replay_summary, forced_method=forced_method)
             estimate = strategy.predict(f_ctx)
 
             model_method = estimate.model_id
             method_name = estimate.method_name
             remaining_variable_minor = estimate.remaining_variable_minor
 
-
             # Expected variable income
             expected_variable_income_minor = 0
             for d in range(elapsed_day + 1, num_days + 1):
                 day_obj = date(year, m_int, d)
                 sqlite_w = (day_obj.weekday() + 1) % 7
-                expected_variable_income_income_minor = weekday_income_avg.get(sqlite_w, 0)
-                expected_variable_income_minor += expected_variable_income_income_minor
+                expected_variable_income_minor += weekday_income_avg.get(sqlite_w, 0)
 
             # Projected total expense
             projected_total_minor = (
@@ -418,7 +480,7 @@ class ForecastingEngine:
                 remaining_variable_minor
             )
 
-            # Projected Income & Net Flow (F105-03 reconciled)
+            # Projected Income & Net Flow (reconciled)
             projected_income_minor = (
                 actual_income_to_date_minor +
                 upcoming_recurring_income_minor +
@@ -436,7 +498,7 @@ class ForecastingEngine:
                 total_minor=projected_total_minor
             )
 
-            # 5. Category Forecasts & Exact Reconciliation (F105-04)
+            # 5. Category Forecasts & Exact Reconciliation (F108-14, F108-28)
             cur.execute("""
                 SELECT id, name, color, type FROM categories WHERE type = 'expense' AND is_archived = 0
             """)
@@ -448,23 +510,11 @@ class ForecastingEngine:
             budget_map = {row["category_id"]: row["amount_minor"] for row in cur.fetchall()}
             total_budget_minor = sum(budget_map.values()) if budget_map else None
 
-            # Category historical rates
-            cur.execute(f"""
-                SELECT 
-                    category_id,
-                    SUM(amount_minor) as total_minor
-                FROM active_transactions t
-                WHERE t.transaction_type = 'expense'
-                  AND is_recurring = 0
-                  AND transaction_date >= ? AND transaction_date <= ? {acc_clause}
-                GROUP BY category_id
-            """, [h_start_date.isoformat(), h_end_date.isoformat()] + acc_params)
-            cat_hist_totals = {row["category_id"]: row["total_minor"] for row in cur.fetchall()}
             total_hist_spend = sum(cat_hist_totals.values())
 
             # Support synthetic "Uncategorised" category if uncategorized spend/recurring/history exists
             if (
-                (0 in actual_cat_spends and actual_cat_spends[0] != 0) or
+                (0 in actual_cat_spends_net and actual_cat_spends_net[0] != 0) or
                 (0 in upcoming_by_cat and upcoming_by_cat[0] != 0) or
                 (0 in cat_hist_totals and cat_hist_totals[0] != 0)
             ):
@@ -475,12 +525,12 @@ class ForecastingEngine:
                     "type": "expense"
                 })
 
-            # Normalized category weights
+            # Normalized category weights based on NON-RECURRING spending (F108-14)
             raw_weights: Dict[int, float] = {}
             for c in all_expense_cats:
                 cid = c["id"]
-                c_actual = actual_cat_spends.get(cid, 0)
-                curr_share = (max(0, c_actual) / float(actual_net_spend_to_date)) if actual_net_spend_to_date > 0 else 0.0
+                c_non_rec_actual = actual_cat_non_recurring_expense.get(cid, 0)
+                curr_share = (c_non_rec_actual / float(actual_non_recurring_expense_minor)) if actual_non_recurring_expense_minor > 0 else 0.0
                 hist_share = (cat_hist_totals.get(cid, 0) / float(total_hist_spend)) if (total_hist_spend > 0 and cid in cat_hist_totals) else 0.0
 
                 if curr_share > 0 and hist_share > 0:
@@ -498,9 +548,15 @@ class ForecastingEngine:
                 for cid, w in raw_weights.items():
                     norm_weights[cid] = w / total_raw_weight
             else:
-                n_cats = len(all_expense_cats)
-                for c in all_expense_cats:
-                    norm_weights[c["id"]] = (1.0 / n_cats) if n_cats > 0 else 0.0
+                # F108-28: If no category variable evidence exists, allocate to Uncategorised
+                if not any(c["id"] == 0 for c in all_expense_cats):
+                    all_expense_cats.append({
+                        "id": 0,
+                        "name": "Uncategorised",
+                        "color": "#8E8E93",
+                        "type": "expense"
+                    })
+                norm_weights = {c["id"]: (1.0 if c["id"] == 0 else 0.0) for c in all_expense_cats}
 
             # Allocate variable spend to categories and guarantee zero drift
             cat_vars: Dict[int, int] = {}
@@ -516,7 +572,7 @@ class ForecastingEngine:
             cat_forecasts = []
             for c in all_expense_cats:
                 cid = c["id"]
-                c_actual = actual_cat_spends.get(cid, 0)
+                c_actual = actual_cat_spends_net.get(cid, 0)
                 c_upcoming = upcoming_by_cat.get(cid, 0)
                 c_var_amt = cat_vars.get(cid, 0)
                 c_proj = c_actual + c_upcoming + c_var_amt
@@ -541,7 +597,7 @@ class ForecastingEngine:
 
             cat_forecasts.sort(key=lambda x: x["projected_minor"], reverse=True)
 
-            # 6. Multi-Factor Reliability Score (F105-05)
+            # 6. Multi-Factor Reliability Score (F108-16, F108-17)
             # Component A: Data Sufficiency (30%)
             data_suff_score = min(100.0, (completed_months / 12.0) * 80.0 + min(20.0, (tx_count / 50.0) * 20.0))
 
@@ -549,21 +605,14 @@ class ForecastingEngine:
             mean_replay_mae = None
             if not replay_mode and replay_summary:
                 try:
-                    if replay_summary.get("available") and "models" in replay_summary:
-                        models = replay_summary["models"]
-                        matched_key = None
-                        if "production_policy" in models:
-                            matched_key = "production_policy"
-                        elif model_method in models:
-                            matched_key = model_method
-                        elif "finscope_hybrid" in models:
-                            matched_key = "finscope_hybrid"
-
-                        if matched_key and matched_key in models:
-                            mean_replay_mae = models[matched_key]["mae_minor"]
+                    if replay_summary.get("available"):
+                        cand_scores = replay_summary.get("model_scores") or replay_summary.get("models", {})
+                        if "production_policy" in cand_scores:
+                            mean_replay_mae = cand_scores["production_policy"]["mae_minor"]
+                        elif model_method in cand_scores:
+                            mean_replay_mae = cand_scores[model_method]["mae_minor"]
                 except Exception:
                     mean_replay_mae = None
-
 
             if mean_replay_mae is not None and projected_total_minor > 0:
                 rel_error = min(1.0, mean_replay_mae / float(max(projected_total_minor, 1000)))
@@ -571,10 +620,11 @@ class ForecastingEngine:
             else:
                 error_score = 35.0
 
-            # Component C: Behavioural Stability (20%)
-            if len(hist_monthly_spends) >= 3:
-                med_spend = calculate_median(hist_monthly_spends)
-                mad_spend = calculate_median([abs(x - med_spend) for x in hist_monthly_spends])
+            # Component C: Behavioural Stability on non-recurring series (20%) (F108-17)
+            hist_monthly_values = list(hist_monthly_non_recurring_expense.values())
+            if len(hist_monthly_values) >= 3:
+                med_spend = calculate_median(hist_monthly_values)
+                mad_spend = calculate_median([abs(x - med_spend) for x in hist_monthly_values])
                 variability = mad_spend / float(max(1, med_spend))
                 stability_score = max(0.0, min(100.0, (1.0 - variability * 1.5) * 100.0))
             else:
@@ -599,7 +649,7 @@ class ForecastingEngine:
             else:
                 confidence = "low"
 
-            # 7. Calibrated Range vs Early Estimate (F105-06)
+            # 7. Calibrated Range vs Early Estimate (F108-18, F108-19)
             progress = (elapsed_day / float(num_days)) if num_days > 0 else 1.0
             range_type = "early_estimate"
             calibrated_residuals = []
@@ -611,7 +661,7 @@ class ForecastingEngine:
                         account_id=context.account_id,
                         progress=progress
                     )
-                    if r_type == "calibrated_range" and len(r_residuals) >= 6:
+                    if r_type == "calibrated_range" and len(r_residuals) >= FORECAST_CONFIG.calibrated_range_min_residuals:
                         range_type = "calibrated_range"
                         calibrated_residuals = r_residuals
                 except Exception:
@@ -623,8 +673,10 @@ class ForecastingEngine:
             elif range_type == "calibrated_range" and calibrated_residuals:
                 p10 = calculate_percentile(calibrated_residuals, 10)
                 p90 = calculate_percentile(calibrated_residuals, 90)
-                lower_bound_minor = max(actual_net_spend_to_date, projected_total_minor + p10)
-                upper_bound_minor = max(projected_total_minor, projected_total_minor + p90)
+                raw_lower = projected_total_minor + p10
+                raw_upper = projected_total_minor + p90
+                lower_bound_minor = max(actual_net_spend_to_date, min(projected_total_minor, raw_lower))
+                upper_bound_minor = max(projected_total_minor, raw_upper)
             else:
                 range_type = "early_estimate"
                 shrinkage_factor = max(0.20, 1.0 - progress * 0.70)
@@ -632,9 +684,13 @@ class ForecastingEngine:
                 lower_bound_minor = max(actual_net_spend_to_date, projected_total_minor - spread_minor)
                 upper_bound_minor = projected_total_minor + spread_minor
 
+            # Invariant: lower_bound_minor <= projected_total_minor <= upper_bound_minor (F108-19)
+            lower_bound_minor = min(lower_bound_minor, projected_total_minor)
+            upper_bound_minor = max(upper_bound_minor, projected_total_minor)
+
             proj_budget_variance = (projected_total_minor - total_budget_minor) if total_budget_minor else None
 
-            # Diagnostics Payload (F105-10)
+            # Diagnostics Payload
             diagnostics = {
                 "history_months": completed_months,
                 "transaction_count": tx_count,
@@ -650,7 +706,8 @@ class ForecastingEngine:
                     "stability": round(stability_score, 1),
                     "recurring_coverage": round(recurring_score, 1)
                 },
-                "range_type": range_type
+                "range_type": range_type,
+                "suppressed_inactive_rule_fallback_count": suppressed_inactive_rule_fallback_count
             }
 
             res = ForecastResult(

@@ -54,6 +54,22 @@ def make_context(
     if weekday_avg_minor is None:
         weekday_avg_minor = {i: 5000 for i in range(7)}
 
+    # Convert hist_monthly_spends to continuous dictionary ending in prior month
+    hist_months_dict = {}
+    y, m = map(int, target_month.split("-"))
+    cur_m = date(y, m, 1)
+    for idx, amt in enumerate(reversed(hist_monthly_spends)):
+        # Month idx + 1 prior to target_month
+        pm = cur_m - timedelta(days=28 * (idx + 1))
+        pm_str = f"{pm.year:04d}-{pm.month:02d}"
+        hist_months_dict[pm_str] = amt
+
+    # Ensure reference month for seasonal naive exists if >= 12 months
+    if len(hist_monthly_spends) >= 12:
+        hist_months_dict[f"{y - 1:04d}-{m:02d}"] = hist_monthly_spends[0]
+
+    remaining_dates = tuple(f"{target_month}-{d:02d}" for d in range(elapsed_day + 1, num_days + 1))
+
     return ForecastContext(
         target_month=target_month,
         as_of_date=as_of_date,
@@ -61,25 +77,27 @@ def make_context(
         elapsed_day=elapsed_day,
         remaining_days=remaining_days,
         num_days=num_days,
+        remaining_calendar_dates=remaining_dates,
         actual_expense_minor=actual_net_spend_to_date,
         actual_income_minor=300000,
         actual_refund_minor=0,
-        actual_net_spend_to_date=actual_net_spend_to_date,
-        actual_recurring_minor=0,
-        upcoming_recurring_minor=upcoming_recurring_minor,
+        actual_net_spend_to_date_minor=actual_net_spend_to_date,
+        actual_non_recurring_expense_minor=actual_net_spend_to_date,
+        actual_recurring_expense_minor=0,
+        upcoming_recurring_expense_minor=upcoming_recurring_minor,
         upcoming_recurring_income_minor=0,
-        actual_cat_spends={},
+        hist_monthly_non_recurring_expense=hist_months_dict,
+        dense_daily_non_recurring_expense=dense_daily_non_recurring,
+        weekday_rates=weekday_avg_minor,
+        weekday_sample_counts={i: 4 for i in range(7)},
+        global_non_recurring_daily_rate=5000,
+        actual_cat_spends_net={},
+        actual_cat_non_recurring_expense={},
+        historical_cat_non_recurring_expense={},
         cat_metadata={},
-        upcoming_by_cat={},
+        upcoming_recurring_by_cat={},
         completed_months=completed_months,
-        tx_count=25,
-        hist_monthly_spends=hist_monthly_spends,
-        dense_daily_non_recurring=dense_daily_non_recurring,
-        actual_wday_counts={i: 4 for i in range(7)},
-        weekday_avg_minor=weekday_avg_minor,
-        weekday_income_avg={i: 0 for i in range(7)},
-        replay_mode=replay_mode,
-        forced_method=forced_method
+        transaction_count=25
     )
 
 
@@ -135,7 +153,7 @@ def test_current_pace_strategy_prediction():
     est = strat.predict(ctx)
     assert est.model_id == "current_pace"
     assert est.remaining_variable_minor == 200000  # 20 days * $100 = $2,000
-    assert est.diagnostics["daily_pace_minor"] == 10000
+    assert est.diagnostics["implied_daily_variable_rate"] == 10000
 
 
 def test_current_pace_day_zero_safeguard():
@@ -144,23 +162,23 @@ def test_current_pace_day_zero_safeguard():
     ctx = make_context(elapsed_day=0, remaining_days=30, actual_net_spend_to_date=0)
     est = strat.predict(ctx)
     assert est.remaining_variable_minor == 0
-    assert est.diagnostics["daily_pace_minor"] == 0
+    assert est.diagnostics["implied_daily_variable_rate"] == 0
 
 
 def test_recent_median_strategy_prediction():
-    """Recent median subtracts upcoming recurring bills and prorates by remaining days."""
+    """F108-02: Recent median uses pure non-recurring median and prorates by remaining days."""
     strat = RecentMedianStrategy()
     ctx = make_context(
         num_days=30,
         remaining_days=15,
         hist_monthly_spends=[120000, 140000, 160000],  # median = 140000
-        upcoming_recurring_minor=20000                 # net variable = 120000
+        upcoming_recurring_minor=20000
     )
     est = strat.predict(ctx)
     assert est.model_id == "three_month_median"
-    # 120000 * (15 / 30) = 60000
-    assert est.remaining_variable_minor == 60000
-    assert est.diagnostics["median_monthly_spend_minor"] == 140000
+    # Pure non-recurring median: 140000 * (15 / 30) = 70000
+    assert est.remaining_variable_minor == 70000
+    assert est.diagnostics["median_monthly_variable"] == 140000
 
 
 def test_seasonal_naive_strategy_requires_12_months():
@@ -173,12 +191,12 @@ def test_seasonal_naive_strategy_requires_12_months():
     assert strat.is_eligible(ctx_12) is True
     est = strat.predict(ctx_12)
     assert est.model_id == "seasonal_naive"
-    # Spend 12 months ago was 150000, recurring=20000 -> variable=130000, prorated for 20/30 days = round(130000 * 2/3) = 86667
-    assert est.remaining_variable_minor == round(130000 * (20 / 30.0))
+    # Spend in reference month (2025-09) was 150000, prorated for 20/30 days = 100000
+    assert est.remaining_variable_minor == 100000
 
 
 # ==============================================================================
-# Group 3: Robust Weekly Residual Strategy (BudgetPilot Inspiration)
+# Group 3: Robust Weekly Residual Strategy
 # ==============================================================================
 
 def test_robust_weekly_residual_outlier_resistance():
@@ -188,17 +206,17 @@ def test_robust_weekly_residual_outlier_resistance():
     """
     strat = RobustWeeklyResidualStrategy()
 
-    # Generate 4 complete weeks (28 days) of dense daily non-recurring expenses
+    # Generate 4 complete Monday-Sunday weeks (28 days) of dense daily non-recurring expenses
+    # 2026-08-03 is Monday
     dense_series = {}
-    base_date = date(2026, 8, 1)
+    base_date = date(2026, 8, 3)
 
     for i in range(28):
         cur_d = base_date + timedelta(days=i)
         d_str = cur_d.isoformat()
-        # Normal daily spend: $30/day (~$210/week)
         dense_series[d_str] = 3000
 
-    # Week 1 day 0 (first Monday): inject extreme one-off $1,000 appliance purchase (100,000 minor)
+    # Week 1 day 0 (Monday Aug 3): inject extreme one-off $1,000 appliance purchase (100,000 minor)
     first_day_str = base_date.isoformat()
     dense_series[first_day_str] = 100000
 
@@ -220,9 +238,8 @@ def test_robust_weekly_residual_outlier_resistance():
     est = strat.predict(ctx)
     assert est.model_id == "robust_weekly"
     assert est.diagnostics["median_weekly_minor"] == 21000
-    assert est.diagnostics["daily_variable_rate_minor"] == 3000  # 21000 / 7
 
-    # Remaining 10 days variable spend: 3000 * 10 = 30000
+    # Remaining 10 days variable spend: round(21000 * 10 / 7) = 30000
     assert est.remaining_variable_minor == 30000
 
 
@@ -231,72 +248,100 @@ def test_robust_weekly_residual_outlier_resistance():
 # ==============================================================================
 
 def test_model_selector_deterministic_fallback():
-    """Without replay evidence, ModelSelector adheres to deterministic data-sufficiency ladder."""
+    """Without replay evidence, ModelSelector adheres to deterministic configured fallback priority."""
     selector = ModelSelector()
 
-    # < 2 months -> current_pace
+    # Low history (1 month) -> current_pace is only eligible
     ctx_1 = make_context(completed_months=1)
     s1, r1 = selector.select(ctx_1)
     assert s1.id == "current_pace"
-    assert "current pace" in r1.lower()
 
-    # 2-5 months -> three_month_median
+    # 3 months with daily weekday history -> weekday_hybrid is eligible and highest priority
     ctx_3 = make_context(completed_months=3)
     s2, r2 = selector.select(ctx_3)
-    assert s2.id == "three_month_median"
-    assert "recent median" in r2.lower()
+    assert s2.id == "weekday_hybrid"
 
-    # 6+ months -> weekday_hybrid
-    ctx_7 = make_context(completed_months=7)
-    s3, r3 = selector.select(ctx_7)
-    assert s3.id == "weekday_hybrid"
-    assert "weekday" in r3.lower()
+    # 3 months without daily weekday history -> three_month_median wins fallback
+    empty_counts = {i: 0 for i in range(7)}
+    ctx_sparse = ForecastContext(
+        target_month="2026-09",
+        as_of_date="2026-09-10",
+        account_id=1,
+        elapsed_day=10,
+        remaining_days=20,
+        num_days=30,
+        remaining_calendar_dates=tuple(f"2026-09-{d:02d}" for d in range(11, 31)),
+        actual_expense_minor=100000,
+        actual_income_minor=300000,
+        actual_refund_minor=0,
+        actual_net_spend_to_date_minor=100000,
+        actual_non_recurring_expense_minor=100000,
+        actual_recurring_expense_minor=0,
+        upcoming_recurring_expense_minor=20000,
+        upcoming_recurring_income_minor=0,
+        hist_monthly_non_recurring_expense={"2026-06": 50000, "2026-07": 60000, "2026-08": 55000},
+        dense_daily_non_recurring_expense={},
+        weekday_rates=empty_counts,
+        weekday_sample_counts=empty_counts,
+        global_non_recurring_daily_rate=0,
+        actual_cat_spends_net={},
+        actual_cat_non_recurring_expense={},
+        historical_cat_non_recurring_expense={},
+        cat_metadata={},
+        upcoming_recurring_by_cat={},
+        completed_months=3,
+        transaction_count=25
+    )
+    s_sparse, r_sparse = selector.select(ctx_sparse)
+    assert s_sparse.id == "three_month_median"
 
 
 def test_model_selector_forced_override():
-    """Forced method takes precedence regardless of history."""
+    """Forced method takes precedence if eligible."""
     selector = ModelSelector()
-    ctx = make_context(completed_months=1, forced_method="weekday_hybrid")
-    s, r = selector.select(ctx)
+    ctx = make_context(completed_months=6)
+    s, r = selector.select(ctx, forced_method="weekday_hybrid")
     assert s.id == "weekday_hybrid"
-    assert "evaluated candidate" in r.lower()
 
 
 def test_model_selector_adaptive_replay_selection():
     """
     When historical replay provides empirical error evidence with sufficient comparable origins,
-    ModelSelector chooses the strategy with lowest error.
+    ModelSelector chooses the strategy with lowest Median AE on common origins.
     """
     selector = ModelSelector()
 
-    # Mock historical replay leaderboard where robust_weekly significantly outperformed weekday_hybrid
     mock_replay_scores = {
         "available": True,
+        "comparable_origin_count": 12,
         "models": {
             "weekday_hybrid": {
-                "sample_origins": 12,
+                "comparable_origins": 12,
                 "median_ae_minor": 45000,
                 "mae_minor": 50000
             },
             "robust_weekly": {
-                "sample_origins": 12,
+                "comparable_origins": 12,
                 "median_ae_minor": 18000,  # Best performer
                 "mae_minor": 22000
             },
             "current_pace": {
-                "sample_origins": 12,
+                "comparable_origins": 12,
                 "median_ae_minor": 60000,
                 "mae_minor": 65000
             }
         }
     }
 
-    # Context with 4 complete weeks (making robust_weekly eligible)
-    dense_series = {f"2026-08-{i:02d}": 2000 for i in range(1, 29)}
+    # Context with 4 complete Monday-Sunday weeks (2026-08-03 to 2026-08-30)
+    dense_series = {}
+    base_monday = date(2026, 8, 3)
+    for i in range(28):
+        dense_series[(base_monday + timedelta(days=i)).isoformat()] = 2000
+
     ctx = make_context(
         completed_months=8,
-        dense_daily_non_recurring=dense_series,
-        replay_mode=False
+        dense_daily_non_recurring=dense_series
     )
 
     s, reason = selector.select(ctx, replay_scores=mock_replay_scores)

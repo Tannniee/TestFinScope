@@ -114,11 +114,17 @@ class BacktestingEngine:
         # Identify best model by lowest MAE
         best_model = min(results.items(), key=lambda x: x[1]["mae_minor"])[0]
 
+        # Expose legacy_series_hybrid alias and evaluation_type (F108-25)
+        if "finscope_hybrid" in results:
+            results["legacy_series_hybrid"] = dict(results["finscope_hybrid"])
+            results["legacy_series_hybrid"]["name"] = "legacy_series_hybrid"
+
         return {
             "available": True,
+            "evaluation_type": "legacy_series_baseline",
             "evaluations_count": len(series) - 3,
             "best_model": best_model,
             "best_baseline": best_model,
-            "hybrid_is_best": (best_model == "finscope_hybrid"),
+            "hybrid_is_best": (best_model in ("finscope_hybrid", "legacy_series_hybrid")),
             "models": results
         }
