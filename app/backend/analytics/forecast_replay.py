@@ -90,7 +90,7 @@ class HistoricalReplayRunner:
             rec_row = cur.fetchone()
 
             return (
-                "1.0.6",
+                "1.0.7",
                 account_id,
                 tx_row["max_u"] or "",
                 tx_row["max_d"] or "",
@@ -99,6 +99,7 @@ class HistoricalReplayRunner:
                 rec_row["rc"] or 0,
                 rec_row["rs"] or 0
             )
+
 
     @staticmethod
     def get_actual_month_end_net_spend(month_str: str, account_id: Optional[int] = None) -> int:
@@ -187,6 +188,7 @@ class HistoricalReplayRunner:
         model_preds: Dict[str, List[int]] = {
             "production_policy": [],
             "finscope_hybrid": [],
+            "robust_weekly": [],
             "current_pace": [],
             "naive_previous": [],
             "mean_3": [],
@@ -231,7 +233,19 @@ class HistoricalReplayRunner:
                 model_preds["finscope_hybrid"].append(pred_hybrid)
                 model_actuals["finscope_hybrid"].append(target_actual)
 
-                # 1b. Run actual production decision policy ladder (natural behavior)
+                # 1b. Run candidate robust_weekly (Phase 3)
+                fc_rw = ForecastingEngine.forecast_month(
+                    month=target_month,
+                    account_id=account_id,
+                    as_of_date=cutoff_d_str,
+                    replay_mode=True,
+                    forced_method="robust_weekly"
+                )
+                pred_rw = fc_rw["projected_expense_minor"]
+                model_preds["robust_weekly"].append(pred_rw)
+                model_actuals["robust_weekly"].append(target_actual)
+
+                # 1c. Run actual production decision policy ladder (natural behavior)
                 fc_prod = ForecastingEngine.forecast_month(
                     month=target_month,
                     account_id=account_id,
@@ -242,6 +256,7 @@ class HistoricalReplayRunner:
                 pred_prod = fc_prod["projected_expense_minor"]
                 model_preds["production_policy"].append(pred_prod)
                 model_actuals["production_policy"].append(target_actual)
+
 
                 residual = target_actual - pred_prod
                 residuals_by_bucket[bucket].append(residual)

@@ -20,6 +20,12 @@ from app.backend.analytics.reconciliation import reconcile_forecast_components
 from app.backend.analytics.rolling import calculate_median, calculate_mean
 from app.backend.services.merchant_service import normalize_merchant_name
 from app.backend.analytics.recurring_schedule import generate_occurrences
+from app.backend.analytics.forecast_strategies import (
+    ForecastContext,
+    ModelSelector,
+    default_registry,
+    ForecastEstimate,
+)
 
 
 def recurring_key(account_id_or_name: Any, name: Optional[str] = None) -> tuple:
@@ -268,10 +274,18 @@ class ForecastingEngine:
                 GROUP BY transaction_date, wday
             """, [h_start_date.isoformat(), h_end_date.isoformat()] + acc_params)
 
+            dense_daily_non_recurring: Dict[str, int] = {}
+            day_cursor = h_start_date
+            while day_cursor <= h_end_date:
+                dense_daily_non_recurring[day_cursor.isoformat()] = 0
+                day_cursor += timedelta(days=1)
+
             wday_daily_spends: Dict[int, List[int]] = {w: [] for w in range(7)}
             for r in cur.fetchall():
                 w = int(r["wday"])
-                wday_daily_spends[w].append(r["day_total_minor"])
+                amt = r["day_total_minor"]
+                wday_daily_spends[w].append(amt)
+                dense_daily_non_recurring[r["transaction_date"]] = amt
 
             weekday_avg_minor: Dict[int, int] = {}
             for w in range(7):
@@ -338,81 +352,56 @@ class ForecastingEngine:
             """, [context.as_of_month, as_of_cutoff] + acc_params)
             hist_monthly_spends = [max(0, r["net_spend"]) for r in cur.fetchall() if r["net_spend"] is not None]
 
-            # Model method determination
-            if forced_method == "weekday_hybrid":
-                model_method = "weekday_hybrid"
-                method_name = "FinScope Hybrid"
-                model_reason = "Evaluated candidate weekday hybrid model"
-                if sum(weekday_avg_minor.values()) == 0 and elapsed_day > 0:
-                    daily_pace = actual_net_spend_to_date // elapsed_day
-                    for w in range(7):
-                        weekday_avg_minor[w] = daily_pace
-                remaining_variable_minor = 0
-                for d in range(elapsed_day + 1, num_days + 1):
-                    day_obj = date(year, m_int, d)
-                    sqlite_w = (day_obj.weekday() + 1) % 7
-                    remaining_variable_minor += weekday_avg_minor.get(sqlite_w, 0)
-            elif forced_method == "current_pace":
-                model_method = "current_pace"
-                method_name = "Current Pace + Known Recurring"
-                model_reason = "Evaluated current pace baseline"
-                daily_pace = (actual_net_spend_to_date // elapsed_day) if elapsed_day > 0 else 0
-                remaining_variable_minor = daily_pace * remaining_days
-            elif forced_method == "three_month_median":
-                model_method = "three_month_median"
-                method_name = "Recent Median + Known Recurring"
-                model_reason = "Evaluated recent median baseline"
-                if hist_monthly_spends and remaining_days > 0:
-                    med_monthly = calculate_median(hist_monthly_spends[-3:])
-                    est_variable_total = max(0, med_monthly - upcoming_recurring_minor)
-                    remaining_variable_minor = round(est_variable_total * (remaining_days / float(num_days)))
-                else:
-                    remaining_variable_minor = 0
-            else:
-                # Production decision policy ladder (natural behavior)
-                if completed_months < 2:
-                    model_method = "current_pace"
-                    method_name = "Current Pace + Known Recurring"
-                    model_reason = "Minimal history (< 2 complete months); using current pace"
-                    daily_pace = (actual_net_spend_to_date // elapsed_day) if elapsed_day > 0 else 0
-                    remaining_variable_minor = daily_pace * remaining_days
-                elif completed_months < 6:
-                    model_method = "three_month_median"
-                    method_name = "Recent Median + Known Recurring"
-                    model_reason = f"Early history ({completed_months} complete months); using recent median"
-                    if hist_monthly_spends and remaining_days > 0:
-                        med_monthly = calculate_median(hist_monthly_spends[-3:])
-                        est_variable_total = max(0, med_monthly - upcoming_recurring_minor)
-                        remaining_variable_minor = round(est_variable_total * (remaining_days / float(num_days)))
-                    else:
-                        remaining_variable_minor = 0
-                elif completed_months < 12:
-                    model_method = "weekday_hybrid"
-                    method_name = "FinScope Hybrid (Actual + Scheduled Recurring + Robust Weekday Variable)"
-                    model_reason = f"Established history ({completed_months} complete months); using weekday hybrid"
-                    # Fallback if no weekday rates
-                    if sum(weekday_avg_minor.values()) == 0 and elapsed_day > 0:
-                        daily_pace = actual_net_spend_to_date // elapsed_day
-                        for w in range(7):
-                            weekday_avg_minor[w] = daily_pace
-                    remaining_variable_minor = 0
-                    for d in range(elapsed_day + 1, num_days + 1):
-                        day_obj = date(year, m_int, d)
-                        sqlite_w = (day_obj.weekday() + 1) % 7
-                        remaining_variable_minor += weekday_avg_minor.get(sqlite_w, 0)
-                else:
-                    model_method = "weekday_hybrid"
-                    method_name = "FinScope Hybrid (Actual + Scheduled Recurring + Robust Weekday Variable)"
-                    model_reason = f"Seasonal history available ({completed_months} complete months)"
-                    if sum(weekday_avg_minor.values()) == 0 and elapsed_day > 0:
-                        daily_pace = actual_net_spend_to_date // elapsed_day
-                        for w in range(7):
-                            weekday_avg_minor[w] = daily_pace
-                    remaining_variable_minor = 0
-                    for d in range(elapsed_day + 1, num_days + 1):
-                        day_obj = date(year, m_int, d)
-                        sqlite_w = (day_obj.weekday() + 1) % 7
-                        remaining_variable_minor += weekday_avg_minor.get(sqlite_w, 0)
+            # Build consolidated ForecastContext (Phase 2)
+            f_ctx = ForecastContext(
+                target_month=context.as_of_month,
+                as_of_date=as_of_cutoff,
+                account_id=context.account_id,
+                elapsed_day=elapsed_day,
+                remaining_days=remaining_days,
+                num_days=num_days,
+                actual_expense_minor=actual_expense_minor,
+                actual_income_minor=actual_income_to_date_minor,
+                actual_refund_minor=actual_refund_minor,
+                actual_net_spend_to_date=actual_net_spend_to_date,
+                actual_recurring_minor=actual_recurring_minor,
+                upcoming_recurring_minor=upcoming_recurring_minor,
+                upcoming_recurring_income_minor=upcoming_recurring_income_minor,
+                actual_cat_spends=actual_cat_spends,
+                cat_metadata=cat_metadata,
+                upcoming_by_cat=upcoming_by_cat,
+                completed_months=completed_months,
+                tx_count=tx_count,
+                hist_monthly_spends=hist_monthly_spends,
+                dense_daily_non_recurring=dense_daily_non_recurring,
+                actual_wday_counts=actual_wday_counts,
+                weekday_avg_minor=weekday_avg_minor,
+                weekday_income_avg=weekday_income_avg,
+                replay_mode=replay_mode,
+                forced_method=forced_method
+            )
+
+            # Retrieve replay summary if not in replay_mode (Phase 4 Adaptive Selection)
+            replay_summary = None
+            if not replay_mode:
+                try:
+                    from app.backend.analytics.forecast_replay import HistoricalReplayRunner
+                    replay_summary = HistoricalReplayRunner.run_replay(
+                        account_id=context.account_id,
+                        as_of_date=as_of_cutoff
+                    )
+                except Exception:
+                    replay_summary = None
+
+            # Strategy Pattern model selection & execution
+            selector = ModelSelector()
+            strategy, model_reason = selector.select(f_ctx, replay_scores=replay_summary)
+            estimate = strategy.predict(f_ctx)
+
+            model_method = estimate.model_id
+            method_name = estimate.method_name
+            remaining_variable_minor = estimate.remaining_variable_minor
+
 
             # Expected variable income
             expected_variable_income_minor = 0
@@ -558,10 +547,8 @@ class ForecastingEngine:
 
             # Component B: Historical Forecast Error (35%)
             mean_replay_mae = None
-            if not replay_mode:
+            if not replay_mode and replay_summary:
                 try:
-                    from app.backend.analytics.forecast_replay import HistoricalReplayRunner
-                    replay_summary = HistoricalReplayRunner.run_replay(account_id=context.account_id, as_of_date=as_of_cutoff)
                     if replay_summary.get("available") and "models" in replay_summary:
                         models = replay_summary["models"]
                         matched_key = None
@@ -576,6 +563,7 @@ class ForecastingEngine:
                             mean_replay_mae = models[matched_key]["mae_minor"]
                 except Exception:
                     mean_replay_mae = None
+
 
             if mean_replay_mae is not None and projected_total_minor > 0:
                 rel_error = min(1.0, mean_replay_mae / float(max(projected_total_minor, 1000)))
