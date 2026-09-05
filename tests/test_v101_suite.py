@@ -98,26 +98,20 @@ def test_stage1_update_refund_enforces_parent_boundary(isolated_db):
     })
 
     # Create refund 1: $40.00
-    ref1_id = TransactionRepository.create({
-        "account_id": acc_id,
-        "category_id": cat_id,
-        "transaction_type": "refund",
-        "amount": 40.0,
-        "transaction_date": "2026-09-02",
-        "description": "Partial refund 1",
-        "refund_of_transaction_id": parent_id
-    })
+    ref1_id = TransactionRepository.create_refund(
+        original_tx_id=parent_id,
+        amount=40.0,
+        transaction_date="2026-09-02",
+        account_id=acc_id
+    )
 
     # Create refund 2: $30.00 (Total refunded so far = $70.00, remaining max for ref2 = $60.00)
-    ref2_id = TransactionRepository.create({
-        "account_id": acc_id,
-        "category_id": cat_id,
-        "transaction_type": "refund",
-        "amount": 30.0,
-        "transaction_date": "2026-09-03",
-        "description": "Partial refund 2",
-        "refund_of_transaction_id": parent_id
-    })
+    ref2_id = TransactionRepository.create_refund(
+        original_tx_id=parent_id,
+        amount=30.0,
+        transaction_date="2026-09-03",
+        account_id=acc_id
+    )
 
     # Update ref2 to $50.00 (Total = 40 + 50 = 90 <= 100) -> should succeed
     success = TransactionRepository.update_refund(

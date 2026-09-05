@@ -445,3 +445,107 @@ def test_all_account_forecast_is_deterministic(isolated_db):
     assert res1["upcoming_recurring_minor"] == res2["upcoming_recurring_minor"]
     assert res1["projected_expense_minor"] == res2["projected_expense_minor"]
 
+
+# ==============================================================================
+# V103-05: Reject refund creation through generic transaction API
+# ==============================================================================
+
+def test_generic_create_rejects_refund(isolated_db):
+    """
+    V103-05: Generic TransactionRepository.create() must reject transaction_type='refund',
+    enforcing that all refunds are created exclusively through create_refund().
+    """
+    acc_id = AccountRepository.create("Checking", "checking", opening_balance=500.0)
+
+    # Standalone refund attempt
+    with pytest.raises(ValueError, match="Refunds must be created through create_refund"):
+        TransactionRepository.create({
+            "account_id": acc_id,
+            "amount": 25.0,
+            "transaction_type": "refund",
+            "transaction_date": "2026-09-01"
+        })
+
+    # Even if refund_of_transaction_id is passed to generic create, it must still be rejected
+    with pytest.raises(ValueError, match="Refunds must be created through create_refund"):
+        TransactionRepository.create({
+            "account_id": acc_id,
+            "amount": 25.0,
+            "transaction_type": "refund",
+            "transaction_date": "2026-09-01",
+            "refund_of_transaction_id": 123
+        })
+
+
+def test_create_refund_requires_original_transaction(isolated_db):
+    """
+    V103-05: create_refund requires an existing, valid original expense transaction.
+    Non-existent transactions or non-expense transactions must be rejected.
+    """
+    acc_id = AccountRepository.create("Checking", "checking", opening_balance=500.0)
+
+    # Non-existent original transaction
+    with pytest.raises(ValueError, match="Original transaction 99999 not found"):
+        TransactionRepository.create_refund(
+            original_tx_id=99999,
+            amount=15.0,
+            transaction_date="2026-09-02"
+        )
+
+    # Original transaction is income, not expense
+    income_id = TransactionRepository.create({
+        "account_id": acc_id,
+        "amount": 1000.0,
+        "transaction_type": "income",
+        "transaction_date": "2026-09-01"
+    })
+    with pytest.raises(ValueError, match="only expenses can be refunded"):
+        TransactionRepository.create_refund(
+            original_tx_id=income_id,
+            amount=15.0,
+            transaction_date="2026-09-02"
+        )
+
+
+def test_refund_always_has_original_transaction_id(isolated_db):
+    """
+    V103-05: Refunds created via create_refund() always link to the original transaction ID.
+    """
+    acc_id = AccountRepository.create("Checking", "checking", opening_balance=500.0)
+    orig_id = TransactionRepository.create({
+        "account_id": acc_id,
+        "amount": 80.0,
+        "transaction_type": "expense",
+        "transaction_date": "2026-09-01",
+        "description": "Shoes"
+    })
+
+    refund_id = TransactionRepository.create_refund(
+        original_tx_id=orig_id,
+        amount=30.0,
+        transaction_date="2026-09-02"
+    )
+
+    refund = TransactionRepository.get_by_id(refund_id)
+    assert refund is not None
+    assert refund["transaction_type"] == "refund"
+    assert refund["refund_of_transaction_id"] == orig_id
+    assert refund["amount_minor"] == 3000
+
+
+def test_no_active_unlinked_refunds_exist(isolated_db):
+    """
+    V103-05: Invariant verification that no active transactions have transaction_type='refund'
+    with refund_of_transaction_id IS NULL.
+    """
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM active_transactions
+            WHERE transaction_type = 'refund'
+              AND refund_of_transaction_id IS NULL
+        """)
+        count = cur.fetchone()[0]
+        assert count == 0
+

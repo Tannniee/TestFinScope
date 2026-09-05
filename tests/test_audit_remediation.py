@@ -464,14 +464,20 @@ def test_aud_005_recurring_match_strictly_enforces_account_and_type(isolated_db)
     assert rule_bill["is_paid"] is False, "Income must not mark expense rule as paid"
 
     # Case 2: A refund on Credit Card with merchant "Netflix"
-    TransactionRepository.create({
+    exp_for_ref = TransactionRepository.create({
         "account_id": acc_card,
         "category_id": cat_sub,
-        "amount": 19.99,
-        "transaction_type": "refund",
+        "amount": 50.0,
+        "transaction_type": "expense",
         "merchant_name": "Netflix",
-        "transaction_date": "2026-09-06"
+        "transaction_date": "2026-08-25"
     })
+    TransactionRepository.create_refund(
+        original_tx_id=exp_for_ref,
+        amount=19.99,
+        transaction_date="2026-09-06",
+        account_id=acc_card
+    )
     bills = RecurringService.get_upcoming_bills("2026-09")
     rule_bill = next(b for b in bills if b["rule_id"] == rule_id)
     assert rule_bill["is_paid"] is False, "Refund must not mark expense rule as paid"

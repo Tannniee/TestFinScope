@@ -134,6 +134,8 @@ class TransactionRepository:
         tx_type = validate_transaction_type(data["transaction_type"])
         if tx_type == "transfer":
             raise ValueError("Transfers must be created through TransferService.")
+        if tx_type == "refund":
+            raise ValueError("Refunds must be created through create_refund().")
 
         if tx_type != "adjustment":
             amount_minor = validate_positive_amount(data["amount"], "Transaction amount")
@@ -156,49 +158,10 @@ class TransactionRepository:
                 essentiality=data.get("essentiality")
             )
 
-        # Invariant: Prevent over-refunding in create
-        if tx_type == "refund" and data.get("refund_of_transaction_id"):
-            orig_id = data["refund_of_transaction_id"]
-            orig = TransactionRepository.get_by_id(orig_id)
-            if orig:
-                with get_db_connection() as check_conn:
-                    check_cur = check_conn.cursor()
-                    check_cur.execute("""
-                        SELECT COALESCE(SUM(amount_minor), 0)
-                        FROM active_transactions
-                        WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
-                    """, (orig_id,))
-                    existing_refunded_minor = check_cur.fetchone()[0]
-                remaining_minor = orig["amount_minor"] - existing_refunded_minor
-                if amount_minor > remaining_minor:
-                    raise ValueError(
-                        f"Cumulative refunds exceed original expense amount (Remaining: ${remaining_minor / 100:.2f}, Attempted: ${amount_minor / 100:.2f})."
-                    )
-
         with get_db_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 cur = conn.cursor()
-
-                # Re-validate refund bounds inside transaction lock if refund
-                if tx_type == "refund" and data.get("refund_of_transaction_id"):
-                    orig_id = data["refund_of_transaction_id"]
-                    cur.execute("SELECT * FROM transactions WHERE id = ?", (orig_id,))
-                    locked_orig = cur.fetchone()
-                    if locked_orig:
-                        if locked_orig["transaction_type"] != "expense":
-                            raise ValueError(f"Cannot refund a transaction of type '{locked_orig['transaction_type']}'; only expenses can be refunded.")
-                        cur.execute("""
-                            SELECT COALESCE(SUM(amount_minor), 0)
-                            FROM active_transactions
-                            WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
-                        """, (orig_id,))
-                        locked_existing = cur.fetchone()[0]
-                        locked_remaining = locked_orig["amount_minor"] - locked_existing
-                        if amount_minor > locked_remaining:
-                            raise ValueError(
-                                f"Cumulative refunds exceed original expense amount (Remaining: ${locked_remaining / 100:.2f}, Attempted: ${amount_minor / 100:.2f})."
-                            )
 
                 # Handle Uncategorized for expense if category is missing
                 if tx_type == "expense" and not category_id:

@@ -105,14 +105,12 @@ def test_bug_002_generic_update_rejects_refund(isolated_db):
         "transaction_date": "2026-09-01"
     })
 
-    ref_id = TransactionRepository.create({
-        "account_id": acc_id,
-        "category_id": cat_id,
-        "transaction_type": "refund",
-        "amount": 20.0,
-        "transaction_date": "2026-09-02",
-        "refund_of_transaction_id": parent_id
-    })
+    ref_id = TransactionRepository.create_refund(
+        original_tx_id=parent_id,
+        amount=20.0,
+        transaction_date="2026-09-02",
+        account_id=acc_id
+    )
 
     with pytest.raises(ValueError, match="Refunds must be updated through TransactionRepository.update_refund"):
         TransactionRepository.update(ref_id, {"amount": 50.0})
@@ -168,14 +166,12 @@ def test_bug_002_specialised_updates_succeed(isolated_db):
         "amount": 200.0,
         "transaction_date": "2026-09-01"
     })
-    ref_id = TransactionRepository.create({
-        "account_id": acc1_id,
-        "category_id": cat_id,
-        "transaction_type": "refund",
-        "amount": 50.0,
-        "transaction_date": "2026-09-02",
-        "refund_of_transaction_id": exp_id
-    })
+    ref_id = TransactionRepository.create_refund(
+        original_tx_id=exp_id,
+        amount=50.0,
+        transaction_date="2026-09-02",
+        account_id=acc1_id
+    )
     r_success = TransactionRepository.update_refund(
         tx_id=ref_id,
         amount=80.0,

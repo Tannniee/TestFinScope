@@ -150,15 +150,12 @@ def test_reg_004_deleted_refund_stops_offsetting_expense(isolated_db):
     })
 
     # Refund $40 linked to expense
-    ref_id = TransactionRepo.create({
-        "account_id": acc_id,
-        "amount": 40.0,
-        "transaction_type": "refund",
-        "category_id": cat_id,
-        "merchant_name": "Clothing Store",
-        "refund_of_transaction_id": exp_id,
-        "transaction_date": "2026-09-05"
-    })
+    ref_id = TransactionRepo.create_refund(
+        original_tx_id=exp_id,
+        amount=40.0,
+        transaction_date="2026-09-05",
+        account_id=acc_id
+    )
 
     # Net spend should be 100 - 40 = 60
     summary = AnalyticsService.get_month_summary("2026-09", acc_id)
@@ -286,26 +283,22 @@ def test_reg_008_over_refund_rejected_atomically(isolated_db):
     })
 
     # First refund $35 is valid
-    ref1_id = TransactionRepo.create({
-        "account_id": acc_id,
-        "amount": 35.0,
-        "transaction_type": "refund",
-        "category_id": cat_id,
-        "refund_of_transaction_id": exp_id,
-        "transaction_date": "2026-09-02"
-    })
+    ref1_id = TransactionRepo.create_refund(
+        original_tx_id=exp_id,
+        amount=35.0,
+        transaction_date="2026-09-02",
+        account_id=acc_id
+    )
     assert ref1_id > 0
 
     # Second refund $20 would make total refunds $55 > $50. MUST FAIL!
-    with pytest.raises(ValueError, match="Cumulative refunds.*exceed"):
-        TransactionRepo.create({
-            "account_id": acc_id,
-            "amount": 20.0,
-            "transaction_type": "refund",
-            "category_id": cat_id,
-            "refund_of_transaction_id": exp_id,
-            "transaction_date": "2026-09-03"
-        })
+    with pytest.raises(ValueError, match="exceeds remaining refundable balance"):
+        TransactionRepo.create_refund(
+            original_tx_id=exp_id,
+            amount=20.0,
+            transaction_date="2026-09-03",
+            account_id=acc_id
+        )
 
     # Verify only 2 transactions exist in DB (1 expense, 1 refund)
     all_txs = TransactionRepo.get_all()
@@ -611,7 +604,12 @@ def test_financial_truth_snapshot_invariants(isolated_db):
     verify_invariant()
 
     # 4. Add refund to expense
-    tx_ref = TransactionRepo.create({"account_id": a1, "amount": 40.0, "transaction_type": "refund", "refund_of_transaction_id": tx_exp, "transaction_date": "2026-09-03"})
+    tx_ref = TransactionRepo.create_refund(
+        original_tx_id=tx_exp,
+        amount=40.0,
+        transaction_date="2026-09-03",
+        account_id=a1
+    )
     verify_invariant()
 
     # 5. Soft-delete transfer

@@ -130,14 +130,12 @@ class TestFinScopeSafety(unittest.TestCase):
         })
 
         # Refund of $80 for the item
-        tx_ref = TransactionRepository.create({
-            "account_id": acc_id,
-            "category_id": cat_id,
-            "merchant_name": "Department Store Refund",
-            "transaction_type": "refund",
-            "amount": 80.0,
-            "transaction_date": "2026-08-12"
-        })
+        tx_ref = TransactionRepository.create_refund(
+            original_tx_id=tx_exp,
+            amount=80.0,
+            transaction_date="2026-08-12",
+            account_id=acc_id
+        )
 
         summary_after = AnalyticsService.get_month_summary("2026-08")
 
