@@ -607,3 +607,103 @@ def test_current_route_matches_rendered_page_after_rapid_navigation():
     assert "'#analytics'" in content
 
 
+# ==============================================================================
+# V103-07: Route capability metadata authorization layer
+# ==============================================================================
+
+def test_route_authorization_uses_capability():
+    """
+    V103-07: authorize_request centrally inspects route capability and enforces
+    policy tiers.
+    """
+    from app.backend.server import authorize_request, ROUTES, get_current_session_token
+
+    dummy_handler = MagicMock()
+    dummy_handler._is_allowed_host.return_value = True
+    dummy_handler._is_allowed_origin.return_value = True
+    dummy_handler.headers = {"X-FinScope-Token": get_current_session_token()}
+
+    # Valid READ route succeeds
+    read_route = ROUTES["get_transactions"]
+    assert read_route.capability == "READ"
+    assert authorize_request(dummy_handler, read_route, "get_transactions") is None
+
+    # Valid WRITE route succeeds
+    write_route = ROUTES["create_transaction"]
+    assert write_route.capability == "WRITE"
+    assert authorize_request(dummy_handler, write_route, "create_transaction") is None
+
+
+def test_write_route_requires_authorization():
+    """
+    V103-07: A route with WRITE capability requires valid session token authorization.
+    """
+    from app.backend.server import authorize_request, ROUTES
+
+    dummy_handler = MagicMock()
+    dummy_handler._is_allowed_host.return_value = True
+    dummy_handler._is_allowed_origin.return_value = True
+    dummy_handler.headers = {"X-FinScope-Token": "invalid-token"}
+
+    write_route = ROUTES["create_account"]
+    err = authorize_request(dummy_handler, write_route, "create_account")
+    assert err is not None
+    assert err[0] == 403
+    assert err[1] == "UNAUTHORIZED"
+
+
+def test_destructive_route_requires_authorization():
+    """
+    V103-07: A route with DESTRUCTIVE capability rejects requests from cross-site contexts.
+    """
+    from app.backend.server import authorize_request, ROUTES, get_current_session_token
+
+    dummy_handler = MagicMock()
+    dummy_handler._is_allowed_host.return_value = True
+    dummy_handler._is_allowed_origin.return_value = True
+    dummy_handler.headers = {
+        "X-FinScope-Token": get_current_session_token(),
+        "Sec-Fetch-Site": "cross-site"
+    }
+
+    destructive_route = ROUTES["delete_transaction"]
+    assert destructive_route.capability == "DESTRUCTIVE"
+    err = authorize_request(dummy_handler, destructive_route, "delete_transaction")
+    assert err is not None
+    assert err[0] == 403
+    assert err[1] == "FORBIDDEN_ORIGIN"
+
+
+def test_privileged_route_rejects_non_native_context():
+    """
+    V103-07: A route with PRIVILEGED_DESKTOP capability rejects requests originating
+    from non-native contexts (e.g. cross-site or browser elements).
+    """
+    from app.backend.server import authorize_request, ROUTES, get_current_session_token
+
+    privileged_route = ROUTES["open_data_dir"]
+    assert privileged_route.capability == "PRIVILEGED_DESKTOP"
+
+    dummy_handler = MagicMock()
+    dummy_handler._is_allowed_host.return_value = True
+    dummy_handler._is_allowed_origin.return_value = True
+    dummy_handler.headers = {
+        "X-FinScope-Token": get_current_session_token(),
+        "Sec-Fetch-Dest": "iframe"
+    }
+
+    err = authorize_request(dummy_handler, privileged_route, "open_data_dir")
+    assert err is not None
+    assert err[0] == 403
+    assert err[1] == "FORBIDDEN_CAPABILITY"
+
+    # Direct local native client succeeds
+    dummy_handler.headers = {
+        "X-FinScope-Token": get_current_session_token(),
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Dest": "empty"
+    }
+    assert authorize_request(dummy_handler, privileged_route, "open_data_dir") is None
+
+
+

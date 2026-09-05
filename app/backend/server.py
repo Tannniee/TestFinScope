@@ -113,6 +113,52 @@ ROUTES: Dict[str, Route] = {
 
 MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB limit
 
+def authorize_request(
+    handler: "FinScopeHTTPHandler",
+    route: Route,
+    method_name: str
+) -> Optional[tuple[int, str, str]]:
+    """
+    Central authorization policy enforcing route capability constraints (V103-07 / Model A).
+    Tiers:
+    - READ: Local loopback host, valid origin if provided, valid session token.
+    - WRITE: Local loopback host, valid loopback origin, valid session token.
+    - DESTRUCTIVE: Local loopback host, verified local origin, valid session token,
+      and rejection of cross-site request contexts.
+    - PRIVILEGED_DESKTOP: Local loopback host, verified local origin, valid session token,
+      and strict direct local client execution (rejects cross-site and browser element contexts).
+    """
+    # 1. Base host validation
+    if not handler._is_allowed_host():
+        return (403, "FORBIDDEN_HOST", "Invalid Host header")
+
+    # 2. Session Token validation
+    token = handler.headers.get("X-FinScope-Token")
+    if token != CURRENT_SESSION_TOKEN:
+        return (403, "UNAUTHORIZED", "Missing or invalid session token")
+
+    # 3. Base origin validation
+    if not handler._is_allowed_origin():
+        return (403, "FORBIDDEN_ORIGIN", "Invalid Origin header")
+
+    capability = route.capability
+
+    # 4. Capability-specific policies
+    if capability == "DESTRUCTIVE":
+        sec_site = handler.headers.get("Sec-Fetch-Site")
+        if sec_site and sec_site not in ("same-origin", "none"):
+            return (403, "FORBIDDEN_ORIGIN", "Destructive operations blocked from cross-origin/cross-site requests.")
+
+    elif capability == "PRIVILEGED_DESKTOP":
+        sec_site = handler.headers.get("Sec-Fetch-Site")
+        if sec_site and sec_site not in ("same-origin", "none"):
+            return (403, "FORBIDDEN_CAPABILITY", "Privileged desktop operations are restricted to direct local client.")
+        sec_dest = handler.headers.get("Sec-Fetch-Dest")
+        if sec_dest and sec_dest not in ("empty", ""):
+            return (403, "FORBIDDEN_CAPABILITY", "Privileged desktop operations rejected from browser element context.")
+
+    return None
+
 class FinScopeHTTPHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(FRONTEND_DIR), **kwargs)
@@ -291,17 +337,12 @@ class FinScopeHTTPHandler(SimpleHTTPRequestHandler):
 
         route = ROUTES[method_name]
 
-        # 4. Session Token validation
-        token = self.headers.get("X-FinScope-Token")
-        if token != CURRENT_SESSION_TOKEN:
-            self._send_json_error(403, "UNAUTHORIZED", "Missing or invalid session token")
+        # 4. V103-07: Central Route Capability Authorization
+        auth_error = authorize_request(self, route, method_name)
+        if auth_error:
+            status_code, err_code, err_msg = auth_error
+            self._send_json_error(status_code, err_code, err_msg)
             return
-
-        # AUD-010: Capability enforcement
-        if route.capability == "PRIVILEGED_DESKTOP":
-            if not self._is_allowed_host() or not self._is_allowed_origin():
-                self._send_json_error(403, "FORBIDDEN_CAPABILITY", "Privileged desktop operations are restricted to direct local client.")
-                return
 
         # 5. Payload size cap
         content_len = int(self.headers.get("Content-Length", 0))

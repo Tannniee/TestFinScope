@@ -88,8 +88,11 @@ export const router = {
       console.error('Render error:', err);
     }
 
-    if (generation !== this.renderGeneration || controller.signal.aborted) {
+    if (generation !== this.renderGeneration) {
       // Stale render from previous route navigation, discard
+      return;
+    }
+    if (controller.signal.aborted) {
       return;
     }
   }
