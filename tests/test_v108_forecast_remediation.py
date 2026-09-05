@@ -571,9 +571,9 @@ def test_calibrated_range_requires_eight_residuals():
     F108-18: get_calibrated_residuals requires >= 8 samples to return 'calibrated_range'.
     With 7 samples, it returns 'early_estimate'.
     """
-    from app.backend.analytics.forecast_replay import _RESIDUALS_BY_BUCKET_CACHE, get_progress_bucket
+    from app.backend.analytics.forecast_replay import _RESIDUALS_BY_BUCKET_CACHE, get_progress_bucket, HistoricalReplayRunner
 
-    cache_key = ("1.0.8", 999, 1, "__latest__")
+    cache_key = (HistoricalReplayRunner.CACHE_VERSION, 999, 1, "__latest__")
     _RESIDUALS_BY_BUCKET_CACHE[cache_key] = {
         2: [100, -200, 150, -50, 300, -100, 80]  # 7 samples
     }
