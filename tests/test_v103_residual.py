@@ -306,3 +306,142 @@ def test_invalid_transfer_update_is_atomic(isolated_db):
     assert tx1["transaction_date"] == "2026-09-05"
     assert tx2["transaction_date"] == "2026-09-05"
 
+
+# ==============================================================================
+# V103-04: Multi-account recurring forecast scoping
+# ==============================================================================
+
+def test_all_account_forecast_keeps_same_merchant_across_accounts(isolated_db):
+    """
+    V103-04: Recurring subscriptions with the same merchant name across different accounts
+    (e.g. Netflix on Account A: $20, Netflix on Account B: $15) must both be included
+    in all-account forecast (sum = $35).
+    """
+    acc_a = AccountRepository.create("Account A", "checking", opening_balance=1000.0)
+    acc_b = AccountRepository.create("Account B", "checking", opening_balance=1000.0)
+
+    cat_id = CategoryRepository.create("Entertainment", "expense")
+
+    # Account A: Netflix on 2026-08-15 ($20 = 2000 minor)
+    TransactionRepository.create({
+        "account_id": acc_a,
+        "category_id": cat_id,
+        "merchant_name": "Netflix",
+        "amount": 20.0,
+        "transaction_type": "expense",
+        "transaction_date": "2026-08-15",
+        "is_recurring": 1
+    })
+
+    # Account B: Netflix on 2026-08-15 ($15 = 1500 minor)
+    TransactionRepository.create({
+        "account_id": acc_b,
+        "category_id": cat_id,
+        "merchant_name": "Netflix",
+        "amount": 15.0,
+        "transaction_type": "expense",
+        "transaction_date": "2026-08-15",
+        "is_recurring": 1
+    })
+
+    # Forecast for 2026-09 (as of 2026-09-01, so day 15 is upcoming)
+    res_all = ForecastingEngine.forecast_month("2026-09", account_id=None, as_of_date="2026-09-01")
+    assert res_all["upcoming_recurring_minor"] == 3500, f"Expected 3500, got {res_all['upcoming_recurring_minor']}"
+
+    # Verify single-account forecast still works
+    res_a = ForecastingEngine.forecast_month("2026-09", account_id=acc_a, as_of_date="2026-09-01")
+    assert res_a["upcoming_recurring_minor"] == 2000
+
+    res_b = ForecastingEngine.forecast_month("2026-09", account_id=acc_b, as_of_date="2026-09-01")
+    assert res_b["upcoming_recurring_minor"] == 1500
+
+
+def test_same_account_case_variant_not_double_counted(isolated_db):
+    """
+    V103-04: Casing variants for the same merchant on the SAME account
+    (e.g. 'Netflix' and 'NETFLIX') must be deduplicated to the latest occurrence.
+    """
+    acc = AccountRepository.create("Primary", "checking", opening_balance=1000.0)
+    cat_id = CategoryRepository.create("Subscriptions", "expense")
+
+    # Historical transactions: August 'Netflix' and July 'NETFLIX'
+    TransactionRepository.create({
+        "account_id": acc,
+        "category_id": cat_id,
+        "merchant_name": "NETFLIX",
+        "amount": 20.0,
+        "transaction_type": "expense",
+        "transaction_date": "2026-07-15",
+        "is_recurring": 1
+    })
+    TransactionRepository.create({
+        "account_id": acc,
+        "category_id": cat_id,
+        "merchant_name": "Netflix",
+        "amount": 20.0,
+        "transaction_type": "expense",
+        "transaction_date": "2026-08-15",
+        "is_recurring": 1
+    })
+
+    res = ForecastingEngine.forecast_month("2026-09", account_id=acc, as_of_date="2026-09-01")
+    # Must NOT double count to 4000; should be 2000
+    assert res["upcoming_recurring_minor"] == 2000
+
+
+def test_explicit_recurring_rules_are_distinct_by_rule_id(isolated_db):
+    """
+    V103-04: Explicit rules defined in recurring_rules table are distinct obligations
+    by rule ID even if they share the same normalized name.
+    """
+    acc = AccountRepository.create("Primary", "checking", opening_balance=1000.0)
+    cat_id = CategoryRepository.create("Services", "expense")
+
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO recurring_rules (name, transaction_type, amount_minor, category_id, account_id, next_due_date, active)
+            VALUES ('Cloud Storage', 'expense', 1000, ?, ?, '2026-09-20', 1)
+        """, (cat_id, acc))
+        cur.execute("""
+            INSERT INTO recurring_rules (name, transaction_type, amount_minor, category_id, account_id, next_due_date, active)
+            VALUES ('Cloud Storage', 'expense', 2500, ?, ?, '2026-09-25', 1)
+        """, (cat_id, acc))
+        conn.commit()
+
+    res = ForecastingEngine.forecast_month("2026-09", account_id=acc, as_of_date="2026-09-01")
+    assert res["upcoming_recurring_minor"] == 3500
+
+
+def test_all_account_forecast_is_deterministic(isolated_db):
+    """
+    V103-04: Forecast result is deterministic across multiple calls.
+    """
+    acc_a = AccountRepository.create("Account A", "checking", opening_balance=1000.0)
+    acc_b = AccountRepository.create("Account B", "checking", opening_balance=1000.0)
+    cat_id = CategoryRepository.create("Utilities", "expense")
+
+    TransactionRepository.create({
+        "account_id": acc_a,
+        "category_id": cat_id,
+        "merchant_name": "Power Co",
+        "amount": 100.0,
+        "transaction_type": "expense",
+        "transaction_date": "2026-08-20",
+        "is_recurring": 1
+    })
+    TransactionRepository.create({
+        "account_id": acc_b,
+        "category_id": cat_id,
+        "merchant_name": "Water Co",
+        "amount": 50.0,
+        "transaction_type": "expense",
+        "transaction_date": "2026-08-22",
+        "is_recurring": 1
+    })
+
+    res1 = ForecastingEngine.forecast_month("2026-09", as_of_date="2026-09-01")
+    res2 = ForecastingEngine.forecast_month("2026-09", as_of_date="2026-09-01")
+    assert res1["upcoming_recurring_minor"] == res2["upcoming_recurring_minor"]
+    assert res1["projected_expense_minor"] == res2["projected_expense_minor"]
+

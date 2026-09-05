@@ -18,9 +18,18 @@ from app.backend.analytics.context import AnalyticsContext, resolve_analytics_co
 from app.backend.analytics.reconciliation import reconcile_forecast_components
 from app.backend.services.merchant_service import normalize_merchant_name
 
-def recurring_key(name: Optional[str]) -> str:
-    """Canonicalize recurring bill names for case-insensitive and whitespace-invariant deduplication (AUD-006A)."""
-    return normalize_merchant_name(name or "").strip().casefold()
+def recurring_key(account_id_or_name: Any, name: Optional[str] = None) -> tuple:
+    """Canonicalize recurring bill identities scoped by account (V103-04)."""
+    if name is None and isinstance(account_id_or_name, str):
+        acc_id = None
+        raw_name = account_id_or_name
+    else:
+        acc_id = account_id_or_name
+        raw_name = name
+    return (
+        acc_id,
+        normalize_merchant_name(raw_name or "").strip().casefold()
+    )
 
 def count_weekdays_in_historical_window(start_d: date, end_d: date) -> Dict[int, int]:
     """Counts actual occurrences of Monday(1)..Sunday(0 in sqlite %w) between dates."""
@@ -119,6 +128,8 @@ class ForecastingEngine:
             # 2a. Historical recurring transactions (AUD-006B: deterministic latest selection)
             cur.execute(f"""
                 SELECT 
+                    t.account_id,
+                    t.recurring_rule_id,
                     COALESCE(NULLIF(merchant_name, ''), description) as bill_name,
                     category_id,
                     CAST(strftime('%d', transaction_date) AS INTEGER) as usual_day,
@@ -134,33 +145,43 @@ class ForecastingEngine:
             historical_recurring = cur.fetchall()
             upcoming_recurring_minor = 0
             upcoming_by_cat: Dict[int, int] = {}
+            seen_rules = set()
             seen_bills = set()
 
             for r in historical_recurring:
                 raw_b_name = r["bill_name"]
-                key = recurring_key(raw_b_name)
+                acc_id = r["account_id"]
+                rule_id = r["recurring_rule_id"]
+                key = recurring_key(acc_id, raw_b_name)
                 day_num = r["usual_day"]
+                if rule_id is not None and rule_id in seen_rules:
+                    continue
                 if key and key not in seen_bills:
                     seen_bills.add(key)
+                    if rule_id is not None:
+                        seen_rules.add(rule_id)
                     if day_num > elapsed_day:
                         amt = r["amount_minor"]
                         upcoming_recurring_minor += amt
                         cid = r["category_id"] or 0
                         upcoming_by_cat[cid] = upcoming_by_cat.get(cid, 0) + amt
 
-            # 2b. Explicit rules from recurring_rules table (AUD-006A: canonical recurring_key)
+            # 2b. Explicit rules from recurring_rules table (AUD-006A / V103-04)
             rec_acc_clause = " AND account_id = ?" if context.account_id else ""
             rec_params = [context.account_id] if context.account_id else []
             cur.execute(f"""
-                SELECT name, transaction_type, amount_minor, category_id, next_due_date
+                SELECT id, account_id, name, transaction_type, amount_minor, category_id, next_due_date
                 FROM recurring_rules
                 WHERE active = 1 {rec_acc_clause}
+                ORDER BY id ASC
             """, rec_params)
             
             upcoming_recurring_income_minor = 0
             for r in cur.fetchall():
+                rule_id = r["id"]
+                rule_acc_id = r["account_id"]
                 rule_name = r["name"]
-                key = recurring_key(rule_name)
+                key = recurring_key(rule_acc_id, rule_name)
                 due_day = 15
                 if r["next_due_date"]:
                     try:
@@ -168,8 +189,17 @@ class ForecastingEngine:
                     except (ValueError, IndexError):
                         due_day = 15
 
-                if key and key not in seen_bills and due_day > elapsed_day:
-                    seen_bills.add(key)
+                # Skip if already counted in historical recurring linked to this rule
+                if rule_id in seen_rules:
+                    continue
+                # If seen in historical by name/account, skip once to avoid double-counting with unlinked historical
+                if key in seen_bills:
+                    seen_bills.remove(key)
+                    seen_rules.add(rule_id)
+                    continue
+
+                seen_rules.add(rule_id)
+                if due_day > elapsed_day:
                     if r["transaction_type"] == "expense":
                         amt = r["amount_minor"]
                         upcoming_recurring_minor += amt

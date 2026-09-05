@@ -18,6 +18,7 @@ if TEST_DIR.exists():
         pass
 os.environ["FINSCOPE_DATA_DIR"] = str(TEST_DIR)
 
+from app.backend import config
 from app.backend.database.connection import get_db_connection, init_db
 from app.backend.services.merchant_service import (
     normalize_merchant_name,
@@ -34,7 +35,11 @@ from app.backend.analytics.semantics import calculate_net_spending
 class TestCoreEngine(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if TEST_DIR.exists():
+            shutil.rmtree(TEST_DIR, ignore_errors=True)
         TEST_DIR.mkdir(parents=True, exist_ok=True)
+        os.environ["FINSCOPE_DATA_DIR"] = str(TEST_DIR)
+        config.set_data_dir(TEST_DIR)
         init_db()
         cls.account_repo = AccountRepository()
         cls.category_repo = CategoryRepository()
