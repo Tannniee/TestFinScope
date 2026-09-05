@@ -70,10 +70,8 @@ class ModelSelector:
         if replay_scores and replay_scores.get("available"):
             comp_origins = replay_scores.get("comparable_origin_count", 0)
             if comp_origins >= FORECAST_CONFIG.adaptive_selection_min_origins:
-                # F109-01: model_scores is the sole source of truth for comparable scoring
+                # F109-01 & F110-01: model_scores is the sole canonical source of truth for comparable scoring
                 model_scores = replay_scores.get("model_scores")
-                if not model_scores and "models" in replay_scores:
-                    model_scores = replay_scores["models"]
 
                 if model_scores:
                     candidate_ranks = []

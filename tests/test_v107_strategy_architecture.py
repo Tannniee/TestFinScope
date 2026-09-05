@@ -311,26 +311,29 @@ def test_model_selector_adaptive_replay_selection():
     """
     selector = ModelSelector()
 
+    mock_models = {
+        "weekday_hybrid": {
+            "comparable_origins": 12,
+            "median_ae_minor": 45000,
+            "mae_minor": 50000
+        },
+        "robust_weekly": {
+            "comparable_origins": 12,
+            "median_ae_minor": 18000,  # Best performer
+            "mae_minor": 22000
+        },
+        "current_pace": {
+            "comparable_origins": 12,
+            "median_ae_minor": 60000,
+            "mae_minor": 65000
+        }
+    }
+
     mock_replay_scores = {
         "available": True,
         "comparable_origin_count": 12,
-        "models": {
-            "weekday_hybrid": {
-                "comparable_origins": 12,
-                "median_ae_minor": 45000,
-                "mae_minor": 50000
-            },
-            "robust_weekly": {
-                "comparable_origins": 12,
-                "median_ae_minor": 18000,  # Best performer
-                "mae_minor": 22000
-            },
-            "current_pace": {
-                "comparable_origins": 12,
-                "median_ae_minor": 60000,
-                "mae_minor": 65000
-            }
-        }
+        "model_scores": mock_models,
+        "models": mock_models
     }
 
     # Context with 4 complete Monday-Sunday weeks (2026-08-03 to 2026-08-30)

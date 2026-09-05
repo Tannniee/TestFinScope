@@ -25,6 +25,7 @@ from app.backend.analytics.forecast_strategies import (
     ModelSelector,
     default_registry,
     ForecastEstimate,
+    ForecastRequest,
 )
 
 
@@ -66,10 +67,39 @@ class ForecastingEngine:
         replay_evidence: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Generates explainable month-end forecast for `month` (YYYY-MM).
-        Uses dynamic historical weekday counts, frequency-expanded recurring rules,
-        reconciled category allocations, and calibrated ranges.
+        Backward-compatible operational wrapper delegating to canonical ForecastingEngine.forecast().
         """
+        if replay_mode:
+            mode = "candidate_replay" if forced_method else "production_replay"
+        else:
+            mode = "live"
+
+        req = ForecastRequest(
+            target_month=month,
+            as_of_date=as_of_date,
+            account_id=account_id,
+            mode=mode,
+            forced_method=forced_method,
+            replay_evidence=replay_evidence
+        )
+        return ForecastingEngine.forecast(req, context=context)
+
+    @staticmethod
+    def forecast(
+        request: ForecastRequest,
+        context: Optional[AnalyticsContext] = None
+    ) -> Dict[str, Any]:
+        """
+        Canonical operational execution entry point for FinScope forecasting (F110-04).
+        Generates explainable month-end forecast based on a validated ForecastRequest.
+        """
+        month = request.target_month
+        account_id = request.account_id
+        as_of_date = request.as_of_date
+        replay_mode = (request.mode != "live")
+        forced_method = request.forced_method
+        replay_evidence = dict(request.replay_evidence) if request.replay_evidence is not None else None
+
         if context is None:
             context = resolve_analytics_context(month=month, account_id=account_id)
 
@@ -91,7 +121,8 @@ class ForecastingEngine:
             elapsed_day = min(num_days, max(1, cur_dt.day))
             as_of_cutoff = f"{context.as_of_month}-{elapsed_day:02d}"
         else:
-            elapsed_day = min(15, num_days)
+            # F110-10: Historical completed month without explicit as_of_date defaults to month-end
+            elapsed_day = num_days
             cur_dt = date(year, m_int, elapsed_day)
             as_of_cutoff = f"{context.as_of_month}-{elapsed_day:02d}"
 
@@ -170,9 +201,9 @@ class ForecastingEngine:
             seen_bills = set()
             suppressed_inactive_rule_fallback_count = 0
 
-            # 2a. Explicit rules from recurring_rules / recurring_rule_versions (point-in-time anti-leakage)
+            # 2a. Explicit rules: versioned point-in-time for historical & replay modes (F110-06), current rules for current-month live
             rec_acc_clause = " AND account_id = ?" if context.account_id else ""
-            if replay_mode and as_of_date:
+            if replay_mode or not context.is_current_month:
                 rec_params = [as_of_cutoff, as_of_cutoff] + ([context.account_id] if context.account_id else [])
                 cur.execute(f"""
                     SELECT rule_id as id, account_id, name, transaction_type, amount_minor, category_id, next_due_date, frequency
@@ -601,7 +632,7 @@ class ForecastingEngine:
             # Component A: Data Sufficiency (30%)
             data_suff_score = min(100.0, (completed_months / 12.0) * 80.0 + min(20.0, (tx_count / 50.0) * 20.0))
 
-            # Component B: Historical Forecast Error (35%) (F109 Section 28)
+            # Component B: Historical Forecast Error (35%) (F109 Section 28, F110-02)
             mean_replay_mae = None
             conf_error_source = None
             if not replay_mode and replay_summary:
@@ -609,14 +640,11 @@ class ForecastingEngine:
                     if replay_summary.get("available"):
                         cand_scores = replay_summary.get("model_scores") or {}
                         prod_policy = replay_summary.get("production_policy")
-                        if prod_policy and "mae_minor" in prod_policy:
+                        if prod_policy and prod_policy.get("mae_minor") is not None:
                             mean_replay_mae = prod_policy["mae_minor"]
                             conf_error_source = "production_policy"
-                        elif model_method in cand_scores:
+                        elif model_method in cand_scores and cand_scores[model_method].get("mae_minor") is not None:
                             mean_replay_mae = cand_scores[model_method]["mae_minor"]
-                            conf_error_source = model_method
-                        elif "models" in replay_summary and model_method in replay_summary["models"]:
-                            mean_replay_mae = replay_summary["models"][model_method]["mae_minor"]
                             conf_error_source = model_method
                 except Exception:
                     mean_replay_mae = None
@@ -657,7 +685,7 @@ class ForecastingEngine:
             else:
                 confidence = "low"
 
-            # 7. Calibrated Range vs Early Estimate (F108-18, F108-19)
+            # 7. Calibrated Range vs Early Estimate (F108-18, F108-19, F110-03)
             progress = (elapsed_day / float(num_days)) if num_days > 0 else 1.0
             range_type = "early_estimate"
             calibrated_residuals = []
@@ -667,7 +695,8 @@ class ForecastingEngine:
                     from app.backend.analytics.forecast_replay import HistoricalReplayRunner, calculate_percentile
                     r_type, r_residuals = HistoricalReplayRunner.get_calibrated_residuals(
                         account_id=context.account_id,
-                        progress=progress
+                        progress=progress,
+                        as_of_date=as_of_cutoff
                     )
                     if r_type == "calibrated_range" and len(r_residuals) >= FORECAST_CONFIG.calibrated_range_min_residuals:
                         range_type = "calibrated_range"
@@ -696,9 +725,10 @@ class ForecastingEngine:
             lower_bound_minor = min(lower_bound_minor, projected_total_minor)
             upper_bound_minor = max(upper_bound_minor, projected_total_minor)
 
-            proj_budget_variance = (projected_total_minor - total_budget_minor) if total_budget_minor else None
+            # F110-09: Correct zero-budget check (0 is not None)
+            proj_budget_variance = (projected_total_minor - total_budget_minor) if total_budget_minor is not None else None
 
-            # Diagnostics Payload (v1.0.9 Section 28 & 29)
+            # Diagnostics Payload (v1.0.9 Section 28 & 29, F110-04)
             comparable_origins = 0
             if replay_summary and replay_summary.get("available"):
                 comparable_origins = replay_summary.get("comparable_origin_count", 0)
@@ -711,6 +741,8 @@ class ForecastingEngine:
                 selection_evidence = "fallback"
 
             diagnostics = {
+                "forecast_cutoff": as_of_cutoff,
+                "forecast_mode": request.mode,
                 "history_months": completed_months,
                 "transaction_count": tx_count,
                 "recurring_coverage_ratio": round(rec_coverage_ratio, 3),

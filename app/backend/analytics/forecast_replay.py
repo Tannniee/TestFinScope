@@ -19,6 +19,9 @@ from app.backend.analytics.forecast_strategies.scoring import (
 )
 from app.backend.analytics.forecast_strategies.series import generate_calendar_months
 from app.backend.analytics.forecast_strategies.selector import IneligibleForecastStrategyError
+from app.backend.analytics.forecast_strategies.request import ForecastRequest
+
+REPLAY_CACHE_VERSION = "1.1.1"
 
 # Cache structure: (version, revision, account_id, cutoff) -> replay_results
 _REPLAY_CACHE: Dict[Tuple[str, int, Optional[int], str], Dict[str, Any]] = {}
@@ -59,13 +62,15 @@ def calculate_percentile(values: List[int], percentile: float) -> int:
 
 
 class HistoricalReplayRunner:
+    CACHE_VERSION = REPLAY_CACHE_VERSION
+
     @staticmethod
     def _get_cache_key(account_id: Optional[int], as_of_date: Optional[str] = None) -> Tuple[str, int, Optional[int], str]:
         """
-        Derives an immutable cache identity using analytics_state.revision (F108-15).
-        Any mutation to transactions or recurring rules increments revision,
-        ensuring replay cache correctness without stale cache leakage.
+        Derives an immutable cache identity using analytics_state.revision (F108-15) and
+        effective cutoff date (F110-08). Never emits '__latest__' so month rollover changes identity.
         """
+        effective_cutoff = as_of_date or date.today().isoformat()
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("SELECT revision FROM analytics_state WHERE id = 1")
@@ -73,10 +78,10 @@ class HistoricalReplayRunner:
             revision = row[0] if row else 0
 
             return (
-                "1.0.9",
+                REPLAY_CACHE_VERSION,
                 revision,
                 account_id,
-                as_of_date or "__latest__"
+                effective_cutoff
             )
 
     @staticmethod
@@ -198,6 +203,7 @@ class HistoricalReplayRunner:
         all_residuals: List[Dict[str, Any]] = []
         residuals_by_bucket: Dict[int, List[int]] = {0: [], 1: [], 2: [], 3: []}
         completed_prior_origins: Set[str] = set()
+        replay_failures: List[Dict[str, Any]] = []
 
         # Need at least 2 completed prior months before the target replay month
         for i in range(2, len(completed_months)):
@@ -209,8 +215,19 @@ class HistoricalReplayRunner:
             y_str, m_str = target_month.split("-")
             num_days = calendar.monthrange(int(y_str), int(m_str))[1]
 
-            cutoffs = [7, 14, 21]
-            for cutoff_day in cutoffs:
+            # F110-05: Freeze prior completed-month evidence before evaluating target_month.
+            # Evidence must ONLY contain labels from previously completed target months.
+            prior_candidates = {
+                m: [r for r in recs if r.origin_id in completed_prior_origins]
+                for m, recs in candidate_records.items()
+            }
+            prior_scores = compute_comparable_scores(prior_candidates, candidate_strategies)
+            prior_scores["available"] = (prior_scores["comparable_origin_count"] >= FORECAST_CONFIG.adaptive_selection_min_origins)
+
+            current_month_origin_ids: Set[str] = set()
+
+            # A. Candidate & Selection Origins (Day 7, 14, 21)
+            for cutoff_day in FORECAST_CONFIG.selection_cutoff_days:
                 cutoff_d_str = f"{target_month}-{cutoff_day:02d}"
                 origin_id = f"{target_month}|{cutoff_d_str}"
                 progress = cutoff_day / float(num_days)
@@ -219,12 +236,14 @@ class HistoricalReplayRunner:
                 # 1. Evaluate candidate strategies at Origin N
                 for cand_id in candidate_strategies:
                     try:
-                        fc_cand = ForecastingEngine.forecast_month(
-                            month=target_month,
-                            account_id=account_id,
-                            as_of_date=cutoff_d_str,
-                            replay_mode=True,
-                            forced_method=cand_id
+                        fc_cand = ForecastingEngine.forecast(
+                            ForecastRequest(
+                                target_month=target_month,
+                                as_of_date=cutoff_d_str,
+                                account_id=account_id,
+                                mode="candidate_replay",
+                                forced_method=cand_id
+                            )
                         )
                         p_cand = fc_cand["projected_expense_minor"]
                         err = p_cand - target_actual
@@ -241,25 +260,27 @@ class HistoricalReplayRunner:
                     except IneligibleForecastStrategyError:
                         # F109-08: Ineligible candidate is skipped at this origin
                         continue
-                    except Exception:
+                    except Exception as exc:
+                        # F110-11: Record unexpected replay evaluation failure
+                        replay_failures.append({
+                            "target_month": target_month,
+                            "as_of_date": cutoff_d_str,
+                            "model_id": cand_id,
+                            "error_type": type(exc).__name__,
+                            "message": str(exc)
+                        })
                         continue
 
-                # 2. Sequential Production-Policy Replay (F108-09)
-                # Origin N only receives candidate performance strictly from prior origins (< origin_id)
-                prior_candidates = {
-                    m: [r for r in recs if r.origin_id in completed_prior_origins]
-                    for m, recs in candidate_records.items()
-                }
-                prior_scores = compute_comparable_scores(prior_candidates, candidate_strategies)
-                prior_scores["available"] = (prior_scores["comparable_origin_count"] >= FORECAST_CONFIG.adaptive_selection_min_origins)
-
-                fc_prod = ForecastingEngine.forecast_month(
-                    month=target_month,
-                    account_id=account_id,
-                    as_of_date=cutoff_d_str,
-                    replay_mode=True,
-                    forced_method=None,
-                    replay_evidence=prior_scores
+                # 2. Sequential Production-Policy Replay (F108-09, F110-05)
+                # Evaluated against the frozen prior_scores from completed months
+                fc_prod = ForecastingEngine.forecast(
+                    ForecastRequest(
+                        target_month=target_month,
+                        as_of_date=cutoff_d_str,
+                        account_id=account_id,
+                        mode="production_replay",
+                        replay_evidence=prior_scores
+                    )
                 )
                 pred_prod = fc_prod["projected_expense_minor"]
                 prod_residual = target_actual - pred_prod
@@ -312,7 +333,50 @@ class HistoricalReplayRunner:
                     CandidateReplayRecord(origin_id, "baseline_ewma_3", p_ewma, target_actual, p_ewma - target_actual, abs(p_ewma - target_actual))
                 )
 
-                completed_prior_origins.add(origin_id)
+                current_month_origin_ids.add(origin_id)
+
+            # B. F110-07: Extra Calibration-Only Late-Month Origins (Day 26)
+            for cal_day in FORECAST_CONFIG.calibration_extra_cutoff_days:
+                if cal_day in FORECAST_CONFIG.selection_cutoff_days or cal_day > num_days:
+                    continue
+                cutoff_d_str = f"{target_month}-{cal_day:02d}"
+                progress = cal_day / float(num_days)
+                bucket = get_progress_bucket(progress)
+
+                # Evaluated strictly with the SAME frozen prior_scores
+                try:
+                    fc_cal = ForecastingEngine.forecast(
+                        ForecastRequest(
+                            target_month=target_month,
+                            as_of_date=cutoff_d_str,
+                            account_id=account_id,
+                            mode="production_replay",
+                            replay_evidence=prior_scores
+                        )
+                    )
+                    pred_cal = fc_cal["projected_expense_minor"]
+                    cal_residual = target_actual - pred_cal
+                    residuals_by_bucket[bucket].append(cal_residual)
+                    all_residuals.append({
+                        "target_month": target_month,
+                        "as_of_date": cutoff_d_str,
+                        "progress": progress,
+                        "predicted_minor": pred_cal,
+                        "actual_minor": target_actual,
+                        "residual_minor": cal_residual,
+                        "abs_error_minor": abs(cal_residual)
+                    })
+                except Exception as exc:
+                    replay_failures.append({
+                        "target_month": target_month,
+                        "as_of_date": cutoff_d_str,
+                        "model_id": "production_policy_calibration",
+                        "error_type": type(exc).__name__,
+                        "message": str(exc)
+                    })
+
+            # Labels from target_month become learnable only AFTER month evaluation completes
+            completed_prior_origins.update(current_month_origin_ids)
 
         # 4. Overall Scoring Across Exact Common Origins (F108-10, F109-01)
         final_comp_scores = compute_comparable_scores(candidate_records, candidate_strategies)
@@ -393,6 +457,11 @@ class HistoricalReplayRunner:
 
         result = {
             "available": True,
+            "replay_contract_version": 2,
+            "selection_origin_days": list(FORECAST_CONFIG.selection_cutoff_days),
+            "calibration_origin_days": sorted(list(set(FORECAST_CONFIG.selection_cutoff_days) | set(FORECAST_CONFIG.calibration_extra_cutoff_days))),
+            "replay_failure_count": len(replay_failures),
+            "replay_failures": replay_failures,
             "evaluations_count": len(production_policy_records),
             "ranking_metric": "median_absolute_error",
             "minimum_comparable_origins": FORECAST_CONFIG.adaptive_selection_min_origins,
@@ -416,15 +485,21 @@ class HistoricalReplayRunner:
         return result
 
     @staticmethod
-    def get_calibrated_residuals(account_id: Optional[int] = None, progress: float = 0.5) -> Tuple[str, List[int]]:
+    def get_calibrated_residuals(
+        account_id: Optional[int] = None,
+        progress: float = 0.5,
+        as_of_date: Optional[str] = None
+    ) -> Tuple[str, List[int]]:
         """
         Returns (range_type, residuals) for the current progress bucket.
         If >= 8 samples exist in this bucket (F108-18), returns ('calibrated_range', bucket_residuals).
         Otherwise returns ('early_estimate', []).
+        F110-03: Scoped to explicit forecast cutoff date to prevent future residual leakage.
         """
-        cache_key = HistoricalReplayRunner._get_cache_key(account_id, as_of_date=None)
+        effective_cutoff = as_of_date or date.today().isoformat()
+        cache_key = HistoricalReplayRunner._get_cache_key(account_id, as_of_date=effective_cutoff)
         if cache_key not in _RESIDUALS_BY_BUCKET_CACHE:
-            HistoricalReplayRunner.run_replay(account_id)
+            HistoricalReplayRunner.run_replay(account_id, as_of_date=effective_cutoff)
 
         bucket_map = _RESIDUALS_BY_BUCKET_CACHE.get(cache_key, {})
         bucket = get_progress_bucket(progress)

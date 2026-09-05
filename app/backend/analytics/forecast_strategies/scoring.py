@@ -19,8 +19,8 @@ class CandidateReplayRecord:
     model_id: str
     predicted_minor: int
     actual_minor: int
-    error_minor: int      # actual - predicted
-    abs_error_minor: int  # abs(actual - predicted)
+    error_minor: int      # predicted - actual (residual_minor = actual - predicted = -error_minor)
+    abs_error_minor: int  # abs(predicted - actual)
 
 
 def compute_comparable_scores(
