@@ -42,7 +42,8 @@ from app.backend.analytics.rolling import RollingAnalyticsEngine
 from app.backend.analytics.changes import WhatChangedEngine
 from app.backend.analytics.fingerprint import SpendingFingerprintEngine
 from app.backend.analytics.anomalies import AnomalyDetectionEngine
-from app.backend.analytics.forecasting import ForecastingEngine
+from app.backend.analytics.forecasting import ForecastingEngine, generate_occurrences
+from app.backend.analytics.forecast_replay import HistoricalReplayRunner
 from app.backend.analytics.backtesting import BacktestingEngine
 from app.backend.analytics.insight_rules import InsightRulesGenerator
 from app.backend.analytics.insight_ranker import InsightRanker
@@ -78,6 +79,8 @@ __all__ = [
     "SpendingFingerprintEngine",
     "AnomalyDetectionEngine",
     "ForecastingEngine",
+    "generate_occurrences",
+    "HistoricalReplayRunner",
     "BacktestingEngine",
     "InsightRulesGenerator",
     "InsightRanker"

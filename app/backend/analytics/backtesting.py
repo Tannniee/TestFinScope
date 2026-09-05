@@ -1,21 +1,33 @@
 """
-Forecast Backtesting Engine V2 for FinScope.
+Forecast Backtesting Engine V2 for FinScope (v1.0.5).
 Implements rolling-origin historical evaluation to prove forecast accuracy:
-- Evaluates the actual FinScope Hybrid forecast against standard naive baselines
-- Models: FinScope Hybrid, Previous Month Naive, 3M Mean, 3M Median, EWMA, Seasonal Naive
+- Evaluates the actual FinScope production forecast engine via HistoricalReplayRunner
+- Supports legacy series-based evaluation for backward compatibility
+- Models: FinScope Hybrid, Current Pace, Previous Month Naive, 3M Mean, 3M Median, EWMA, Seasonal Naive
 - Standard metrics: MAE, Median Absolute Error, WAPE, Bias
 - Fully offline and deterministic
 """
 
 from typing import Dict, Any, List, Optional
 from app.backend.analytics.rolling import calculate_mean, calculate_median, calculate_ewma
+from app.backend.analytics.forecast_replay import HistoricalReplayRunner
+
 
 class BacktestingEngine:
+    @staticmethod
+    def evaluate_production_replay(account_id: Optional[int] = None, as_of_date: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Executes rolling historical replay of the actual production forecasting engine
+        at historical cutoffs (Day 7, 14, 21) across completed historical months.
+        """
+        return HistoricalReplayRunner.run_replay(account_id=account_id, as_of_date=as_of_date)
+
     @staticmethod
     def evaluate_models(series: List[int]) -> Dict[str, Any]:
         """
         Takes chronological monthly integer minor amounts and runs
         rolling-origin evaluation for origins t >= 3.
+        Kept for backward compatibility with series-based callers.
         """
         n = len(series)
         if n < 4:

@@ -164,7 +164,7 @@ async function renderOverviewTab(container) {
         <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #FF9F43;">
           ${state.formatCurrency(forecast.projected_expense)}
         </div>
-        <span class="kpi-footer">Likely: ${state.formatCurrency(forecast.lower_bound)} – ${state.formatCurrency(forecast.upper_bound)}</span>
+        <span class="kpi-footer">${(forecast.range_type === 'calibrated_range' || forecast.components?.range_type === 'calibrated_range') ? 'Likely' : 'Early estimate'}: ${state.formatCurrency(forecast.lower_bound)} – ${state.formatCurrency(forecast.upper_bound)}</span>
       </div>
     </div>
 
@@ -256,9 +256,9 @@ async function renderOverviewTab(container) {
         <div class="card-header">
           <div class="card-title-wrap">
             <h3>Forecast Confidence & Model</h3>
-            <p>FinScope Hybrid forecasting methodology</p>
+            <p>${escapeHtml(forecast.method || 'FinScope Hybrid methodology')}</p>
           </div>
-          <span class="delta-badge positive" style="font-size: 11px;">Confidence: ${forecast.confidence.toUpperCase()}</span>
+          <span class="delta-badge positive" style="font-size: 11px;">Confidence: ${forecast.confidence.toUpperCase()}${forecast.confidence_score !== undefined ? ` (${forecast.confidence_score}/100)` : ''}</span>
         </div>
         <div style="font-size: 13px; color: var(--text-secondary); line-height: 1.6;">
           • <strong>Spent to Date:</strong> ${state.formatCurrency(forecast.actual_spent_to_date)} (Days 1–${forecast.components?.elapsed_days || 15})<br>
@@ -823,7 +823,7 @@ async function renderForecastTab(container) {
         <div class="kpi-value" style="font-size: 28px; margin: 6px 0; color: var(--text-primary);">
           ${state.formatCurrency(fc.projected_expense)}
         </div>
-        <span class="kpi-footer">Likely: ${state.formatCurrency(fc.lower_bound)} – ${state.formatCurrency(fc.upper_bound)}</span>
+        <span class="kpi-footer">${(fc.range_type === 'calibrated_range' || fc.components?.range_type === 'calibrated_range') ? 'Likely range' : 'Early estimate'}: ${state.formatCurrency(fc.lower_bound)} – ${state.formatCurrency(fc.upper_bound)}</span>
       </div>
 
       <div class="fin-card">
@@ -993,9 +993,9 @@ async function renderForecastTab(container) {
       <div class="card-header">
         <div class="card-title-wrap">
           <h3>Forecast Model Evaluation Leaderboard (Rolling-Origin Backtest)</h3>
-          <p>Deterministic historical accuracy comparison across origins (t >= 3)</p>
+          <p>${backtest.evaluations_count ? `Replayed across historical cutoffs (${backtest.evaluations_count} evaluations)` : 'Deterministic historical accuracy comparison across origins'}</p>
         </div>
-        <span class="delta-badge positive" style="font-size: 11.5px;">Best: ${backtest.best_model || 'finscope_hybrid'}</span>
+        <span class="delta-badge positive" style="font-size: 11.5px;">${backtest.hybrid_is_best ? 'Top Model: FinScope Hybrid' : `Selected: ${(backtest.best_model || 'finscope_hybrid').replace(/_/g, ' ')}`}</span>
       </div>
 
       <div class="table-container">

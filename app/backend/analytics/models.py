@@ -140,6 +140,10 @@ class ForecastResult:
     projected_net_flow_minor: Optional[int] = None
     projected_savings_rate: Optional[float] = None
     actual_income_to_date_minor: Optional[int] = None
+    range_type: str = "early_estimate"
+    confidence_score: int = 50
+    model_method: str = "weekday_hybrid"
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -150,8 +154,11 @@ class ForecastResult:
             "lower_bound": round(self.lower_bound_minor / 100.0, 2),
             "upper_bound_minor": self.upper_bound_minor,
             "upper_bound": round(self.upper_bound_minor / 100.0, 2),
+            "range_type": self.range_type,
             "confidence": self.confidence,
+            "confidence_score": self.confidence_score,
             "method": self.method,
+            "model_method": self.model_method,
             "actual_spent_to_date_minor": self.actual_spent_to_date_minor,
             "actual_spent_to_date": round(self.actual_spent_to_date_minor / 100.0, 2),
             "upcoming_recurring_minor": self.upcoming_recurring_minor,
@@ -172,7 +179,8 @@ class ForecastResult:
             "projected_net_flow": round(self.projected_net_flow_minor / 100.0, 2) if self.projected_net_flow_minor is not None else None,
             "projected_savings_rate": self.projected_savings_rate,
             "actual_income_to_date_minor": self.actual_income_to_date_minor,
-            "actual_income_to_date": round(self.actual_income_to_date_minor / 100.0, 2) if self.actual_income_to_date_minor is not None else None
+            "actual_income_to_date": round(self.actual_income_to_date_minor / 100.0, 2) if self.actual_income_to_date_minor is not None else None,
+            "diagnostics": self.diagnostics
         }
 
 @dataclass

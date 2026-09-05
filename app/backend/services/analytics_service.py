@@ -722,7 +722,14 @@ class AnalyticsService:
 
     @staticmethod
     def get_backtest_evaluation(account_id: Optional[int] = None) -> Dict[str, Any]:
-        """Evaluates historical forecasting baselines using rolling-origin backtesting."""
+        """Evaluates historical forecasting baselines using production replay backtesting."""
+        replay_res = BacktestingEngine.evaluate_production_replay(account_id=account_id)
+        if replay_res.get("available"):
+            return replay_res
+        # Fallback to series-based backtest if available
         history = AggregateQueries.get_monthly_history(limit_months=24, account_id=account_id)
         series = [d["net_spending_minor"] for d in history]
-        return BacktestingEngine.evaluate_models(series)
+        series_res = BacktestingEngine.evaluate_models(series)
+        if series_res.get("available"):
+            return series_res
+        return replay_res
