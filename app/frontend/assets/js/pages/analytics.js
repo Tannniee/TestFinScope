@@ -11,7 +11,7 @@
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { showToast } from '../components/toast.js';
-import { escapeHtml } from '../utils.js';
+import { escapeHtml, getMerchantInitials } from '../utils.js';
 
 let varianceChart = null;
 let weekdayChart = null;
@@ -468,7 +468,12 @@ async function loadMerchantDrilldown(categoryId, categoryName) {
         </h4>
         <button class="btn btn-secondary btn-sm" id="close-merchant-drilldown" style="padding: 3px 8px; font-size: 11px;">Close</button>
       </div>
-      <div style="text-align: center; color: var(--text-muted); padding: 14px;">Loading merchant breakdown...</div>
+      <div style="padding: 14px 6px;">
+        <div class="skeleton skeleton-line" style="height: 16px; width: 45%; margin-bottom: 12px;"></div>
+        <div class="skeleton skeleton-line" style="height: 32px; width: 100%; margin-bottom: 8px;"></div>
+        <div class="skeleton skeleton-line" style="height: 32px; width: 100%; margin-bottom: 8px;"></div>
+        <div class="skeleton skeleton-line" style="height: 32px; width: 100%;"></div>
+      </div>
     </div>
   `;
 
@@ -520,12 +525,17 @@ async function loadMerchantDrilldown(categoryId, categoryName) {
                 const color = m.delta > 0 ? 'var(--color-negative)' : (m.delta < 0 ? 'var(--color-positive)' : 'var(--text-muted)');
                 return `
                   <tr>
-                    <td style="font-weight: 500;">${escapeHtml(m.merchant)}</td>
+                    <td>
+                      <div class="entity-cell">
+                        <div class="avatar-chip">${escapeHtml(getMerchantInitials(m.merchant))}</div>
+                        <span style="font-weight: 500;">${escapeHtml(m.merchant)}</span>
+                      </div>
+                    </td>
                     <td><span class="driver-tag ${tagClass}">${m.tag.replace(/_/g, ' ')}</span></td>
-                    <td style="text-align: right;">${state.formatCurrency(m.current)}</td>
-                    <td style="text-align: right;">${state.formatCurrency(m.previous)}</td>
-                    <td style="text-align: right; font-weight: 600; color: ${color};">${sign}${state.formatCurrency(m.delta)}</td>
-                    <td style="text-align: right; font-size: 11.5px; color: var(--text-secondary);">
+                    <td style="text-align: right;" class="num-tabular">${state.formatCurrency(m.current)}</td>
+                    <td style="text-align: right;" class="num-tabular">${state.formatCurrency(m.previous)}</td>
+                    <td style="text-align: right; font-weight: 600; color: ${color};" class="num-tabular">${sign}${state.formatCurrency(m.delta)}</td>
+                    <td style="text-align: right; font-size: 11.5px; color: var(--text-secondary);" class="num-tabular">
                       <span title="Frequency Effect">${m.frequency_effect > 0 ? '+' : ''}${state.formatCurrency(m.frequency_effect)}</span> / 
                       <span title="Ticket Effect">${m.ticket_effect > 0 ? '+' : ''}${state.formatCurrency(m.ticket_effect)}</span> / 
                       <span title="Refund Effect">${m.refund_effect > 0 ? '+' : ''}${state.formatCurrency(m.refund_effect)}</span>

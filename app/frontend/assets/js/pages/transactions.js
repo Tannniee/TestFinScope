@@ -7,7 +7,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { modals } from '../components/modals.js';
 import { showToast } from '../components/toast.js';
-import { escapeHtml } from '../utils.js';
+import { escapeHtml, getMerchantInitials } from '../utils.js';
 
 let currentOffset = 0;
 const PAGE_SIZE = 25;
@@ -276,6 +276,15 @@ async function loadTransactions() {
   }
   currentTxAbortController = new AbortController();
 
+  const tbody = document.getElementById('transactions-full-body');
+  if (tbody && currentOffset === 0) {
+    tbody.innerHTML = `
+      <tr><td colspan="7" style="padding: 16px 14px;"><div class="skeleton skeleton-line" style="width: 88%;"></div></td></tr>
+      <tr><td colspan="7" style="padding: 16px 14px;"><div class="skeleton skeleton-line" style="width: 74%;"></div></td></tr>
+      <tr><td colspan="7" style="padding: 16px 14px;"><div class="skeleton skeleton-line" style="width: 82%;"></div></td></tr>
+    `;
+  }
+
   try {
     const params = {
       month: state.month,
@@ -346,6 +355,8 @@ function renderTableRows(items, isReviewQueueView = false) {
     const amtClass = isIncome || isRefund ? 'income' : 'expense';
     const catColor = tx.category_color || '#5B8CFF';
     const needsReview = Boolean(tx.needs_review);
+    const merchantName = tx.merchant_name || tx.description || 'Transaction';
+    const initials = getMerchantInitials(merchantName);
 
     const categoryCell = needsReview ? `
       <span class="review-needed-tag action-quick-resolve" data-id="${tx.id}" title="Click to assign confirmed category">
@@ -368,11 +379,18 @@ function renderTableRows(items, isReviewQueueView = false) {
           <div style="font-size: 11px; color: var(--text-muted);">${escapeHtml(tx.transaction_time || '')}</div>
         </td>
         <td>
-          <div style="font-weight: 600; color: var(--text-primary);">
-            ${escapeHtml(tx.merchant_name || tx.description || 'Transaction')}
-            ${tx.refund_of_transaction_id ? `<span style="font-size: 10.5px; color: var(--color-positive); margin-left: 6px;">(Refund for #${tx.refund_of_transaction_id})</span>` : ''}
+          <div class="entity-cell">
+            <div class="avatar-chip" style="background: ${catColor}22; color: ${catColor}; border: 1px solid ${catColor}44;" title="${escapeHtml(merchantName)}">
+              ${escapeHtml(initials)}
+            </div>
+            <div>
+              <div style="font-weight: 600; color: var(--text-primary);">
+                ${escapeHtml(merchantName)}
+                ${tx.refund_of_transaction_id ? `<span style="font-size: 10.5px; color: var(--color-positive); margin-left: 6px;">(Refund for #${tx.refund_of_transaction_id})</span>` : ''}
+              </div>
+              ${tx.note ? `<div style="font-size: 11.5px; color: var(--text-secondary);">${escapeHtml(tx.note)}</div>` : ''}
+            </div>
           </div>
-          ${tx.note ? `<div style="font-size: 11.5px; color: var(--text-secondary);">${escapeHtml(tx.note)}</div>` : ''}
         </td>
         <td>
           ${categoryCell}
@@ -387,7 +405,7 @@ function renderTableRows(items, isReviewQueueView = false) {
           </span>
         </td>
         <td style="text-align: right;">
-          <span class="amount-display ${amtClass}" style="font-size: 14px;">
+          <span class="amount-display ${amtClass} num-tabular" style="font-size: 14px;">
             ${sign}${state.formatCurrency(tx.amount)}
           </span>
         </td>

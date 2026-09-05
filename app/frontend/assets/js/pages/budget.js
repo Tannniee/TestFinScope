@@ -8,6 +8,7 @@ import { state } from '../state.js';
 import { modals } from '../components/modals.js';
 import { showToast } from '../components/toast.js';
 import { escapeHtml } from '../utils.js';
+import { renderRadialGauge } from '../charts/sparkline.js';
 
 export async function renderBudgetPage(container) {
   container.innerHTML = `
@@ -24,24 +25,25 @@ export async function renderBudgetPage(container) {
               })() : ''}
             </span>
             <div style="display: flex; align-items: baseline; gap: 12px; margin-top: 6px;">
-              <span id="budget-summary-spent" style="font-size: 28px; font-weight: 700; color: var(--text-primary);">$0.00</span>
-              <span style="font-size: 16px; color: var(--text-muted);">spent of <span id="budget-summary-total">$0.00</span> budget</span>
+              <span id="budget-summary-spent" class="num-tabular" style="font-size: 28px; font-weight: 700; color: var(--text-primary);">$0.00</span>
+              <span style="font-size: 16px; color: var(--text-muted);">spent of <span id="budget-summary-total" class="num-tabular">$0.00</span> budget</span>
             </div>
           </div>
 
-          <!-- Pacing Context -->
-          <div style="display: flex; align-items: center; gap: 24px;">
+          <!-- Pacing Context with Radial Ring (P1.5) -->
+          <div style="display: flex; align-items: center; gap: 22px;">
+            <div id="budget-radial-gauge" style="width: 56px; height: 56px; min-width: 56px;"></div>
             <div>
               <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Month Elapsed</div>
-              <div id="budget-elapsed-pct" style="font-size: 18px; font-weight: 700; color: var(--text-secondary); margin-top: 2px;">0%</div>
+              <div id="budget-elapsed-pct" class="num-tabular" style="font-size: 18px; font-weight: 700; color: var(--text-secondary); margin-top: 2px;">0%</div>
             </div>
             <div>
               <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Budget Consumed</div>
-              <div id="budget-consumed-pct" style="font-size: 18px; font-weight: 700; margin-top: 2px;">0%</div>
+              <div id="budget-consumed-pct" class="num-tabular" style="font-size: 18px; font-weight: 700; margin-top: 2px;">0%</div>
             </div>
             <div>
               <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Remaining</div>
-              <div id="budget-remaining-val" style="font-size: 18px; font-weight: 700; color: var(--color-positive); margin-top: 2px;">$0.00</div>
+              <div id="budget-remaining-val" class="num-tabular" style="font-size: 18px; font-weight: 700; color: var(--color-positive); margin-top: 2px;">$0.00</div>
             </div>
           </div>
         </div>
@@ -59,9 +61,8 @@ export async function renderBudgetPage(container) {
       </div>
 
       <div class="grid-2col" id="budget-cards-container">
-        <div style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 40px;">
-          Loading budget status...
-        </div>
+        <div class="skeleton skeleton-card"></div>
+        <div class="skeleton skeleton-card"></div>
       </div>
     </div>
   `;
@@ -101,6 +102,13 @@ function renderBudgetOverview(data) {
   const fillWidth = Math.min(summary.consumed_pct, 100);
   fillEl.style.width = `${fillWidth}%`;
   fillEl.className = `budget-progress-fill ${summary.is_over ? 'over_budget' : (summary.consumed_pct > elapsed_pct + 15 ? 'watch' : 'on_track')}`;
+
+  // Render Radial Gauge Ring (P1.5)
+  const radialEl = document.getElementById('budget-radial-gauge');
+  if (radialEl) {
+    const ringColor = summary.consumed_pct > 100 ? '#FF6B8A' : (summary.consumed_pct > elapsed_pct + 15 ? '#FFCC66' : '#4DD5A5');
+    renderRadialGauge(radialEl, summary.consumed_pct, ringColor, { radius: ['70%', '96%'] });
+  }
 
   // Render Category Cards
   const container = document.getElementById('budget-cards-container');

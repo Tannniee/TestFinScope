@@ -87,6 +87,8 @@
   color: var(--text-primary);
   line-height: 1.1;
   letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
 
 .kpi-footer {
@@ -95,6 +97,61 @@
   gap: 8px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* Hero KPI Card (Net Cash Position / Main Highlight) */
+.kpi-card--hero {
+  background: var(--gradient-hero);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: var(--glow-net);
+  color: #FFFFFF;
+}
+
+.kpi-card--hero .kpi-label {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.kpi-card--hero .kpi-value {
+  color: #FFFFFF !important;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+
+.kpi-card--hero .kpi-icon {
+  background: rgba(255, 255, 255, 0.22) !important;
+  color: #FFFFFF !important;
+  backdrop-filter: blur(8px);
+}
+
+.kpi-card--hero .kpi-footer,
+.kpi-card--hero .kpi-footer span {
+  color: rgba(255, 255, 255, 0.82) !important;
+}
+
+.kpi-card--hero:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 32px rgba(91, 140, 255, 0.45);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+/* Sparklines & Mini Gauges inside KPI Cards */
+.kpi-sparkline {
+  width: 100%;
+  height: 42px;
+  margin-top: 6px;
+  margin-bottom: -4px;
+}
+
+.kpi-radial-gauge {
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+}
+
+.kpi-savings-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .delta-badge {
@@ -122,12 +179,82 @@
   color: var(--text-secondary);
 }
 
+/* Avatar / Initials Chip */
+.avatar-chip {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  user-select: none;
+  transition: transform var(--transition-fast);
+}
+
+.avatar-chip:hover {
+  transform: scale(1.08);
+}
+
+.entity-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Skeleton Shimmer Loading States */
+.skeleton {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04) 25%, rgba(255, 255, 255, 0.12) 50%, rgba(255, 255, 255, 0.04) 75%);
+  background-size: 200% 100%;
+  animation: shimmerSweep 1.8s infinite linear;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-line {
+  height: 14px;
+  border-radius: 4px;
+  margin: 6px 0;
+}
+
+.skeleton-circle {
+  border-radius: 50%;
+}
+
+.skeleton-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  min-height: 100px;
+}
+
+/* Stagger Animation */
+.stagger-in {
+  animation: fadeSlideUp 0.38s var(--ease-spring) both;
+}
+.stagger-in:nth-child(1) { animation-delay: 0.02s; }
+.stagger-in:nth-child(2) { animation-delay: 0.06s; }
+.stagger-in:nth-child(3) { animation-delay: 0.10s; }
+.stagger-in:nth-child(4) { animation-delay: 0.14s; }
+.stagger-in:nth-child(5) { animation-delay: 0.18s; }
+.stagger-in:nth-child(6) { animation-delay: 0.22s; }
+
 /* Privacy Mode Blur */
 .privacy-blur,
-body.privacy-active .amount-value {
+body.privacy-active .amount-value,
+body.privacy-active .kpi-sparkline,
+body.privacy-active .kpi-radial-gauge {
   filter: blur(7px);
   user-select: none;
   transition: filter var(--transition-fast);
+}
+body.privacy-active .kpi-sparkline,
+body.privacy-active .kpi-radial-gauge {
+  opacity: 0.3;
 }
 
 /* Buttons */
@@ -312,6 +439,8 @@ body.privacy-active .amount-value {
 
 .amount-display {
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
 .amount-display.income {
   color: var(--color-positive);
@@ -820,7 +949,7 @@ body.privacy-active .amount-value {
   font-weight: 500;
   color: var(--text-secondary);
   background: transparent;
-  border: none;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -830,13 +959,15 @@ body.privacy-active .amount-value {
 .analytics-tab-btn:hover {
   color: var(--text-primary);
   background-color: var(--bg-surface);
+  border-color: var(--border-subtle);
 }
 
 .analytics-tab-btn.active {
   color: #FFFFFF;
-  background-color: var(--accent-blue);
+  background: var(--accent-gradient);
+  border-color: rgba(91, 140, 255, 0.4);
   font-weight: 600;
-  box-shadow: 0 2px 8px rgba(91, 140, 255, 0.35);
+  box-shadow: 0 2px 10px rgba(91, 140, 255, 0.35);
 }
 
 /* Driver Decomposition Badges */
