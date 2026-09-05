@@ -27,6 +27,7 @@ const routes = {
 export const router = {
   currentRoute: '#overview',
   renderGeneration: 0,
+  currentAbortController: null,
 
   init() {
     window.addEventListener('hashchange', () => this.handleNavigation());
@@ -66,21 +67,28 @@ export const router = {
     const route = routes[this.currentRoute];
     if (!container || !route) return;
 
+    // V103-06: Cancel in-flight requests from previous route during navigation
+    if (this.currentAbortController) {
+      this.currentAbortController.abort();
+    }
+    this.currentAbortController = new AbortController();
+    const controller = this.currentAbortController;
+
     // AUD-014: Increment generation token on every navigation or state refresh
     this.renderGeneration += 1;
     const generation = this.renderGeneration;
 
     try {
-      await route.render(container);
+      await route.render(container, { signal: controller.signal });
     } catch (err) {
-      if (generation !== this.renderGeneration) {
-        // Rapid navigation occurred; ignore stale error
+      if (err.name === 'AbortError' || controller.signal.aborted || generation !== this.renderGeneration) {
+        // Rapid navigation or aborted request; ignore silently
         return;
       }
       console.error('Render error:', err);
     }
 
-    if (generation !== this.renderGeneration) {
+    if (generation !== this.renderGeneration || controller.signal.aborted) {
       // Stale render from previous route navigation, discard
       return;
     }

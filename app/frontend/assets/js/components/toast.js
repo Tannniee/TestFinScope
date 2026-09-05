@@ -3,6 +3,9 @@
  */
 
 export function showToast(message, type = 'success', duration = 3500, action = null) {
+  if (message && (message.name === 'AbortError' || message === 'AbortError' || String(message).includes('AbortError') || String(message).includes('The user aborted a request'))) {
+    return;
+  }
   let container = document.getElementById('toast-container');
   if (!container) {
     container = document.createElement('div');

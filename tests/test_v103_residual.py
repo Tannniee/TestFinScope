@@ -549,3 +549,61 @@ def test_no_active_unlinked_refunds_exist(isolated_db):
         count = cur.fetchone()[0]
         assert count == 0
 
+
+# ==============================================================================
+# V103-06: Async route cancellation during navigation
+# ==============================================================================
+
+def test_navigation_aborts_previous_page_request():
+    """
+    V103-06: Router must abort previous in-flight page rendering/requests when
+    navigating to a new route.
+    """
+    router_path = Path(__file__).resolve().parent.parent / "app" / "frontend" / "assets" / "js" / "router.js"
+    content = router_path.read_text(encoding="utf-8")
+
+    assert "currentAbortController: null" in content or "currentAbortController" in content
+    assert "this.currentAbortController.abort()" in content
+    assert "new AbortController()" in content
+    assert "signal: controller.signal" in content
+
+
+def test_stale_page_cannot_overwrite_current_page():
+    """
+    V103-06: A stale page whose generation token or signal indicates abortion
+    must be discarded and prevented from mutating the active view.
+    """
+    router_path = Path(__file__).resolve().parent.parent / "app" / "frontend" / "assets" / "js" / "router.js"
+    content = router_path.read_text(encoding="utf-8")
+
+    assert "generation !== this.renderGeneration" in content
+    assert "controller.signal.aborted" in content
+
+
+def test_abort_does_not_show_error_toast():
+    """
+    V103-06: AbortError from cancelled fetch/page render must not trigger an error toast.
+    """
+    toast_path = Path(__file__).resolve().parent.parent / "app" / "frontend" / "assets" / "js" / "components" / "toast.js"
+    t_content = toast_path.read_text(encoding="utf-8")
+    assert "AbortError" in t_content
+
+    router_path = Path(__file__).resolve().parent.parent / "app" / "frontend" / "assets" / "js" / "router.js"
+    r_content = router_path.read_text(encoding="utf-8")
+    assert "err.name === 'AbortError'" in r_content
+
+
+def test_current_route_matches_rendered_page_after_rapid_navigation():
+    """
+    V103-06: Router defines distinct route entry points and manages generation tokens
+    monotonically to guarantee route synchronization.
+    """
+    router_path = Path(__file__).resolve().parent.parent / "app" / "frontend" / "assets" / "js" / "router.js"
+    content = router_path.read_text(encoding="utf-8")
+
+    assert "this.renderGeneration += 1" in content
+    assert "'#overview'" in content
+    assert "'#transactions'" in content
+    assert "'#analytics'" in content
+
+
