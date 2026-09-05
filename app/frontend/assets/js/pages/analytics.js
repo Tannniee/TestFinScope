@@ -810,8 +810,34 @@ async function renderForecastTab(container) {
   ]);
 
   const catForecasts = fc.category_forecasts || [];
-  const models = backtest.models || {};
+  const candidateModels = backtest.candidate_models || {};
+  const baselineModels = backtest.baselines || {};
+  const prodPolicy = backtest.production_policy || (backtest.models && backtest.models.production_policy) || null;
+  const compScores = backtest.model_scores || {};
   const bills = upcomingBills || [];
+  const compCount = backtest.comparable_origin_count || 0;
+  const minCompOrigins = backtest.minimum_comparable_origins || 6;
+  const hasSuffOrigins = compCount >= minCompOrigins && backtest.selection_available !== false;
+
+  const candidateDisplayNames = {
+    'current_pace': 'Current Pace',
+    'three_month_median': 'Recent 3M Median',
+    'robust_weekly': 'Robust Weekly Residual',
+    'weekday_hybrid': 'Weekday Hybrid',
+    'seasonal_naive': 'Seasonal Naive'
+  };
+
+  const baselineDisplayNames = {
+    'baseline_current_pace': 'Current Pace Baseline',
+    'baseline_naive_previous': 'Previous Month Naive',
+    'baseline_mean_3': '3-Month Rolling Mean',
+    'baseline_median_3': '3-Month Rolling Median',
+    'baseline_ewma_3': '3-Month EWMA Baseline',
+    'naive_previous': 'Previous Month Naive',
+    'mean_3': '3-Month Rolling Mean',
+    'median_3': '3-Month Rolling Median',
+    'ewma_3': '3-Month EWMA Baseline'
+  };
 
   const netColor = (fc.projected_net_flow || 0) >= 0 ? 'var(--color-positive)' : 'var(--color-negative)';
 
@@ -945,7 +971,7 @@ async function renderForecastTab(container) {
       </div>
     </div>
 
-    <!-- Scheduled Recurring Bills Table -->
+    <!-- Scheduled Recurring Bills Table (F109-07) -->
     ${bills.length > 0 ? `
       <div class="fin-card" style="margin-bottom: 24px;">
         <div class="card-header">
@@ -971,7 +997,7 @@ async function renderForecastTab(container) {
               ${bills.map(b => `
                 <tr>
                   <td style="font-weight: 600;">${escapeHtml(b.name)}</td>
-                  <td>${escapeHtml(b.due_date)}</td>
+                  <td>${b.due_date ? escapeHtml(b.due_date) : '—'}</td>
                   <td>
                     ${b.category_name ? `
                       <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${escapeHtml(b.category_color || '#888')}; margin-right:6px;"></span>
@@ -985,7 +1011,8 @@ async function renderForecastTab(container) {
                   <td>
                     ${b.status === 'paid' ? '<span class="tag-pill" style="background: rgba(77,213,165,0.15); color: #4DD5A5;">Paid</span>'
                       : (b.status === 'upcoming' ? '<span class="tag-pill" style="background: rgba(91,140,255,0.15); color: #5B8CFF;">Upcoming</span>'
-                      : '<span class="tag-pill" style="background: rgba(255,107,138,0.15); color: #FF6B8A;">Overdue</span>')
+                      : (b.status === 'unscheduled' ? '<span class="tag-pill" style="background: rgba(160,174,192,0.15); color: var(--text-muted);">Unscheduled</span>'
+                      : '<span class="tag-pill" style="background: rgba(255,107,138,0.15); color: #FF6B8A;">Overdue</span>'))
                     }
                   </td>
                 </tr>
@@ -996,64 +1023,148 @@ async function renderForecastTab(container) {
       </div>
     ` : ''}
 
-    <!-- Backtest Evaluation Leaderboard -->
-    <div class="fin-card">
+    <!-- Candidate Strategy Leaderboard & Evaluation (F109-04, F109-05) -->
+    <div class="fin-card" style="margin-bottom: 24px;">
       <div class="card-header">
         <div class="card-title-wrap">
-          <h3>Forecast Model Evaluation Leaderboard (Rolling-Origin Backtest)</h3>
-          <p>${backtest.evaluations_count ? `Replayed across historical cutoffs (${backtest.evaluations_count} evaluations)` : 'Deterministic historical accuracy comparison across origins'}</p>
+          <h3>FinScope Candidate Strategy Evaluation</h3>
+          <p>Compared on exact common historical origins</p>
         </div>
-        ${((backtest.comparable_origin_count || 0) >= (backtest.minimum_comparable_origins || 6)) ? `
-          <span class="delta-badge positive" style="font-size: 11.5px;">Lowest Median AE (${backtest.comparable_origin_count} Comparable Origins): ${(backtest.best_candidate || backtest.best_model || 'weekday_hybrid').replace(/_/g, ' ')}</span>
+        ${hasSuffOrigins ? `
+          <span class="delta-badge positive" style="font-size: 11.5px;">Lowest Median AE on ${compCount} Comparable Origins: ${(candidateDisplayNames[backtest.best_candidate] || (backtest.best_candidate || 'weekday_hybrid').replace(/_/g, ' '))}</span>
         ` : `
-          <span class="delta-badge neutral" style="font-size: 11.5px;">Gathering Replay Evidence (${backtest.comparable_origin_count || 0}/${backtest.minimum_comparable_origins || 6} Origins)</span>
+          <span class="delta-badge neutral" style="font-size: 11.5px;">Gathering replay evidence (${compCount}/${minCompOrigins} comparable origins)</span>
         `}
       </div>
+
+      <!-- Live Production Policy Benchmark Row (F109-05) -->
+      ${prodPolicy && (prodPolicy.sample_origins || 0) > 0 ? `
+        <div style="background: var(--bg-card-subtle); border-radius: 8px; padding: 14px 18px; margin-bottom: 18px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; border: 1px solid var(--border-subtle);">
+          <div>
+            <div style="font-weight: 700; font-size: 13.5px; color: var(--text-primary);">
+              Live Production Policy
+              <span class="delta-badge neutral" style="font-size: 10px; margin-left: 8px;">Adaptive / Fallback Execution</span>
+            </div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+              Out-of-sample accuracy achieved by FinScope's active decision engine
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 20px; font-size: 13px;">
+            <div><span style="color: var(--text-muted);">Origins:</span> <strong>${prodPolicy.sample_origins || 0}</strong></div>
+            <div><span style="color: var(--text-muted);">MAE:</span> <strong>${state.formatCurrency(prodPolicy.mae || 0)}</strong></div>
+            <div><span style="color: var(--text-muted);">Median AE:</span> <strong>${state.formatCurrency(prodPolicy.median_ae || 0)}</strong></div>
+            <div><span style="color: var(--text-muted);">WAPE:</span> <strong>${prodPolicy.wape_pct || 0}%</strong></div>
+            <div><span style="color: var(--text-muted);">Bias:</span> <strong style="color: ${(prodPolicy.bias || 0) > 0 ? 'var(--color-negative)' : 'var(--color-positive)'};">${(prodPolicy.bias || 0) > 0 ? '+' : ''}${state.formatCurrency(prodPolicy.bias || 0)}</strong></div>
+          </div>
+        </div>
+      ` : ''}
 
       <div class="table-container">
         <table class="fin-table">
           <thead>
             <tr>
               <th>Model</th>
-              <th style="text-align: right;">Origins Evaluated</th>
-              <th style="text-align: right;">Mean Absolute Error (MAE)</th>
-              <th style="text-align: right;">Median Absolute Error</th>
-              <th style="text-align: right;">WAPE %</th>
-              <th style="text-align: right;">Bias</th>
-              <th>Evaluation Rank</th>
+              <th style="text-align: right;">Eligible Origins</th>
+              <th style="text-align: right;">Comparable Origins</th>
+              <th style="text-align: right;">Comparable Median AE</th>
+              <th style="text-align: right;">Comparable MAE</th>
+              <th style="text-align: right;">Comparable Bias</th>
+              <th>Rank</th>
             </tr>
           </thead>
           <tbody>
-            ${Object.entries(models).map(([name, m]) => {
-              const hasSuffOrigins = (backtest.comparable_origin_count || 0) >= (backtest.minimum_comparable_origins || 6);
-              const isBest = (name === backtest.best_candidate && hasSuffOrigins);
-              const isCandidate = ["current_pace", "three_month_median", "robust_weekly", "weekday_hybrid", "seasonal_naive"].includes(name);
-              const isProdPolicy = (name === "production_policy");
-              const rankLabel = isBest ? 'Rank 1' : (isProdPolicy ? 'Live Policy' : (isCandidate ? 'Candidate' : 'Baseline'));
-              return `
-                <tr style="${isBest ? 'background: rgba(77, 213, 165, 0.08);' : ''}">
-                  <td style="font-weight: 600; text-transform: uppercase;">
-                    ${name.replace(/_/g, ' ')}
-                    ${isBest ? `<span class="delta-badge positive" style="font-size: 9.5px; margin-left: 6px;">TOP MODEL</span>` : ''}
-                  </td>
-                  <td style="text-align: right; font-weight: 500;">${m.sample_origins || 0}</td>
-                  <td style="text-align: right; font-weight: 600;">${state.formatCurrency(m.mae)}</td>
-                  <td style="text-align: right;">${state.formatCurrency(m.median_ae)}</td>
-                  <td style="text-align: right;">${m.wape_pct}%</td>
-                  <td style="text-align: right; color: ${m.bias > 0 ? 'var(--color-negative)' : 'var(--color-positive)'};">
-                    ${m.bias > 0 ? '+' : ''}${state.formatCurrency(m.bias)}
-                  </td>
-                  <td>
-                    <span class="delta-badge ${isBest ? 'positive' : 'neutral'}" style="font-size: 11px;">
-                      ${rankLabel}
-                    </span>
-                  </td>
-                </tr>
-              `;
-            }).join('')}
+            ${(() => {
+              const candidateKeys = Object.keys(candidateModels).length > 0 
+                ? Object.keys(candidateModels)
+                : Object.keys(compScores);
+
+              return candidateKeys.map(name => {
+                const cm = candidateModels[name] || {};
+                const cs = compScores[name] || {};
+                const isBest = (name === backtest.best_candidate && hasSuffOrigins);
+                const eligCount = cm.sample_origins || cs.comparable_origins || 0;
+                const comparableCount = cs.comparable_origins !== undefined ? cs.comparable_origins : (cm.comparable_origins || 0);
+
+                const medAeDisplay = cs.median_ae_minor !== undefined 
+                  ? state.formatCurrency(cs.median_ae_minor / 100.0)
+                  : (cm.comparable_median_ae_minor !== undefined ? state.formatCurrency(cm.comparable_median_ae_minor / 100.0) : state.formatCurrency(cm.median_ae || 0));
+
+                const maeDisplay = cs.mae_minor !== undefined 
+                  ? state.formatCurrency(cs.mae_minor / 100.0)
+                  : (cm.comparable_mae_minor !== undefined ? state.formatCurrency(cm.comparable_mae_minor / 100.0) : state.formatCurrency(cm.mae || 0));
+
+                const biasVal = cs.bias_minor !== undefined 
+                  ? cs.bias_minor 
+                  : (cm.comparable_bias_minor !== undefined ? cm.comparable_bias_minor : (cm.bias_minor || 0));
+                const biasDisplay = (biasVal > 0 ? '+' : '') + state.formatCurrency(biasVal / 100.0);
+
+                const rankLabel = isBest ? 'Rank 1' : 'Candidate';
+
+                return `
+                  <tr style="${isBest ? 'background: rgba(77, 213, 165, 0.08);' : ''}">
+                    <td style="font-weight: 600;">
+                      ${escapeHtml(candidateDisplayNames[name] || name.replace(/_/g, ' '))}
+                      ${isBest ? `<span class="delta-badge positive" style="font-size: 9.5px; margin-left: 6px;">TOP MODEL</span>` : ''}
+                    </td>
+                    <td style="text-align: right; font-weight: 500;">${eligCount}</td>
+                    <td style="text-align: right; font-weight: 600;">${comparableCount}</td>
+                    <td style="text-align: right; font-weight: 600;">${medAeDisplay}</td>
+                    <td style="text-align: right;">${maeDisplay}</td>
+                    <td style="text-align: right; color: ${biasVal > 0 ? 'var(--color-negative)' : 'var(--color-positive)'};">
+                      ${biasDisplay}
+                    </td>
+                    <td>
+                      <span class="delta-badge ${isBest ? 'positive' : 'neutral'}" style="font-size: 11px;">
+                        ${rankLabel}
+                      </span>
+                    </td>
+                  </tr>
+                `;
+              }).join('');
+            })()}
           </tbody>
         </table>
       </div>
+
+      <!-- Reference Baselines Section (F109-05) -->
+      ${Object.keys(baselineModels).length > 0 ? `
+        <div style="margin-top: 24px;">
+          <div style="margin-bottom: 10px;">
+            <h4 style="font-size: 14px; font-weight: 700; color: var(--text-primary); margin: 0;">Reference Baselines</h4>
+            <p style="font-size: 12px; color: var(--text-muted); margin: 2px 0 0 0;">Statistical benchmarks used for comparative reference (not adaptive candidate strategies)</p>
+          </div>
+          <div class="table-container">
+            <table class="fin-table">
+              <thead>
+                <tr>
+                  <th>Baseline</th>
+                  <th style="text-align: right;">Origins Evaluated</th>
+                  <th style="text-align: right;">MAE</th>
+                  <th style="text-align: right;">Median AE</th>
+                  <th style="text-align: right;">WAPE %</th>
+                  <th style="text-align: right;">Bias</th>
+                  <th>Type</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${Object.entries(baselineModels).map(([bKey, bm]) => `
+                  <tr>
+                    <td style="font-weight: 500;">${escapeHtml(baselineDisplayNames[bKey] || bKey.replace(/_/g, ' '))}</td>
+                    <td style="text-align: right;">${bm.sample_origins || 0}</td>
+                    <td style="text-align: right;">${state.formatCurrency(bm.mae || 0)}</td>
+                    <td style="text-align: right;">${state.formatCurrency(bm.median_ae || 0)}</td>
+                    <td style="text-align: right;">${bm.wape_pct || 0}%</td>
+                    <td style="text-align: right; color: ${(bm.bias || 0) > 0 ? 'var(--color-negative)' : 'var(--color-positive)'};">
+                      ${(bm.bias || 0) > 0 ? '+' : ''}${state.formatCurrency(bm.bias || 0)}
+                    </td>
+                    <td><span class="delta-badge neutral" style="font-size: 10px;">Reference</span></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ` : ''}
     </div>
   `;
 

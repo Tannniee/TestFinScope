@@ -253,17 +253,18 @@ class TestAnalyticsV2(unittest.TestCase):
     # 7. Backtesting with FinScope Hybrid Model
     # ------------------------------------------------------------------------
     def test_backtesting_evaluates_finscope_hybrid(self):
-        """Backtesting must evaluate the actual FinScope Hybrid model alongside baselines."""
+        """Backtesting must evaluate the actual FinScope Hybrid model (legacy_series_hybrid) alongside baselines."""
         # 8 months of spending
         series = [100000, 110000, 105000, 120000, 115000, 130000, 125000, 140000]
         eval_res = BacktestingEngine.evaluate_models(series)
 
         self.assertTrue(eval_res["available"])
-        self.assertIn("finscope_hybrid", eval_res["models"])
+        self.assertIn("legacy_series_hybrid", eval_res["models"])
+        self.assertNotIn("finscope_hybrid", eval_res["models"])
         self.assertIn("naive_previous", eval_res["models"])
         self.assertIn("median_3", eval_res["models"])
 
-        hybrid_m = eval_res["models"]["finscope_hybrid"]
+        hybrid_m = eval_res["models"]["legacy_series_hybrid"]
         self.assertGreater(hybrid_m["sample_origins"], 0)
         self.assertGreater(hybrid_m["mae"], 0)
 

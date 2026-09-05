@@ -60,7 +60,7 @@ class WeekdayHybridStrategy(ForecastStrategy):
 
     def explain(self, context: ForecastContext) -> str:
         if context.completed_months >= 12:
-            return f"Seasonal history available ({context.completed_months} complete months)"
+            return f"Long history available ({context.completed_months} complete months); weekday hybrid selected"
         if context.completed_months >= 6:
             return f"Established history ({context.completed_months} complete months); using weekday hybrid"
-        return f"Mature history ({context.completed_months} complete months); using weekday-aware pattern"
+        return f"Weekday-aware non-recurring spending pattern ({context.completed_months} complete months)"

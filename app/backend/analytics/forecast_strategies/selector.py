@@ -5,12 +5,20 @@ from app.backend.analytics.forecast_strategies.registry import ModelRegistry, de
 from app.backend.analytics.forecast_strategies.config import FORECAST_CONFIG
 
 
+class IneligibleForecastStrategyError(ValueError):
+    """Raised when a forced strategy is ineligible under the given ForecastContext (F109-08)."""
+    pass
+
+
+IneligibleForecastStrategy = IneligibleForecastStrategyError
+
+
 class ModelSelector:
     """
     Selects the most suitable ForecastStrategy for a given ForecastContext.
     Implements:
-    1. Explicit forced override with eligibility verification (F108-12)
-    2. Adaptive selection via historical replay on true comparable origins (>= 6 origins, F108-10, F108-11)
+    1. Explicit forced override with strict eligibility verification (F109-08)
+    2. Adaptive selection via historical replay on true comparable origins (>= 6 origins, F109-01, F109-02)
     3. Meaningful improvement guardrail (5% threshold, F108-23)
     4. Configured deterministic fallback priority (F108-24)
     """
@@ -26,13 +34,15 @@ class ModelSelector:
         """
         Returns (selected_strategy, selection_reason).
         """
-        # 1. Forced method override
+        # 1. Forced method override with strict eligibility check (F109-08)
         if forced_method:
             strategy = self.registry.get(forced_method)
             if not strategy:
                 raise ValueError(f"Unknown forecast method '{forced_method}'")
             if not strategy.is_eligible(context):
-                return strategy, f"Ineligible candidate: {strategy.id}"
+                raise IneligibleForecastStrategyError(
+                    f"Candidate '{strategy.id}' is ineligible under current context: {strategy.explain(context)}"
+                )
             return strategy, strategy.explain(context)
 
         eligible = self.registry.get_eligible(context)
@@ -56,41 +66,46 @@ class ModelSelector:
         fallback_reason = fallback_strategy.explain(context)
 
         # 2. Adaptive Selection via Historical Replay Evidence
+        # Gated strictly on global comparable_origin_count >= 6 (F109-02)
         if replay_scores and replay_scores.get("available"):
-            # Support both format: dict of model_scores or top-level models
-            model_scores_data = replay_scores.get("model_scores") or replay_scores.get("models", {})
             comp_origins = replay_scores.get("comparable_origin_count", 0)
+            if comp_origins >= FORECAST_CONFIG.adaptive_selection_min_origins:
+                # F109-01: model_scores is the sole source of truth for comparable scoring
+                model_scores = replay_scores.get("model_scores")
+                if not model_scores and "models" in replay_scores:
+                    model_scores = replay_scores["models"]
 
-            # Filter candidates that are eligible and have comparable score data
-            candidate_ranks = []
-            for mid, s in eligible_map.items():
-                if mid in model_scores_data:
-                    m_stat = model_scores_data[mid]
-                    origins = m_stat.get("comparable_origins") or m_stat.get("sample_origins", 0)
-                    if origins >= FORECAST_CONFIG.adaptive_selection_min_origins:
-                        med_ae = m_stat.get("median_ae_minor")
-                        mae = m_stat.get("mae_minor")
-                        bias = abs(m_stat.get("bias_minor", 0))
-                        if med_ae is not None and mae is not None:
-                            candidate_ranks.append((med_ae, mae, bias, mid))
+                if model_scores:
+                    candidate_ranks = []
+                    for mid, s in eligible_map.items():
+                        if mid in model_scores:
+                            m_stat = model_scores[mid]
+                            # Strictly check comparable_origins >= 6; no sample_origins fallback
+                            origins = m_stat.get("comparable_origins", 0)
+                            if origins >= FORECAST_CONFIG.adaptive_selection_min_origins:
+                                med_ae = m_stat.get("median_ae_minor")
+                                mae = m_stat.get("mae_minor")
+                                bias = abs(m_stat.get("bias_minor", 0))
+                                if med_ae is not None and mae is not None:
+                                    candidate_ranks.append((med_ae, mae, bias, mid))
 
-            if candidate_ranks:
-                # Rank order: lowest Median AE -> lowest MAE -> lowest |bias|
-                candidate_ranks.sort(key=lambda x: (x[0], x[1], x[2]))
-                best_med_ae, best_mae, best_bias, best_id = candidate_ranks[0]
-                best_strategy = eligible_map[best_id]
+                    if candidate_ranks:
+                        # Rank order: lowest Median AE -> lowest MAE -> lowest |bias|
+                        candidate_ranks.sort(key=lambda x: (x[0], x[1], x[2]))
+                        best_med_ae, best_mae, best_bias, best_id = candidate_ranks[0]
+                        best_strategy = eligible_map[best_id]
 
-                # Check meaningful improvement over fallback strategy
-                fallback_med_ae = None
-                if fallback_strategy.id in model_scores_data:
-                    fallback_med_ae = model_scores_data[fallback_strategy.id].get("median_ae_minor")
+                        # Check meaningful improvement over fallback strategy using comparable Median AE
+                        fallback_med_ae = None
+                        if fallback_strategy.id in model_scores:
+                            fallback_med_ae = model_scores[fallback_strategy.id].get("median_ae_minor")
 
-                if best_strategy.id != fallback_strategy.id and fallback_med_ae is not None and fallback_med_ae > 0:
-                    improvement = (fallback_med_ae - best_med_ae) / float(fallback_med_ae)
-                    if improvement < FORECAST_CONFIG.meaningful_model_improvement_ratio:
-                        return fallback_strategy, f"Fallback retained: replay difference below {int(FORECAST_CONFIG.meaningful_model_improvement_ratio * 100)}% threshold"
+                        if best_strategy.id != fallback_strategy.id and fallback_med_ae is not None and fallback_med_ae > 0:
+                            improvement = (fallback_med_ae - best_med_ae) / float(fallback_med_ae)
+                            if improvement < FORECAST_CONFIG.meaningful_model_improvement_ratio:
+                                return fallback_strategy, f"Fallback retained: replay difference below {int(FORECAST_CONFIG.meaningful_model_improvement_ratio * 100)}% threshold"
 
-                return best_strategy, f"Adaptive replay selection: lowest Median AE on comparable origins ({best_med_ae} minor)"
+                        return best_strategy, f"Adaptive replay selection: lowest Median AE on comparable origins ({best_med_ae} minor)"
 
         # 3. Deterministic Configured Fallback
         return fallback_strategy, fallback_reason

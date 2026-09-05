@@ -1,5 +1,5 @@
 """
-Historical Replay Runner for FinScope Forecasting v1.0.8.
+Historical Replay Runner for FinScope Forecasting v1.0.9.
 Executes candidate strategies and sequential production-policy replay at historical cutoffs
 (Day 7, Day 14, Day 21) across completed historical months without future leakage.
 Evaluates fair error on exact comparable origins and collects empirical residuals
@@ -18,6 +18,7 @@ from app.backend.analytics.forecast_strategies.scoring import (
     compute_comparable_scores
 )
 from app.backend.analytics.forecast_strategies.series import generate_calendar_months
+from app.backend.analytics.forecast_strategies.selector import IneligibleForecastStrategyError
 
 # Cache structure: (version, revision, account_id, cutoff) -> replay_results
 _REPLAY_CACHE: Dict[Tuple[str, int, Optional[int], str], Dict[str, Any]] = {}
@@ -72,7 +73,7 @@ class HistoricalReplayRunner:
             revision = row[0] if row else 0
 
             return (
-                "1.0.8",
+                "1.0.9",
                 revision,
                 account_id,
                 as_of_date or "__latest__"
@@ -100,6 +101,8 @@ class HistoricalReplayRunner:
         """
         Returns continuous calendar sequence of completed historical months
         strictly before current month or `as_of_date`, zero-filling any missing months.
+        F109-06: Anchors expense replay history on expense/refund transactions,
+        preventing income-only initial months from artificially stretching expense history.
         """
         cutoff_date = as_of_date or date.today().isoformat()
         current_month = cutoff_date[:7]
@@ -111,7 +114,9 @@ class HistoricalReplayRunner:
             cur.execute(f"""
                 SELECT MIN(transaction_date) as min_d
                 FROM active_transactions
-                WHERE transaction_date < ? {acc_clause}
+                WHERE transaction_date < ?
+                  AND transaction_type IN ('expense', 'refund')
+                  {acc_clause}
             """, params)
             row = cur.fetchone()
             if not row or not row["min_d"]:
@@ -151,8 +156,10 @@ class HistoricalReplayRunner:
                 "ranking_metric": "median_absolute_error",
                 "minimum_comparable_origins": FORECAST_CONFIG.adaptive_selection_min_origins,
                 "comparable_origin_count": 0,
+                "model_scores": {},
                 "best_model": "weekday_hybrid",
                 "best_candidate": "weekday_hybrid",
+                "selection_available": False,
                 "hybrid_is_best": True,
                 "candidate_models": {},
                 "production_policy": {},
@@ -179,12 +186,13 @@ class HistoricalReplayRunner:
 
         candidate_records: Dict[str, List[CandidateReplayRecord]] = {m: [] for m in candidate_strategies}
         production_policy_records: List[CandidateReplayRecord] = []
+        # F109-03: Disjoint baseline IDs
         baseline_records: Dict[str, List[CandidateReplayRecord]] = {
-            "current_pace": [],
-            "naive_previous": [],
-            "mean_3": [],
-            "median_3": [],
-            "ewma_3": []
+            "baseline_current_pace": [],
+            "baseline_naive_previous": [],
+            "baseline_mean_3": [],
+            "baseline_median_3": [],
+            "baseline_ewma_3": []
         }
 
         all_residuals: List[Dict[str, Any]] = []
@@ -218,12 +226,6 @@ class HistoricalReplayRunner:
                             replay_mode=True,
                             forced_method=cand_id
                         )
-                        # Skip if ineligible at this origin (F108-12)
-                        diag = fc_cand.get("diagnostics", {})
-                        sel_reason = diag.get("selection_reason", "")
-                        if sel_reason.startswith("Ineligible candidate"):
-                            continue
-
                         p_cand = fc_cand["projected_expense_minor"]
                         err = p_cand - target_actual
                         candidate_records[cand_id].append(
@@ -236,6 +238,9 @@ class HistoricalReplayRunner:
                                 abs_error_minor=abs(err)
                             )
                         )
+                    except IneligibleForecastStrategyError:
+                        # F109-08: Ineligible candidate is skipped at this origin
+                        continue
                     except Exception:
                         continue
 
@@ -280,26 +285,36 @@ class HistoricalReplayRunner:
                     "abs_error_minor": abs(prod_residual)
                 })
 
-                # 3. Reference baselines for benchmark comparison
+                # 3. Reference baselines for benchmark comparison (F109-03)
                 actual_spent_cutoff = fc_prod["actual_spent_to_date_minor"]
                 p_pace = round((actual_spent_cutoff / float(cutoff_day)) * num_days) if cutoff_day > 0 else target_actual
-                baseline_records["current_pace"].append(CandidateReplayRecord(origin_id, "current_pace", p_pace, target_actual, p_pace - target_actual, abs(p_pace - target_actual)))
+                baseline_records["baseline_current_pace"].append(
+                    CandidateReplayRecord(origin_id, "baseline_current_pace", p_pace, target_actual, p_pace - target_actual, abs(p_pace - target_actual))
+                )
 
                 p_naive = prior_actuals[-1]
-                baseline_records["naive_previous"].append(CandidateReplayRecord(origin_id, "naive_previous", p_naive, target_actual, p_naive - target_actual, abs(p_naive - target_actual)))
+                baseline_records["baseline_naive_previous"].append(
+                    CandidateReplayRecord(origin_id, "baseline_naive_previous", p_naive, target_actual, p_naive - target_actual, abs(p_naive - target_actual))
+                )
 
                 p_mean = calculate_mean(prior_actuals[-3:])
-                baseline_records["mean_3"].append(CandidateReplayRecord(origin_id, "mean_3", p_mean, target_actual, p_mean - target_actual, abs(p_mean - target_actual)))
+                baseline_records["baseline_mean_3"].append(
+                    CandidateReplayRecord(origin_id, "baseline_mean_3", p_mean, target_actual, p_mean - target_actual, abs(p_mean - target_actual))
+                )
 
                 p_med = calculate_median(prior_actuals[-3:])
-                baseline_records["median_3"].append(CandidateReplayRecord(origin_id, "median_3", p_med, target_actual, p_med - target_actual, abs(p_med - target_actual)))
+                baseline_records["baseline_median_3"].append(
+                    CandidateReplayRecord(origin_id, "baseline_median_3", p_med, target_actual, p_med - target_actual, abs(p_med - target_actual))
+                )
 
                 p_ewma = calculate_ewma(prior_actuals[-3:], span=3)
-                baseline_records["ewma_3"].append(CandidateReplayRecord(origin_id, "ewma_3", p_ewma, target_actual, p_ewma - target_actual, abs(p_ewma - target_actual)))
+                baseline_records["baseline_ewma_3"].append(
+                    CandidateReplayRecord(origin_id, "baseline_ewma_3", p_ewma, target_actual, p_ewma - target_actual, abs(p_ewma - target_actual))
+                )
 
                 completed_prior_origins.add(origin_id)
 
-        # 4. Overall Scoring Across Exact Common Origins (F108-10)
+        # 4. Overall Scoring Across Exact Common Origins (F108-10, F109-01)
         final_comp_scores = compute_comparable_scores(candidate_records, candidate_strategies)
         comp_count = final_comp_scores["comparable_origin_count"]
 
@@ -335,13 +350,14 @@ class HistoricalReplayRunner:
                     candidate_metrics[m]["comparable_origins"] = final_comp_scores["model_scores"][m]["comparable_origins"]
                     candidate_metrics[m]["comparable_median_ae_minor"] = final_comp_scores["model_scores"][m]["median_ae_minor"]
                     candidate_metrics[m]["comparable_mae_minor"] = final_comp_scores["model_scores"][m]["mae_minor"]
+                    candidate_metrics[m]["comparable_bias_minor"] = final_comp_scores["model_scores"][m]["bias_minor"]
 
         prod_metrics = summarize_records(production_policy_records, "production_policy")
         baseline_metrics: Dict[str, Any] = {
             b_name: summarize_records(recs, b_name) for b_name, recs in baseline_records.items() if recs
         }
 
-        # Determine Best Candidate Model
+        # Determine Best Candidate Model (strictly using common origins, F109-01)
         if comp_count >= FORECAST_CONFIG.adaptive_selection_min_origins and final_comp_scores["model_scores"]:
             sorted_candidates = sorted(
                 final_comp_scores["model_scores"].values(),
@@ -357,15 +373,23 @@ class HistoricalReplayRunner:
             best_candidate = "weekday_hybrid"
             selection_available = False
 
-        # Unified models map for backward compatibility
+        # Unified models map for backward compatibility (candidate current_pace is not overwritten)
         all_models_map: Dict[str, Any] = {
             "production_policy": prod_metrics,
             **candidate_metrics,
             **baseline_metrics
         }
-        # Backward compatibility aliases
+        # Backward compatibility aliases in unified models map
         if "weekday_hybrid" in candidate_metrics:
             all_models_map["finscope_hybrid"] = candidate_metrics["weekday_hybrid"]
+        if "baseline_naive_previous" in baseline_metrics:
+            all_models_map["naive_previous"] = baseline_metrics["baseline_naive_previous"]
+        if "baseline_mean_3" in baseline_metrics:
+            all_models_map["mean_3"] = baseline_metrics["baseline_mean_3"]
+        if "baseline_median_3" in baseline_metrics:
+            all_models_map["median_3"] = baseline_metrics["baseline_median_3"]
+        if "baseline_ewma_3" in baseline_metrics:
+            all_models_map["ewma_3"] = baseline_metrics["baseline_ewma_3"]
 
         result = {
             "available": True,
@@ -373,6 +397,7 @@ class HistoricalReplayRunner:
             "ranking_metric": "median_absolute_error",
             "minimum_comparable_origins": FORECAST_CONFIG.adaptive_selection_min_origins,
             "comparable_origin_count": comp_count,
+            "model_scores": final_comp_scores["model_scores"],  # Canonical common-origin metrics (F109-01)
             "best_model": best_candidate,
             "best_candidate": best_candidate,
             "selection_available": selection_available,

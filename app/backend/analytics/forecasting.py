@@ -601,18 +601,26 @@ class ForecastingEngine:
             # Component A: Data Sufficiency (30%)
             data_suff_score = min(100.0, (completed_months / 12.0) * 80.0 + min(20.0, (tx_count / 50.0) * 20.0))
 
-            # Component B: Historical Forecast Error (35%)
+            # Component B: Historical Forecast Error (35%) (F109 Section 28)
             mean_replay_mae = None
+            conf_error_source = None
             if not replay_mode and replay_summary:
                 try:
                     if replay_summary.get("available"):
-                        cand_scores = replay_summary.get("model_scores") or replay_summary.get("models", {})
-                        if "production_policy" in cand_scores:
-                            mean_replay_mae = cand_scores["production_policy"]["mae_minor"]
+                        cand_scores = replay_summary.get("model_scores") or {}
+                        prod_policy = replay_summary.get("production_policy")
+                        if prod_policy and "mae_minor" in prod_policy:
+                            mean_replay_mae = prod_policy["mae_minor"]
+                            conf_error_source = "production_policy"
                         elif model_method in cand_scores:
                             mean_replay_mae = cand_scores[model_method]["mae_minor"]
+                            conf_error_source = model_method
+                        elif "models" in replay_summary and model_method in replay_summary["models"]:
+                            mean_replay_mae = replay_summary["models"][model_method]["mae_minor"]
+                            conf_error_source = model_method
                 except Exception:
                     mean_replay_mae = None
+                    conf_error_source = None
 
             if mean_replay_mae is not None and projected_total_minor > 0:
                 rel_error = min(1.0, mean_replay_mae / float(max(projected_total_minor, 1000)))
@@ -690,15 +698,30 @@ class ForecastingEngine:
 
             proj_budget_variance = (projected_total_minor - total_budget_minor) if total_budget_minor else None
 
-            # Diagnostics Payload
+            # Diagnostics Payload (v1.0.9 Section 28 & 29)
+            comparable_origins = 0
+            if replay_summary and replay_summary.get("available"):
+                comparable_origins = replay_summary.get("comparable_origin_count", 0)
+
+            if forced_method:
+                selection_evidence = "forced"
+            elif model_reason.startswith("Adaptive replay selection"):
+                selection_evidence = "comparable_replay"
+            else:
+                selection_evidence = "fallback"
+
             diagnostics = {
                 "history_months": completed_months,
                 "transaction_count": tx_count,
                 "recurring_coverage_ratio": round(rec_coverage_ratio, 3),
                 "replay_sample_count": len(calibrated_residuals),
                 "recent_mae_minor": mean_replay_mae,
+                "confidence_error_source": conf_error_source,
                 "selected_method": model_method,
                 "selection_reason": model_reason,
+                "selection_evidence": selection_evidence,
+                "comparable_origin_count": comparable_origins,
+                "ranking_metric": "median_absolute_error",
                 "confidence_score": confidence_score,
                 "confidence_breakdown": {
                     "data_sufficiency": round(data_suff_score, 1),

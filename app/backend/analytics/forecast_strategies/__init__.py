@@ -20,7 +20,11 @@ from app.backend.analytics.forecast_strategies.robust_weekly import RobustWeekly
 from app.backend.analytics.forecast_strategies.weekday_hybrid import WeekdayHybridStrategy
 from app.backend.analytics.forecast_strategies.seasonal_naive import SeasonalNaiveStrategy
 from app.backend.analytics.forecast_strategies.registry import ModelRegistry, default_registry, get_default_registry
-from app.backend.analytics.forecast_strategies.selector import ModelSelector
+from app.backend.analytics.forecast_strategies.selector import (
+    ModelSelector,
+    IneligibleForecastStrategyError,
+    IneligibleForecastStrategy
+)
 
 __all__ = [
     "ForecastStrategy",
@@ -46,4 +50,6 @@ __all__ = [
     "default_registry",
     "get_default_registry",
     "ModelSelector",
+    "IneligibleForecastStrategyError",
+    "IneligibleForecastStrategy",
 ]
