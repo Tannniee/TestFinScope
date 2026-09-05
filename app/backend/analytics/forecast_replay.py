@@ -50,18 +50,55 @@ def calculate_percentile(values: List[int], percentile: float) -> int:
     return round(sorted_vals[low] * (1.0 - weight) + sorted_vals[high] * weight)
 
 
+def generate_calendar_months(start_m: str, end_m: str) -> List[str]:
+    """Generates continuous sequence of calendar months YYYY-MM from start_m to end_m."""
+    sy, sm = map(int, start_m.split("-"))
+    ey, em = map(int, end_m.split("-"))
+    res = []
+    cy, cm = sy, sm
+    while (cy < ey) or (cy == ey and cm <= em):
+        res.append(f"{cy:04d}-{cm:02d}")
+        cm += 1
+        if cm > 12:
+            cm = 1
+            cy += 1
+    return res
+
+
 class HistoricalReplayRunner:
     @staticmethod
-    def _get_cache_key(account_id: Optional[int]) -> Tuple[Optional[int], str, int]:
+    def _get_cache_key(account_id: Optional[int]) -> Tuple:
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " WHERE account_id = ?" if account_id else ""
             params = [account_id] if account_id else []
-            cur.execute(f"SELECT MAX(transaction_date) as max_d, COUNT(id) as c FROM active_transactions{acc_clause}", params)
-            row = cur.fetchone()
-            max_d = row["max_d"] or ""
-            count = row["c"] or 0
-            return (account_id, max_d, count)
+            cur.execute(f"""
+                SELECT 
+                    MAX(COALESCE(updated_at, transaction_date)) as max_u,
+                    MAX(transaction_date) as max_d,
+                    COUNT(id) as c,
+                    COALESCE(SUM(amount_minor), 0) as s
+                FROM active_transactions{acc_clause}
+            """, params)
+            tx_row = cur.fetchone()
+
+            rec_acc_clause = " WHERE account_id = ?" if account_id else ""
+            cur.execute(f"""
+                SELECT COUNT(id) as rc, COALESCE(SUM(amount_minor), 0) as rs
+                FROM recurring_rules{rec_acc_clause}
+            """, params)
+            rec_row = cur.fetchone()
+
+            return (
+                "1.0.6",
+                account_id,
+                tx_row["max_u"] or "",
+                tx_row["max_d"] or "",
+                tx_row["c"] or 0,
+                tx_row["s"] or 0,
+                rec_row["rc"] or 0,
+                rec_row["rs"] or 0
+            )
 
     @staticmethod
     def get_actual_month_end_net_spend(month_str: str, account_id: Optional[int] = None) -> int:
@@ -82,7 +119,10 @@ class HistoricalReplayRunner:
 
     @staticmethod
     def get_completed_historical_months(account_id: Optional[int] = None, as_of_date: Optional[str] = None) -> List[str]:
-        """Returns sorted list of completed historical months strictly before current month or `as_of_date`."""
+        """
+        Returns continuous calendar sequence of completed historical months
+        strictly before current month or `as_of_date`, zero-filling any missing months.
+        """
         cutoff_date = as_of_date or date.today().isoformat()
         current_month = cutoff_date[:7]
 
@@ -91,13 +131,25 @@ class HistoricalReplayRunner:
             acc_clause = " AND account_id = ?" if account_id else ""
             params = [cutoff_date] + ([account_id] if account_id else [])
             cur.execute(f"""
-                SELECT DISTINCT strftime('%Y-%m', transaction_date) as m
+                SELECT MIN(transaction_date) as min_d
                 FROM active_transactions
                 WHERE transaction_date < ? {acc_clause}
-                ORDER BY m ASC
             """, params)
-            months = [r["m"] for r in cur.fetchall() if r["m"] and r["m"] < current_month]
-            return months
+            row = cur.fetchone()
+            if not row or not row["min_d"]:
+                return []
+
+            min_month = row["min_d"][:7]
+            cy, cm = map(int, current_month.split("-"))
+            if cm == 1:
+                end_month = f"{cy - 1:04d}-12"
+            else:
+                end_month = f"{cy:04d}-{cm - 1:02d}"
+
+            if min_month > end_month:
+                return []
+
+            return generate_calendar_months(min_month, end_month)
 
     @staticmethod
     def run_replay(account_id: Optional[int] = None, as_of_date: Optional[str] = None) -> Dict[str, Any]:
@@ -133,6 +185,7 @@ class HistoricalReplayRunner:
             month_actuals[m] = HistoricalReplayRunner.get_actual_month_end_net_spend(m, account_id)
 
         model_preds: Dict[str, List[int]] = {
+            "production_policy": [],
             "finscope_hybrid": [],
             "current_pace": [],
             "naive_previous": [],
@@ -166,31 +219,44 @@ class HistoricalReplayRunner:
                 progress = cutoff_day / float(num_days)
                 bucket = get_progress_bucket(progress)
 
-                # 1. Run actual production forecast engine
-                fc = ForecastingEngine.forecast_month(
+                # 1a. Run candidate finscope_hybrid
+                fc_hybrid = ForecastingEngine.forecast_month(
                     month=target_month,
                     account_id=account_id,
                     as_of_date=cutoff_d_str,
-                    replay_mode=True
+                    replay_mode=True,
+                    forced_method="weekday_hybrid"
                 )
-                pred_hybrid = fc["projected_expense_minor"]
+                pred_hybrid = fc_hybrid["projected_expense_minor"]
                 model_preds["finscope_hybrid"].append(pred_hybrid)
                 model_actuals["finscope_hybrid"].append(target_actual)
 
-                residual = target_actual - pred_hybrid
+                # 1b. Run actual production decision policy ladder (natural behavior)
+                fc_prod = ForecastingEngine.forecast_month(
+                    month=target_month,
+                    account_id=account_id,
+                    as_of_date=cutoff_d_str,
+                    replay_mode=True,
+                    forced_method=None
+                )
+                pred_prod = fc_prod["projected_expense_minor"]
+                model_preds["production_policy"].append(pred_prod)
+                model_actuals["production_policy"].append(target_actual)
+
+                residual = target_actual - pred_prod
                 residuals_by_bucket[bucket].append(residual)
                 all_residuals.append({
                     "target_month": target_month,
                     "as_of_date": cutoff_d_str,
                     "progress": progress,
-                    "predicted_minor": pred_hybrid,
+                    "predicted_minor": pred_prod,
                     "actual_minor": target_actual,
                     "residual_minor": residual,
                     "abs_error_minor": abs(residual)
                 })
 
                 # 2. Current Pace baseline at cutoff
-                actual_spent_cutoff = fc["actual_spent_to_date_minor"]
+                actual_spent_cutoff = fc_prod["actual_spent_to_date_minor"]
                 p_pace = round((actual_spent_cutoff / float(cutoff_day)) * num_days) if cutoff_day > 0 else target_actual
                 model_preds["current_pace"].append(p_pace)
                 model_actuals["current_pace"].append(target_actual)
@@ -215,7 +281,7 @@ class HistoricalReplayRunner:
                 model_preds["ewma_3"].append(p_ewma)
                 model_actuals["ewma_3"].append(target_actual)
 
-                # 7. Seasonal Naive baseline (if history >= 12 months)
+                # 7. Seasonal Naive baseline (if history >= 13 months, i >= 12)
                 if has_seasonal and i >= 12:
                     p_seasonal = prior_actuals[i - 12]
                     model_preds["seasonal_naive"].append(p_seasonal)
@@ -249,14 +315,18 @@ class HistoricalReplayRunner:
                 "sample_origins": len(preds)
             }
 
-        best_model = min(metrics.items(), key=lambda x: x[1]["mae_minor"])[0] if metrics else "current_pace"
+        max_samples = max(m["sample_origins"] for m in metrics.values()) if metrics else 0
+        comparable_models = {k: v for k, v in metrics.items() if v["sample_origins"] >= 0.70 * max_samples}
+        best_model = min(comparable_models.items(), key=lambda x: x[1]["mae_minor"])[0] if comparable_models else (
+            min(metrics.items(), key=lambda x: x[1]["mae_minor"])[0] if metrics else "production_policy"
+        )
 
         result = {
             "available": True,
-            "evaluations_count": len(model_preds["finscope_hybrid"]),
+            "evaluations_count": len(model_preds["production_policy"]),
             "best_model": best_model,
             "best_baseline": best_model,
-            "hybrid_is_best": (best_model == "finscope_hybrid"),
+            "hybrid_is_best": (best_model in ("finscope_hybrid", "production_policy")),
             "models": metrics,
             "residuals": all_residuals,
             "residuals_by_bucket": residuals_by_bucket

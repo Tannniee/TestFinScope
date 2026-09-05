@@ -1,7 +1,8 @@
 import calendar
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional
 from app.backend.database.connection import get_db_connection
+from app.backend.analytics.recurring_schedule import generate_occurrences
 
 class RecurringService:
     """
@@ -159,64 +160,78 @@ class RecurringService:
             cur = conn.cursor()
             # Fetch active transactions in this month to check if bill has been paid
             cur.execute("""
-                SELECT merchant_name, description, amount_minor, transaction_date, category_id, account_id, transaction_type
+                SELECT id, merchant_name, description, amount_minor, transaction_date, category_id, account_id, transaction_type
                 FROM active_transactions
                 WHERE transaction_date LIKE ?
+                ORDER BY transaction_date ASC, id ASC
             """, (f"{month}%",))
             month_txs = cur.fetchall()
 
         bills = []
+        matched_tx_ids = set()
+        month_start = date(year, m_int, 1)
+        month_end = date(year, m_int, total_days)
+        window_start = month_start - timedelta(days=1)
+
         for r in rules:
             rule_name = r["name"].lower()
             amt_minor = r["amount_minor"]
             rule_acc = r.get("account_id")
             rule_type = r.get("transaction_type") or "expense"
 
-            # Match by name or category + amount similarity, strictly enforcing type and account (AUD-005)
-            is_paid = False
-            paid_date = None
-            for tx in month_txs:
-                # Invariant 1: Transaction type must match rule type (e.g. refund/income cannot pay expense rule)
-                if tx["transaction_type"] != rule_type:
-                    continue
-                # Invariant 2: Account must match if rule is scoped to an account
-                if rule_acc is not None and tx["account_id"] != rule_acc:
-                    continue
+            occs = generate_occurrences(
+                next_due_date=r.get("next_due_date"),
+                frequency=r.get("frequency") or "monthly",
+                start_date=window_start,
+                end_date=month_end
+            )
+            # Fallback if no occurrences could be generated and rule has no valid next_due_date
+            if not occs and not r.get("next_due_date"):
+                occs = [date(year, m_int, min(15, total_days))]
 
-                tx_desc = (tx["merchant_name"] or tx["description"] or "").lower()
-                if (rule_name in tx_desc or tx_desc in rule_name) or (tx["amount_minor"] == amt_minor and tx["category_id"] == r["category_id"]):
-                    is_paid = True
-                    paid_date = tx["transaction_date"]
-                    break
+            for occ_date in sorted(occs):
+                due_day = occ_date.day
+                due_date = occ_date.strftime("%Y-%m-%d")
 
-            due_day = 15  # Default mid-month if no next_due_date
-            if r["next_due_date"]:
-                try:
-                    due_day = int(r["next_due_date"].split("-")[-1])
-                except (ValueError, IndexError):
-                    due_day = 15
+                # Match by name or category + amount similarity, strictly enforcing type and account (AUD-005)
+                is_paid = False
+                paid_date = None
+                for tx in month_txs:
+                    if tx["id"] in matched_tx_ids:
+                        continue
+                    if tx["transaction_type"] != rule_type:
+                        continue
+                    if rule_acc is not None and tx["account_id"] != rule_acc:
+                        continue
 
-            due_date = f"{month}-{min(due_day, total_days):02d}"
-            status = "paid" if is_paid else ("upcoming" if due_day > elapsed_day else "overdue")
+                    tx_desc = (tx["merchant_name"] or tx["description"] or "").lower()
+                    if (rule_name in tx_desc or tx_desc in rule_name) or (tx["amount_minor"] == amt_minor and tx["category_id"] == r["category_id"]):
+                        is_paid = True
+                        paid_date = tx["transaction_date"]
+                        matched_tx_ids.add(tx["id"])
+                        break
 
-            bills.append({
-                "rule_id": r["id"],
-                "name": r["name"],
-                "transaction_type": r["transaction_type"],
-                "amount": r["amount"],
-                "amount_minor": amt_minor,
-                "category_id": r["category_id"],
-                "category_name": r["category_name"],
-                "category_color": r["category_color"],
-                "account_id": r["account_id"],
-                "account_name": r["account_name"],
-                "due_date": due_date,
-                "due_day": due_day,
-                "is_paid": is_paid,
-                "paid_date": paid_date,
-                "status": status
-            })
+                status = "paid" if is_paid else ("upcoming" if due_day > elapsed_day else "overdue")
 
+                bills.append({
+                    "rule_id": r["id"],
+                    "name": r["name"],
+                    "transaction_type": r["transaction_type"],
+                    "amount": r["amount"],
+                    "amount_minor": amt_minor,
+                    "category_id": r["category_id"],
+                    "category_name": r["category_name"],
+                    "category_color": r["category_color"],
+                    "account_id": r["account_id"],
+                    "account_name": r["account_name"],
+                    "due_date": due_date,
+                    "due_day": due_day,
+                    "is_paid": is_paid,
+                    "paid_date": paid_date,
+                    "status": status
+                })
+
+        bills.sort(key=lambda b: (b["due_date"], b["rule_id"]))
         return bills
 
     # Convenience alias

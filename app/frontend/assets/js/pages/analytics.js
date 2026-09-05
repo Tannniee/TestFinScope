@@ -995,7 +995,7 @@ async function renderForecastTab(container) {
           <h3>Forecast Model Evaluation Leaderboard (Rolling-Origin Backtest)</h3>
           <p>${backtest.evaluations_count ? `Replayed across historical cutoffs (${backtest.evaluations_count} evaluations)` : 'Deterministic historical accuracy comparison across origins'}</p>
         </div>
-        <span class="delta-badge positive" style="font-size: 11.5px;">${backtest.hybrid_is_best ? 'Top Model: FinScope Hybrid' : `Selected: ${(backtest.best_model || 'finscope_hybrid').replace(/_/g, ' ')}`}</span>
+        <span class="delta-badge positive" style="font-size: 11.5px;">Lowest MAE (Comparable Origins): ${(backtest.best_model || 'production_policy').replace(/_/g, ' ')}</span>
       </div>
 
       <div class="table-container">
@@ -1003,6 +1003,7 @@ async function renderForecastTab(container) {
           <thead>
             <tr>
               <th>Model</th>
+              <th style="text-align: right;">Origins Evaluated</th>
               <th style="text-align: right;">Mean Absolute Error (MAE)</th>
               <th style="text-align: right;">Median Absolute Error</th>
               <th style="text-align: right;">WAPE %</th>
@@ -1019,6 +1020,7 @@ async function renderForecastTab(container) {
                     ${name.replace(/_/g, ' ')}
                     ${isBest ? `<span class="delta-badge positive" style="font-size: 9.5px; margin-left: 6px;">TOP MODEL</span>` : ''}
                   </td>
+                  <td style="text-align: right; font-weight: 500;">${m.sample_origins || 0}</td>
                   <td style="text-align: right; font-weight: 600;">${state.formatCurrency(m.mae)}</td>
                   <td style="text-align: right;">${state.formatCurrency(m.median_ae)}</td>
                   <td style="text-align: right;">${m.wape_pct}%</td>

@@ -7,7 +7,7 @@ from app.backend.config import DB_PATH
 logger = logging.getLogger(__name__)
 
 MIGRATIONS: List[tuple[int, str, Callable[[sqlite3.Connection], None]]] = []
-MAX_SUPPORTED_SCHEMA_VERSION = 5
+MAX_SUPPORTED_SCHEMA_VERSION = 6
 
 def migration(version: int, name: str):
     def decorator(fn: Callable[[sqlite3.Connection], None]):
@@ -292,6 +292,85 @@ def migration_005_enforce_table_constraints(conn: sqlite3.Connection):
         SELECT *
         FROM transactions
         WHERE is_deleted = 0;
+    """)
+
+@migration(6, "recurring_rule_point_in_time_versioning")
+def migration_006_recurring_rule_versioning(conn: sqlite3.Connection):
+    """
+    Creates recurring_rule_versions table and triggers to enable point-in-time
+    anti-leakage historical replay of recurring commitments.
+    """
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS recurring_rule_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            transaction_type TEXT NOT NULL DEFAULT 'expense',
+            amount_minor INTEGER NOT NULL,
+            category_id INTEGER,
+            account_id INTEGER,
+            frequency TEXT NOT NULL DEFAULT 'monthly',
+            next_due_date TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            valid_from TEXT NOT NULL,
+            valid_to TEXT,
+            change_type TEXT NOT NULL DEFAULT 'created',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rrv_rule_id ON recurring_rule_versions(rule_id);
+        CREATE INDEX IF NOT EXISTS idx_rrv_validity ON recurring_rule_versions(valid_from, valid_to);
+
+        -- Seed initial version for existing rules
+        INSERT INTO recurring_rule_versions (
+            rule_id, name, transaction_type, amount_minor, category_id,
+            account_id, frequency, next_due_date, active, valid_from, valid_to, change_type
+        )
+        SELECT 
+            id, name, transaction_type, amount_minor, category_id,
+            account_id, frequency, next_due_date, active,
+            COALESCE(created_at, date('now')), NULL, 'created'
+        FROM recurring_rules
+        WHERE id NOT IN (SELECT DISTINCT rule_id FROM recurring_rule_versions);
+
+        -- Automatic sync triggers
+        CREATE TRIGGER IF NOT EXISTS trg_recurring_rules_insert
+        AFTER INSERT ON recurring_rules
+        BEGIN
+            INSERT INTO recurring_rule_versions (
+                rule_id, name, transaction_type, amount_minor, category_id,
+                account_id, frequency, next_due_date, active, valid_from, valid_to, change_type
+            ) VALUES (
+                NEW.id, NEW.name, NEW.transaction_type, NEW.amount_minor, NEW.category_id,
+                NEW.account_id, NEW.frequency, NEW.next_due_date, NEW.active,
+                COALESCE(NEW.created_at, date('now')), NULL, 'created'
+            );
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_recurring_rules_update
+        AFTER UPDATE ON recurring_rules
+        BEGIN
+            UPDATE recurring_rule_versions
+            SET valid_to = date('now')
+            WHERE rule_id = OLD.id AND valid_to IS NULL;
+
+            INSERT INTO recurring_rule_versions (
+                rule_id, name, transaction_type, amount_minor, category_id,
+                account_id, frequency, next_due_date, active, valid_from, valid_to, change_type
+            ) VALUES (
+                NEW.id, NEW.name, NEW.transaction_type, NEW.amount_minor, NEW.category_id,
+                NEW.account_id, NEW.frequency, NEW.next_due_date, NEW.active,
+                date('now'), NULL, 'updated'
+            );
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_recurring_rules_delete
+        AFTER DELETE ON recurring_rules
+        BEGIN
+            UPDATE recurring_rule_versions
+            SET valid_to = date('now'), change_type = 'deleted'
+            WHERE rule_id = OLD.id AND valid_to IS NULL;
+        END;
     """)
 
 def run_migrations(conn: sqlite3.Connection):

@@ -906,7 +906,7 @@ def test_aud_012_fresh_migrated_schema_and_constraints(isolated_db):
     """
     cur = isolated_db.cursor()
     cur.execute("SELECT MAX(version) FROM schema_migrations")
-    assert cur.fetchone()[0] == 5
+    assert cur.fetchone()[0] >= 5
 
     # Test transfer_role CHECK constraint at the DB level
     acc_id = AccountRepository.create("DB Level Check Acc", "checking", opening_balance=100.0)

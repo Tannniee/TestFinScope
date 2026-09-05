@@ -99,6 +99,26 @@ CREATE TABLE IF NOT EXISTS recurring_rules (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS recurring_rule_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    transaction_type TEXT NOT NULL DEFAULT 'expense',
+    amount_minor INTEGER NOT NULL,
+    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+    account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    frequency TEXT NOT NULL DEFAULT 'monthly',
+    next_due_date TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    valid_from TEXT NOT NULL,
+    valid_to TEXT,
+    change_type TEXT NOT NULL DEFAULT 'created',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_rrv_rule_id ON recurring_rule_versions(rule_id);
+CREATE INDEX IF NOT EXISTS idx_rrv_validity ON recurring_rule_versions(valid_from, valid_to);
+
 -- Performance Indexes
 CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(transaction_date);
 CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(category_id);
@@ -113,3 +133,42 @@ CREATE VIEW IF NOT EXISTS active_transactions AS
 SELECT *
 FROM transactions
 WHERE is_deleted = 0;
+
+-- Automatic sync triggers
+CREATE TRIGGER IF NOT EXISTS trg_recurring_rules_insert
+AFTER INSERT ON recurring_rules
+BEGIN
+    INSERT INTO recurring_rule_versions (
+        rule_id, name, transaction_type, amount_minor, category_id,
+        account_id, frequency, next_due_date, active, valid_from, valid_to, change_type
+    ) VALUES (
+        NEW.id, NEW.name, NEW.transaction_type, NEW.amount_minor, NEW.category_id,
+        NEW.account_id, NEW.frequency, NEW.next_due_date, NEW.active,
+        COALESCE(NEW.created_at, date('now')), NULL, 'created'
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_recurring_rules_update
+AFTER UPDATE ON recurring_rules
+BEGIN
+    UPDATE recurring_rule_versions
+    SET valid_to = date('now')
+    WHERE rule_id = OLD.id AND valid_to IS NULL;
+
+    INSERT INTO recurring_rule_versions (
+        rule_id, name, transaction_type, amount_minor, category_id,
+        account_id, frequency, next_due_date, active, valid_from, valid_to, change_type
+    ) VALUES (
+        NEW.id, NEW.name, NEW.transaction_type, NEW.amount_minor, NEW.category_id,
+        NEW.account_id, NEW.frequency, NEW.next_due_date, NEW.active,
+        date('now'), NULL, 'updated'
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_recurring_rules_delete
+AFTER DELETE ON recurring_rules
+BEGIN
+    UPDATE recurring_rule_versions
+    SET valid_to = date('now'), change_type = 'deleted'
+    WHERE rule_id = OLD.id AND valid_to IS NULL;
+END;
