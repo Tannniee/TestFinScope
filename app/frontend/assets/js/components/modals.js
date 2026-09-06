@@ -97,6 +97,11 @@ export const modals = {
     // Payee Autocomplete & Merchant Memory
     this.setupPayeeAutocomplete(payeeInput);
 
+    // Account currency symbol update
+    document.getElementById('tx-account')?.addEventListener('change', () => {
+      this.updateCurrencySymbol();
+    });
+
     // Save & Add Another handler
     saveAddBtn?.addEventListener('click', async (e) => {
       e.preventDefault();
@@ -384,28 +389,28 @@ export const modals = {
           return;
         }
 
+        const toAmountVal = document.getElementById('tx-to-amount')?.value;
+        const toAmount = toAmountVal ? parseFloat(toAmountVal) : null;
+
+        const transferPayload = {
+          from_account_id: accountId,
+          to_account_id: toAccountId,
+          amount: amount,
+          transaction_date: date,
+          transaction_time: time,
+          description: description || 'Account Transfer',
+          note: note
+        };
+        if (toAmount && !isNaN(toAmount) && toAmount > 0) {
+          transferPayload.to_amount = toAmount;
+        }
+
         if (this.activeTxId) {
-          await api.updateTransfer({
-            tx_id: this.activeTxId,
-            from_account_id: accountId,
-            to_account_id: toAccountId,
-            amount: amount,
-            transaction_date: date,
-            transaction_time: time,
-            description: description || 'Account Transfer',
-            note: note
-          });
+          transferPayload.tx_id = this.activeTxId;
+          await api.updateTransfer(transferPayload);
           showToast('Transfer updated successfully', 'success');
         } else {
-          await api.createTransfer({
-            from_account_id: accountId,
-            to_account_id: toAccountId,
-            amount: amount,
-            transaction_date: date,
-            transaction_time: time,
-            description: description || 'Account Transfer',
-            note: note
-          });
+          await api.createTransfer(transferPayload);
           showToast('Transfer completed successfully', 'success');
         }
       } else if (type === 'refund') {
@@ -455,6 +460,9 @@ export const modals = {
         const merchant = document.getElementById('tx-merchant').value.trim();
         const essentiality = document.getElementById('tx-essentiality').value;
         const isRecurring = document.getElementById('tx-recurring').checked;
+        const origCurr = document.getElementById('tx-orig-currency')?.value.trim().toUpperCase();
+        const origAmtVal = document.getElementById('tx-orig-amount')?.value;
+        const origAmount = origAmtVal ? parseFloat(origAmtVal) : null;
 
         const payload = {
           account_id: accountId,
@@ -469,6 +477,13 @@ export const modals = {
           essentiality: essentiality,
           is_recurring: isRecurring
         };
+
+        if (origCurr) {
+          payload.original_currency = origCurr;
+          if (origAmount && !isNaN(origAmount) && origAmount > 0) {
+            payload.original_amount = origAmount;
+          }
+        }
 
         if (this.activeTxId) {
           await api.updateTransaction(this.activeTxId, payload);
@@ -509,19 +524,25 @@ export const modals = {
 
   updateFormFieldsForType(type) {
     const toAccGroup = document.getElementById('group-to-account');
+    const toAmtGroup = document.getElementById('group-to-amount');
     const catGroup = document.getElementById('group-category');
     const merchantGroup = document.getElementById('group-merchant');
     const essGroup = document.getElementById('group-essentiality');
     const refundGroup = document.getElementById('group-refund-ref');
+    const labelAccount = document.getElementById('label-account');
 
     if (type === 'transfer') {
       if (toAccGroup) toAccGroup.style.display = 'flex';
+      if (toAmtGroup) toAmtGroup.style.display = 'flex';
       if (catGroup) catGroup.style.display = 'none';
       if (merchantGroup) merchantGroup.style.display = 'none';
       if (essGroup) essGroup.style.display = 'none';
       if (refundGroup) refundGroup.style.display = 'none';
+      if (labelAccount) labelAccount.textContent = 'Source Account';
     } else if (type === 'refund') {
       if (toAccGroup) toAccGroup.style.display = 'none';
+      if (toAmtGroup) toAmtGroup.style.display = 'none';
+      if (labelAccount) labelAccount.textContent = 'Account';
       if (catGroup) catGroup.style.display = 'flex';
       if (merchantGroup) merchantGroup.style.display = 'block';
       if (essGroup) essGroup.style.display = 'none';
@@ -529,6 +550,8 @@ export const modals = {
       this.filterCategoryDropdown('expense');
     } else {
       if (toAccGroup) toAccGroup.style.display = 'none';
+      if (toAmtGroup) toAmtGroup.style.display = 'none';
+      if (labelAccount) labelAccount.textContent = 'Account';
       if (catGroup) catGroup.style.display = 'flex';
       if (merchantGroup) merchantGroup.style.display = 'block';
       if (essGroup) essGroup.style.display = 'flex';
@@ -542,13 +565,24 @@ export const modals = {
     const toAccSelect = document.getElementById('tx-to-account');
 
     const accOptions = '<option value="">Select Account...</option>' +
-      state.accounts.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)} (${escapeHtml(a.account_type)})</option>`).join('');
+      state.accounts.map(a => `<option value="${escapeHtml(a.id)}" data-currency="${escapeHtml(a.currency || 'USD')}">${escapeHtml(a.name)} (${escapeHtml(a.currency || 'USD')} - ${escapeHtml(a.account_type)})</option>`).join('');
 
     if (accSelect) accSelect.innerHTML = accOptions;
     if (toAccSelect) toAccSelect.innerHTML = '<option value="">Select Destination...</option>' +
-      state.accounts.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)} (${escapeHtml(a.account_type)})</option>`).join('');
+      state.accounts.map(a => `<option value="${escapeHtml(a.id)}" data-currency="${escapeHtml(a.currency || 'USD')}">${escapeHtml(a.name)} (${escapeHtml(a.currency || 'USD')} - ${escapeHtml(a.account_type)})</option>`).join('');
 
     this.filterCategoryDropdown(document.getElementById('tx-type')?.value || 'expense');
+    this.updateCurrencySymbol();
+  },
+
+  updateCurrencySymbol() {
+    const accSelect = document.getElementById('tx-account');
+    const symbolEl = document.getElementById('tx-currency-symbol');
+    if (!accSelect || !symbolEl) return;
+    const selectedOpt = accSelect.options[accSelect.selectedIndex];
+    const curr = selectedOpt?.dataset?.currency || state.currency || 'USD';
+    const symbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥', VND: '₫' };
+    symbolEl.textContent = symbols[curr] || curr;
   },
 
   filterCategoryDropdown(type) {
@@ -579,6 +613,10 @@ export const modals = {
     const dateInput = document.getElementById('tx-date');
     if (dateInput) dateInput.style.display = 'none';
 
+    const origCurrInput = document.getElementById('tx-orig-currency');
+    const origAmtInput = document.getElementById('tx-orig-amount');
+    const toAmtInput = document.getElementById('tx-to-amount');
+
     if (txData) {
       this.activeTxId = txData.id;
       title.textContent = 'Edit Transaction';
@@ -593,6 +631,9 @@ export const modals = {
       document.getElementById('tx-essentiality').value = txData.essentiality || 'discretionary';
       document.getElementById('tx-recurring').checked = Boolean(txData.is_recurring);
       document.getElementById('tx-note').value = txData.note || '';
+      if (origCurrInput) origCurrInput.value = txData.original_currency || '';
+      if (origAmtInput) origAmtInput.value = txData.original_amount || '';
+      if (toAmtInput) toAmtInput.value = '';
 
       const type = txData.transaction_type || 'expense';
       document.getElementById('tx-type').value = type;
@@ -605,9 +646,10 @@ export const modals = {
       });
       this.updateFormFieldsForType(type);
       document.getElementById('tx-category').value = txData.category_id || '';
+      this.updateCurrencySymbol();
 
-      // Auto-open more details if editing an item with memo, non-default essentiality, or note
-      if (txData.description || txData.note || txData.is_recurring) {
+      // Auto-open more details if editing an item with memo, non-default essentiality, note, or foreign currency
+      if (txData.description || txData.note || txData.is_recurring || txData.original_currency) {
         moreDetailsBody?.classList.add('open');
         const span = moreDetailsToggle?.querySelector('span');
         if (span) span.textContent = 'Fewer Details';
@@ -617,6 +659,9 @@ export const modals = {
       title.textContent = 'Record Transaction';
       if (saveAddBtn) saveAddBtn.style.display = 'inline-block';
       form.reset();
+      if (origCurrInput) origCurrInput.value = '';
+      if (origAmtInput) origAmtInput.value = '';
+      if (toAmtInput) toAmtInput.value = '';
       moreDetailsBody?.classList.remove('open');
       const span = moreDetailsToggle?.querySelector('span');
       if (span) span.textContent = 'More Details';
@@ -636,6 +681,7 @@ export const modals = {
         : (state.accounts.length > 0 ? state.accounts[0].id : '');
       document.getElementById('tx-account').value = defaultAcc;
       this.updateFormFieldsForType('expense');
+      this.updateCurrencySymbol();
     }
 
     modalOverlay.classList.add('open');

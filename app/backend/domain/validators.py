@@ -1,19 +1,29 @@
 import re
 from datetime import datetime
-from typing import Union
+from decimal import Decimal
+from typing import Union, Optional
+from app.backend.domain.currencies import ACTIVE_ISO_4217_CODES, is_valid_currency
+from app.backend.domain.money import major_to_minor
 
 HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
-SUPPORTED_CURRENCIES = {"USD", "VND", "AUD", "EUR", "GBP", "JPY", "SGD", "CAD"}
+# Exported for backward compatibility; now encompasses all active ISO 4217 currencies
+SUPPORTED_CURRENCIES = ACTIVE_ISO_4217_CODES
 
 VALID_TRANSACTION_TYPES = {"income", "expense", "transfer", "refund", "adjustment"}
 VALID_RECURRING_FREQUENCIES = {"daily", "weekly", "biweekly", "monthly", "quarterly", "yearly"}
 
 
-def validate_positive_amount(amount: Union[int, float], field_name: str = "Transaction amount") -> int:
+def validate_positive_amount(
+    amount: Union[int, float, str, Decimal],
+    field_name: str = "Transaction amount",
+    currency: Optional[str] = None
+) -> int:
     """
-    Validates that amount is positive (> 0) and returns integer minor units (cents).
+    Validates that amount is positive (> 0) and returns integer minor units.
+    If currency is specified, scales by that currency's ISO 4217 minor_unit exponent.
+    If currency is omitted, assumes standard 2-decimal scale (* 100) for backward compatibility.
     """
     try:
         val = float(amount)
@@ -22,6 +32,9 @@ def validate_positive_amount(amount: Union[int, float], field_name: str = "Trans
 
     if val <= 0:
         raise ValueError(f"{field_name} must be greater than zero.")
+
+    if currency:
+        return major_to_minor(amount, currency)
 
     return int(round(val * 100))
 
@@ -58,7 +71,7 @@ def validate_transaction_type(tx_type: str) -> str:
 def validate_currency_code(currency: str, check_supported: bool = True) -> str:
     """
     Validates that currency is an ISO 4217 3-letter uppercase code.
-    If check_supported is True, validates against FinScope supported currencies.
+    If check_supported is True, validates against active ISO 4217 currencies.
     """
     if not currency or not isinstance(currency, str):
         raise ValueError("Currency code is required.")
@@ -67,8 +80,8 @@ def validate_currency_code(currency: str, check_supported: bool = True) -> str:
     if not CURRENCY_RE.fullmatch(code):
         raise ValueError(f"Invalid currency code: '{currency}'. Must be 3 uppercase letters (e.g. USD).")
 
-    if check_supported and code not in SUPPORTED_CURRENCIES:
-        raise ValueError(f"Unsupported currency: '{code}'. Supported currencies: {', '.join(sorted(SUPPORTED_CURRENCIES))}")
+    if check_supported and not is_valid_currency(code):
+        raise ValueError(f"Unsupported currency: '{code}'.")
 
     return code
 
@@ -101,9 +114,11 @@ def validate_recurring_frequency(frequency: str) -> str:
     return freq
 
 
-def validate_budget_amount(amount: Union[int, float]) -> int:
+def validate_budget_amount(amount: Union[int, float, str, Decimal], currency: Optional[str] = None) -> int:
     """
     Validates that a budget amount is positive (> 0) and returns minor units.
+    If currency is provided, scales by that currency's ISO 4217 minor_unit exponent.
+    If currency is omitted, assumes standard 2-decimal scale (* 100) for backward compatibility.
     """
     try:
         val = float(amount)
@@ -112,5 +127,8 @@ def validate_budget_amount(amount: Union[int, float]) -> int:
 
     if val <= 0:
         raise ValueError("Budget amount must be greater than zero.")
+
+    if currency:
+        return major_to_minor(amount, currency)
 
     return int(round(val * 100))

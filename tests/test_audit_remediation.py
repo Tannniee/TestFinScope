@@ -112,13 +112,15 @@ def test_aud_001_account_currency_must_match_base_currency(isolated_db):
     acc_data = AccountRepository.get_by_id(acc1)
     assert acc_data["currency"] == "USD"
 
-    # Creating account with non-base currency (e.g. VND) is rejected
-    with pytest.raises(ValueError, match="does not match application base currency"):
-        AccountRepository.create("Savings VN", "savings", opening_balance=1000000.0, currency="VND")
+    # Creating account with foreign currency (e.g. VND) is supported (MC-003)
+    acc2 = AccountRepository.create("Savings VN", "savings", opening_balance=1000000.0, currency="VND")
+    acc2_data = AccountRepository.get_by_id(acc2)
+    assert acc2_data["currency"] == "VND"
+    assert acc2_data["opening_balance_minor"] == 1000000
 
-    # Updating account currency to non-base currency is rejected
-    with pytest.raises(ValueError, match="cannot be changed away from base currency"):
-        AccountRepository.update(acc1, currency="EUR")
+    # Before transactions exist, currency can be updated
+    AccountRepository.update(acc1, currency="EUR")
+    assert AccountRepository.get_by_id(acc1)["currency"] == "EUR"
 
 
 def test_aud_001_cannot_change_currency_after_transactions_exist(isolated_db):

@@ -15,12 +15,13 @@ class AggregateQueries:
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
+            amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
             params = [f"{month}%"] + ([account_id] if account_id else [])
 
             cur.execute(f"""
                 SELECT 
                     transaction_type,
-                    COALESCE(SUM(amount_minor), 0) as total_minor,
+                    COALESCE(SUM({amt_expr}), 0) as total_minor,
                     COUNT(id) as count
                 FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
@@ -48,13 +49,14 @@ class AggregateQueries:
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
+            amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
             params = [account_id] if account_id else []
 
             cur.execute(f"""
                 SELECT 
                     strftime('%Y-%m', transaction_date) as month,
                     transaction_type,
-                    COALESCE(SUM(amount_minor), 0) as total_minor,
+                    COALESCE(SUM({amt_expr}), 0) as total_minor,
                     COUNT(id) as count
                 FROM active_transactions
                 WHERE transaction_type IN ('income', 'expense', 'refund') {acc_clause}
@@ -98,13 +100,14 @@ class AggregateQueries:
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
+            amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
             params = [category_id] + ([account_id] if account_id else [])
 
             cur.execute(f"""
                 SELECT 
                     strftime('%Y-%m', transaction_date) as month,
                     transaction_type,
-                    COALESCE(SUM(amount_minor), 0) as total_minor,
+                    COALESCE(SUM({amt_expr}), 0) as total_minor,
                     COUNT(id) as count
                 FROM active_transactions
                 WHERE category_id = ?
@@ -141,6 +144,7 @@ class AggregateQueries:
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND t.account_id = ?" if account_id else ""
+            amt_t_expr = "t.amount_minor" if account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
             params = [f"{month}%"] + ([account_id] if account_id else [])
 
             cur.execute(f"""
@@ -152,8 +156,8 @@ class AggregateQueries:
                     COALESCE(MAX(t.essentiality), 'discretionary') as essentiality,
                     SUM(
                         CASE 
-                            WHEN t.transaction_type = 'expense' THEN t.amount_minor
-                            WHEN t.transaction_type = 'refund' THEN -t.amount_minor
+                            WHEN t.transaction_type = 'expense' THEN {amt_t_expr}
+                            WHEN t.transaction_type = 'refund' THEN -{amt_t_expr}
                             ELSE 0
                         END
                     ) as net_minor,
@@ -189,6 +193,7 @@ class AggregateQueries:
         with get_db_connection() as conn:
             cur = conn.cursor()
             clauses = ["t.transaction_type IN ('expense', 'refund')", "t.transaction_date LIKE ?"]
+            amt_t_expr = "t.amount_minor" if account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
             params: List[Any] = [f"{month}%"]
 
             if category_id:
@@ -205,8 +210,8 @@ class AggregateQueries:
                     COALESCE(NULLIF(t.merchant_name, ''), 'Unspecified') as merchant,
                     SUM(
                         CASE 
-                            WHEN t.transaction_type = 'expense' THEN t.amount_minor
-                            WHEN t.transaction_type = 'refund' THEN -t.amount_minor
+                            WHEN t.transaction_type = 'expense' THEN {amt_t_expr}
+                            WHEN t.transaction_type = 'refund' THEN -{amt_t_expr}
                             ELSE 0
                         END
                     ) as net_minor,

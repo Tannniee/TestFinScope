@@ -6,6 +6,9 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from app.backend.database.connection import get_db_connection
 from app.backend.services.merchant_service import MerchantService, normalize_merchant_name
+from app.backend.domain.money import major_to_minor, minor_to_major
+from app.backend.services.settings_service import SettingsService
+from app.backend.fx.service import FxService
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +270,8 @@ class ImportService:
         indices: Dict[str, Optional[int]],
         existing_fingerprints: set,
         account_id: Optional[int],
-        date_format: Optional[str] = None
+        date_format: Optional[str] = None,
+        account_currency: str = "USD"
     ) -> Dict[str, Any]:
         """
         Unified parser for a single CSV row.
@@ -313,7 +317,7 @@ class ImportService:
         except ValueError as ve:
             errors.append(str(ve))
 
-        amount_minor = int(round(amount * 100))
+        amount_minor = major_to_minor(amount, account_currency)
         if amount_minor <= 0 and not errors:
             errors.append("Amount must be strictly greater than zero")
 
@@ -372,11 +376,17 @@ class ImportService:
 
         active_mapping = mapping if mapping and any(mapping.values()) else cls.auto_detect_mapping(headers)
 
-        # Build existing transaction fingerprints for duplicate detection
+        # Build existing transaction fingerprints for duplicate detection and lookup account currency
         existing_fingerprints = set()
+        account_currency = "USD"
         if account_id:
             with get_db_connection() as conn:
                 cur = conn.cursor()
+                cur.execute("SELECT currency FROM accounts WHERE id = ?", (account_id,))
+                a_row = cur.fetchone()
+                if a_row and a_row["currency"]:
+                    account_currency = a_row["currency"]
+
                 cur.execute(
                     """
                     SELECT transaction_date, amount_minor, transaction_type, merchant_name, description
@@ -422,7 +432,7 @@ class ImportService:
         invalid_count = 0
 
         for row_idx, row in enumerate(data_rows):
-            parsed = cls._parse_csv_row(row, headers, indices, working_fingerprints, account_id, date_format=date_format)
+            parsed = cls._parse_csv_row(row, headers, indices, working_fingerprints, account_id, date_format=date_format, account_currency=account_currency)
             if not parsed["is_valid"]:
                 invalid_count += 1
             elif parsed["is_duplicate"]:
@@ -520,6 +530,12 @@ class ImportService:
                 )
                 existing_fingerprints.add(fp)
 
+            # Lookup account currency and base currency
+            cur.execute("SELECT currency FROM accounts WHERE id = ?", (account_id,))
+            a_row = cur.fetchone()
+            account_currency = a_row["currency"] if a_row and a_row["currency"] else "USD"
+            base_currency = SettingsService.get_setting("currency", "USD") or "USD"
+
             # Load default category for unassigned
             cur.execute("SELECT id FROM categories WHERE type = 'expense' ORDER BY id ASC LIMIT 1")
             default_cat_row = cur.fetchone()
@@ -531,7 +547,7 @@ class ImportService:
             invalid_count = 0
 
             for row in data_rows:
-                parsed = cls._parse_csv_row(row, headers, indices, existing_fingerprints, account_id, date_format=date_format)
+                parsed = cls._parse_csv_row(row, headers, indices, existing_fingerprints, account_id, date_format=date_format, account_currency=account_currency)
 
                 if not parsed["is_valid"]:
                     invalid_count += 1
@@ -555,13 +571,33 @@ class ImportService:
                 essentiality = m_row["default_essentiality"] if m_row and m_row["default_essentiality"] else "discretionary"
                 needs_review = 0 if (m_row and m_row["default_category_id"]) else 1
 
+                if account_currency == base_currency:
+                    base_amount_minor = amount_minor
+                    fx_rate_to_base = "1.0"
+                    fx_rate_date = parsed_date
+                    fx_rate_source = "identity"
+                    fx_status = "not_required"
+                else:
+                    conv = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=parsed_date)
+                    base_amount_minor = conv.target.minor
+                    fx_rate_to_base = str(conv.rate)
+                    fx_rate_date = conv.rate_date
+                    fx_rate_source = conv.provider
+                    fx_status = "market_estimate"
+
                 cur.execute("""
                     INSERT INTO transactions (
                         account_id, category_id, merchant_name, transaction_type,
                         amount_minor, transaction_date, transaction_time, description,
                         note, essentiality, payment_method, source, needs_review,
-                        is_deleted, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, '12:00', ?, '', ?, 'Bank Import', 'csv_import', ?, 0, ?, ?)
+                        is_deleted, created_at, updated_at,
+                        original_currency, original_amount_minor,
+                        base_currency, base_amount_minor,
+                        fx_rate_to_base, fx_rate_date, fx_rate_source, fx_status
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, '12:00', ?, '', ?, 'Bank Import', 'csv_import', ?, 0, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?
+                    )
                 """, (
                     account_id,
                     category_id,
@@ -573,7 +609,15 @@ class ImportService:
                     essentiality,
                     needs_review,
                     now_str,
-                    now_str
+                    now_str,
+                    account_currency,
+                    amount_minor,
+                    base_currency,
+                    base_amount_minor,
+                    fx_rate_to_base,
+                    fx_rate_date,
+                    fx_rate_source,
+                    fx_status
                 ))
 
                 existing_fingerprints.add(parsed["fingerprint"])

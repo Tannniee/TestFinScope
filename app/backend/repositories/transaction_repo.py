@@ -8,8 +8,47 @@ soft-delete for undo recovery, and review queue resolution.
 import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from decimal import Decimal
 from app.backend.database.connection import get_db_connection
+from app.backend.domain.money import major_to_minor, minor_to_major, format_money
+from app.backend.domain.validators import (
+    validate_positive_amount,
+    validate_iso_date,
+    validate_transaction_type,
+    validate_currency_code
+)
 from app.backend.services.merchant_service import MerchantService, normalize_merchant_name
+from app.backend.repositories.account_repo import AccountRepository
+from app.backend.services.settings_service import SettingsService
+from app.backend.fx.service import FxService
+
+
+def _hydrate_transaction_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Hydrates raw SQL transaction row with exact Decimal major amounts and multi-currency formatting."""
+    tx = dict(row)
+    acct_curr = tx.get("account_currency") or tx.get("base_currency") or "USD"
+    orig_curr = tx.get("original_currency") or acct_curr
+    base_curr = tx.get("base_currency") or "USD"
+
+    tx["currency"] = acct_curr
+    tx["amount"] = float(minor_to_major(tx["amount_minor"], acct_curr))
+
+    orig_minor = tx["original_amount_minor"] if tx.get("original_amount_minor") is not None else tx["amount_minor"]
+    tx["original_amount_minor"] = orig_minor
+    tx["original_currency"] = orig_curr
+    tx["original_amount"] = float(minor_to_major(orig_minor, orig_curr))
+
+    base_minor = tx["base_amount_minor"] if tx.get("base_amount_minor") is not None else tx["amount_minor"]
+    tx["base_amount_minor"] = base_minor
+    tx["base_currency"] = base_curr
+    tx["base_amount"] = float(minor_to_major(base_minor, base_curr))
+
+    tx["formatted_amount"] = format_money(tx["amount_minor"], acct_curr)
+    tx["formatted_original_amount"] = format_money(orig_minor, orig_curr)
+    tx["formatted_base_amount"] = format_money(base_minor, base_curr)
+
+    return tx
+
 
 class TransactionRepository:
     @staticmethod
@@ -32,13 +71,16 @@ class TransactionRepository:
                 SELECT 
                     t.id, t.account_id, t.category_id, t.merchant_id, t.merchant_name,
                     t.transaction_type, t.amount_minor,
-                    ROUND(CAST(t.amount_minor AS REAL) / 100.0, 2) as amount,
                     t.transaction_date, t.transaction_time, t.description, t.note,
                     t.is_recurring, t.recurring_rule_id, t.payment_method, t.essentiality,
                     t.transfer_group_id, t.transfer_role, t.linked_transaction_id,
                     t.refund_of_transaction_id, t.source, t.needs_review,
+                    t.original_currency, t.original_amount_minor,
+                    t.base_currency, t.base_amount_minor,
+                    t.fx_rate_to_base, t.fx_rate_date, t.fx_rate_source, t.fx_status,
                     t.created_at, t.updated_at,
                     a.name as account_name,
+                    a.currency as account_currency,
                     c.name as category_name,
                     c.color as category_color,
                     c.icon as category_icon
@@ -86,7 +128,7 @@ class TransactionRepository:
             params.extend([limit, offset])
 
             cur.execute(query, params)
-            items = [dict(row) for row in cur.fetchall()]
+            items = [_hydrate_transaction_row(row) for row in cur.fetchall()]
 
             return {
                 "items": items,
@@ -103,13 +145,16 @@ class TransactionRepository:
                 SELECT 
                     t.id, t.account_id, t.category_id, t.merchant_id, t.merchant_name,
                     t.transaction_type, t.amount_minor,
-                    ROUND(CAST(t.amount_minor AS REAL) / 100.0, 2) as amount,
                     t.transaction_date, t.transaction_time, t.description, t.note,
                     t.is_recurring, t.recurring_rule_id, t.payment_method, t.essentiality,
                     t.transfer_group_id, t.transfer_role, t.linked_transaction_id,
                     t.refund_of_transaction_id, t.source, t.needs_review, t.is_deleted,
+                    t.original_currency, t.original_amount_minor,
+                    t.base_currency, t.base_amount_minor,
+                    t.fx_rate_to_base, t.fx_rate_date, t.fx_rate_source, t.fx_status,
                     t.created_at, t.updated_at,
                     a.name as account_name,
+                    a.currency as account_currency,
                     c.name as category_name,
                     c.color as category_color,
                     c.icon as category_icon
@@ -122,39 +167,95 @@ class TransactionRepository:
                 query += " AND t.is_deleted = 0"
             cur.execute(query, (tx_id,))
             row = cur.fetchone()
-            return dict(row) if row else None
+            return _hydrate_transaction_row(row) if row else None
 
     @staticmethod
     def create(data: Dict[str, Any]) -> int:
-        from app.backend.domain.validators import (
-            validate_positive_amount,
-            validate_iso_date,
-            validate_transaction_type
-        )
         tx_type = validate_transaction_type(data["transaction_type"])
         if tx_type == "transfer":
             raise ValueError("Transfers must be created through TransferService.")
         if tx_type == "refund":
             raise ValueError("Refunds must be created through create_refund().")
 
-        if tx_type != "adjustment":
-            amount_minor = validate_positive_amount(data["amount"], "Transaction amount")
-        else:
-            amount_minor = int(round(float(data["amount"]) * 100))
+        account_id = data["account_id"]
+        account = AccountRepository.get_by_id(account_id)
+        account_currency = account["currency"] if account else "USD"
+        base_currency = SettingsService.get_setting("currency", "USD") or "USD"
 
+        raw_orig_curr = data.get("original_currency")
+        original_currency = validate_currency_code(raw_orig_curr) if raw_orig_curr else account_currency
         clean_date = validate_iso_date(data["transaction_date"], "Transaction date")
+
+        # Multi-currency amount resolution (Section 47 / MC-005)
+        if original_currency == account_currency:
+            amount_val = data.get("amount") if data.get("amount") is not None else data.get("original_amount")
+            if tx_type != "adjustment":
+                amount_minor = validate_positive_amount(amount_val, "Transaction amount", currency=account_currency)
+            else:
+                amount_minor = major_to_minor(amount_val, account_currency)
+
+            original_amount_minor = amount_minor
+            if account_currency == base_currency:
+                base_amount_minor = amount_minor
+                fx_status = "not_required"
+                fx_rate_to_base = "1.0"
+                fx_rate_date = clean_date
+                fx_rate_source = "identity"
+            else:
+                # Foreign account ledger (e.g. USD account when base is VND)
+                conv = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                base_amount_minor = conv.target.minor
+                fx_status = "market_estimate"
+                fx_rate_to_base = str(conv.rate)
+                fx_rate_date = conv.rate_date
+                fx_rate_source = conv.provider
+        else:
+            # Foreign merchant purchase on account (e.g. 10 USD on VND account)
+            orig_val = data.get("original_amount") if data.get("original_amount") is not None else data.get("amount")
+            original_amount_minor = validate_positive_amount(orig_val, "Original amount", currency=original_currency)
+
+            conv_acct = None
+            if data.get("settlement_amount") is not None:
+                amount_minor = validate_positive_amount(data["settlement_amount"], "Settlement amount", currency=account_currency)
+                fx_status = "user_settlement"
+            elif data.get("amount") is not None and data.get("original_amount") is not None:
+                amount_minor = validate_positive_amount(data["amount"], "Settlement amount", currency=account_currency)
+                fx_status = "user_settlement"
+            else:
+                conv_acct = FxService.convert_minor(original_amount_minor, original_currency, account_currency, on_date=clean_date)
+                amount_minor = conv_acct.target.minor
+                fx_status = "market_estimate"
+
+            if account_currency == base_currency:
+                base_amount_minor = amount_minor
+                if conv_acct is not None:
+                    fx_rate_to_base = str(conv_acct.rate)
+                    fx_rate_date = conv_acct.rate_date
+                    fx_rate_source = conv_acct.provider
+                else:
+                    orig_maj = minor_to_major(original_amount_minor, original_currency)
+                    base_maj = minor_to_major(base_amount_minor, base_currency)
+                    fx_rate_to_base = str(base_maj / orig_maj) if orig_maj > 0 else "1.0"
+                    fx_rate_date = clean_date
+                    fx_rate_source = "user_settlement"
+            else:
+                conv_base = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                base_amount_minor = conv_base.target.minor
+                fx_rate_to_base = str(conv_base.rate)
+                fx_rate_date = conv_base.rate_date
+                fx_rate_source = conv_base.provider
+
         category_id = data.get("category_id")
         raw_merchant = data.get("merchant_name", "")
         clean_merchant = normalize_merchant_name(raw_merchant)
         needs_review = 1 if data.get("needs_review") else 0
 
-        # Smart Merchant Resolution & Auto-learning
         merchant_id = None
         if clean_merchant:
             merchant_id = MerchantService.get_or_create_merchant(
                 clean_merchant,
                 category_id=category_id,
-                account_id=data.get("account_id"),
+                account_id=account_id,
                 essentiality=data.get("essentiality")
             )
 
@@ -177,10 +278,16 @@ class TransactionRepository:
                         amount_minor, transaction_date, transaction_time, description,
                         note, is_recurring, payment_method, essentiality,
                         transfer_group_id, transfer_role, linked_transaction_id,
-                        refund_of_transaction_id, source, needs_review, is_deleted
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                        refund_of_transaction_id, source, needs_review, is_deleted,
+                        original_currency, original_amount_minor,
+                        base_currency, base_amount_minor,
+                        fx_rate_to_base, fx_rate_date, fx_rate_source, fx_status
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,
+                        ?, ?, ?, ?, ?, ?, ?, ?
+                    )
                 """, (
-                    data["account_id"],
+                    account_id,
                     category_id,
                     merchant_id,
                     clean_merchant or raw_merchant,
@@ -198,7 +305,15 @@ class TransactionRepository:
                     data.get("linked_transaction_id"),
                     data.get("refund_of_transaction_id"),
                     data.get("source", "manual"),
-                    needs_review
+                    needs_review,
+                    original_currency,
+                    original_amount_minor,
+                    base_currency,
+                    base_amount_minor,
+                    fx_rate_to_base,
+                    fx_rate_date,
+                    fx_rate_source,
+                    fx_status
                 ))
                 new_id = cur.lastrowid
                 conn.commit()
@@ -246,22 +361,60 @@ class TransactionRepository:
         4. Cumulative active refunds do not exceed the original expense amount.
         """
         from app.backend.domain.validators import validate_positive_amount, validate_iso_date
-        refund_minor = validate_positive_amount(amount, "Refund amount")
         clean_date = validate_iso_date(transaction_date, "Refund transaction date")
 
+        # 1. Pre-fetch original transaction and account currencies before transaction lock
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM transactions WHERE id = ?", (original_tx_id,))
+            orig = cur.fetchone()
+            if not orig:
+                raise ValueError(f"Original transaction {original_tx_id} not found.")
+
+            if orig["transaction_type"] != "expense":
+                raise ValueError(f"Cannot refund a transaction of type '{orig['transaction_type']}'; only expenses can be refunded.")
+
+            target_acc_id = account_id or orig["account_id"]
+            cur.execute("SELECT currency FROM accounts WHERE id = ?", (orig["account_id"],))
+            orig_acc_row = cur.fetchone()
+            orig_acc_curr = orig_acc_row["currency"] if orig_acc_row else "USD"
+
+            cur.execute("SELECT currency FROM accounts WHERE id = ?", (target_acc_id,))
+            target_acc_row = cur.fetchone()
+            target_acc_curr = target_acc_row["currency"] if target_acc_row else orig_acc_curr
+
+        base_currency = SettingsService.get_setting("currency", "USD") or "USD"
+        refund_minor = validate_positive_amount(amount, "Refund amount", currency=orig_acc_curr)
+
+        # 2. Resolve multi-currency and FX valuations outside of exclusive transaction lock
+        if target_acc_curr == orig_acc_curr:
+            target_amount_minor = refund_minor
+        else:
+            conv_target = FxService.convert_minor(refund_minor, orig_acc_curr, target_acc_curr, on_date=clean_date)
+            target_amount_minor = conv_target.target.minor
+
+        if target_acc_curr == base_currency:
+            base_amount_minor = target_amount_minor
+            fx_rate_to_base = "1.0"
+            fx_rate_date = clean_date
+            fx_rate_source = "identity"
+            fx_status = "not_required"
+        else:
+            conv_base = FxService.convert_minor(target_amount_minor, target_acc_curr, base_currency, on_date=clean_date)
+            base_amount_minor = conv_base.target.minor
+            fx_rate_to_base = str(conv_base.rate)
+            fx_rate_date = conv_base.rate_date
+            fx_rate_source = conv_base.provider
+            fx_status = "market_estimate"
+
+        merchant_name = orig["merchant_name"] or ""
+        desc = f"Refund: {orig['description'] or merchant_name}"
+
+        # 3. Atomically enforce cumulative balance limit and insert refund record
         with get_db_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT * FROM transactions WHERE id = ?", (original_tx_id,))
-                orig = cur.fetchone()
-                if not orig:
-                    raise ValueError(f"Original transaction {original_tx_id} not found.")
-
-                if orig["transaction_type"] != "expense":
-                    raise ValueError(f"Cannot refund a transaction of type '{orig['transaction_type']}'; only expenses can be refunded.")
-
-                # Check cumulative refund limit against active transactions
                 cur.execute("""
                     SELECT COALESCE(SUM(amount_minor), 0)
                     FROM active_transactions
@@ -271,14 +424,17 @@ class TransactionRepository:
 
                 remaining_refundable_minor = orig["amount_minor"] - existing_refunded_minor
                 if refund_minor > remaining_refundable_minor:
-                    raise ValueError(
-                        f"Refund amount of ${refund_minor / 100:.2f} exceeds remaining refundable balance of ${remaining_refundable_minor / 100:.2f} "
-                        f"(Original: ${orig['amount_minor'] / 100:.2f}, Prior Refunds: ${existing_refunded_minor / 100:.2f})."
-                    )
-
-                target_acc_id = account_id or orig["account_id"]
-                merchant_name = orig["merchant_name"] or ""
-                desc = f"Refund: {orig['description'] or merchant_name}"
+                    if orig_acc_curr == "USD":
+                        err_str = (
+                            f"Refund amount of ${refund_minor / 100:.2f} exceeds remaining refundable balance of ${remaining_refundable_minor / 100:.2f} "
+                            f"(Original: ${orig['amount_minor'] / 100:.2f}, Prior Refunds: ${existing_refunded_minor / 100:.2f})."
+                        )
+                    else:
+                        err_str = (
+                            f"Refund amount of {format_money(refund_minor, orig_acc_curr)} exceeds remaining refundable balance of {format_money(remaining_refundable_minor, orig_acc_curr)} "
+                            f"(Original: {format_money(orig['amount_minor'], orig_acc_curr)}, Prior Refunds: {format_money(existing_refunded_minor, orig_acc_curr)})."
+                        )
+                    raise ValueError(err_str)
 
                 cur.execute("""
                     INSERT INTO transactions (
@@ -286,21 +442,35 @@ class TransactionRepository:
                         amount_minor, transaction_date, transaction_time, description,
                         note, is_recurring, payment_method, essentiality,
                         transfer_group_id, transfer_role, linked_transaction_id,
-                        refund_of_transaction_id, source, needs_review, is_deleted
-                    ) VALUES (?, ?, ?, ?, 'refund', ?, ?, ?, ?, ?, 0, ?, ?, NULL, NULL, NULL, ?, 'manual', 0, 0)
+                        refund_of_transaction_id, source, needs_review, is_deleted,
+                        original_currency, original_amount_minor,
+                        base_currency, base_amount_minor,
+                        fx_rate_to_base, fx_rate_date, fx_rate_source, fx_status
+                    ) VALUES (
+                        ?, ?, ?, ?, 'refund', ?, ?, ?, ?, ?, 0, ?, ?, NULL, NULL, NULL, ?, 'manual', 0, 0,
+                        ?, ?, ?, ?, ?, ?, ?, ?
+                    )
                 """, (
                     target_acc_id,
                     orig["category_id"],
                     orig["merchant_id"],
                     merchant_name,
-                    refund_minor,
+                    target_amount_minor,
                     clean_date,
                     datetime.now().strftime("%H:%M"),
                     desc,
                     note,
                     orig["payment_method"] or "Card",
                     orig["essentiality"] or "discretionary",
-                    original_tx_id
+                    original_tx_id,
+                    orig_acc_curr,
+                    refund_minor,
+                    base_currency,
+                    base_amount_minor,
+                    fx_rate_to_base,
+                    fx_rate_date,
+                    fx_rate_source,
+                    fx_status
                 ))
                 new_id = cur.lastrowid
                 conn.commit()
@@ -322,44 +492,98 @@ class TransactionRepository:
         enforcing that the updated amount does not cause total cumulative refunds
         to exceed the original expense.
         """
+        from app.backend.domain.validators import validate_positive_amount, validate_iso_date
+
+        # 1. Pre-fetch before transaction lock
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,))
+            orig_refund = cur.fetchone()
+            if not orig_refund:
+                raise ValueError(f"Refund transaction {tx_id} not found.")
+            if orig_refund["transaction_type"] != "refund":
+                raise ValueError(f"Transaction {tx_id} is not a refund.")
+
+            clean_date = validate_iso_date(transaction_date, "Refund transaction date") if transaction_date else orig_refund["transaction_date"]
+            target_acc_id = account_id if account_id is not None else orig_refund["account_id"]
+            cur.execute("SELECT currency FROM accounts WHERE id = ?", (target_acc_id,))
+            target_row = cur.fetchone()
+            target_acc_curr = target_row["currency"] if target_row else "USD"
+
+            parent_id = orig_refund["refund_of_transaction_id"]
+            parent_acc_curr = target_acc_curr
+            parent_tx = None
+            if parent_id:
+                cur.execute("SELECT * FROM transactions WHERE id = ?", (parent_id,))
+                parent_tx = cur.fetchone()
+                if parent_tx:
+                    cur.execute("SELECT currency FROM accounts WHERE id = ?", (parent_tx["account_id"],))
+                    p_row = cur.fetchone()
+                    parent_acc_curr = p_row["currency"] if p_row else "USD"
+
+        base_currency = SettingsService.get_setting("currency", "USD") or "USD"
+
+        if amount is not None:
+            new_amount_minor = validate_positive_amount(amount, "Refund amount", currency=parent_acc_curr)
+        else:
+            new_amount_minor = orig_refund.get("original_amount_minor") or orig_refund["amount_minor"]
+
+        # 2. Resolve FX valuations outside of exclusive transaction lock
+        if target_acc_curr == parent_acc_curr:
+            target_amount_minor = new_amount_minor
+        else:
+            conv_target = FxService.convert_minor(new_amount_minor, parent_acc_curr, target_acc_curr, on_date=clean_date)
+            target_amount_minor = conv_target.target.minor
+
+        if target_acc_curr == base_currency:
+            base_amount_minor = target_amount_minor
+            fx_rate_to_base = "1.0"
+            fx_rate_date = clean_date
+            fx_rate_source = "identity"
+            fx_status = "not_required"
+        else:
+            conv_base = FxService.convert_minor(target_amount_minor, target_acc_curr, base_currency, on_date=clean_date)
+            base_amount_minor = conv_base.target.minor
+            fx_rate_to_base = str(conv_base.rate)
+            fx_rate_date = conv_base.rate_date
+            fx_rate_source = conv_base.provider
+            fx_status = "market_estimate"
+
+        # 3. Atomically check bounds and update
         with get_db_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,))
-                orig_refund = cur.fetchone()
-                if not orig_refund:
-                    raise ValueError(f"Refund transaction {tx_id} not found.")
-                if orig_refund["transaction_type"] != "refund":
-                    raise ValueError(f"Transaction {tx_id} is not a refund.")
+                if parent_id and parent_tx:
+                    cur.execute("""
+                        SELECT COALESCE(SUM(original_amount_minor), SUM(amount_minor), 0)
+                        FROM active_transactions
+                        WHERE refund_of_transaction_id = ? AND transaction_type = 'refund' AND id != ?
+                    """, (parent_id, tx_id))
+                    other_refunds = cur.fetchone()[0]
 
-                from app.backend.domain.validators import validate_positive_amount, validate_iso_date
-                if amount is not None:
-                    new_amount_minor = validate_positive_amount(amount, "Refund amount")
-                else:
-                    new_amount_minor = orig_refund["amount_minor"]
+                    remaining = parent_tx["amount_minor"] - other_refunds
+                    if new_amount_minor > remaining:
+                        if parent_acc_curr == "USD":
+                            err_str = f"Updated refund amount of ${new_amount_minor / 100:.2f} exceeds remaining refundable balance of ${remaining / 100:.2f}."
+                        else:
+                            err_str = f"Updated refund amount of {format_money(new_amount_minor, parent_acc_curr)} exceeds remaining refundable balance of {format_money(remaining, parent_acc_curr)}."
+                        raise ValueError(err_str)
 
-                parent_id = orig_refund["refund_of_transaction_id"]
-                if parent_id:
-                    cur.execute("SELECT * FROM transactions WHERE id = ?", (parent_id,))
-                    parent_tx = cur.fetchone()
-                    if parent_tx:
-                        cur.execute("""
-                            SELECT COALESCE(SUM(amount_minor), 0)
-                            FROM active_transactions
-                            WHERE refund_of_transaction_id = ? AND transaction_type = 'refund' AND id != ?
-                        """, (parent_id, tx_id))
-                        other_refunds = cur.fetchone()[0]
-
-                        remaining = parent_tx["amount_minor"] - other_refunds
-                        if new_amount_minor > remaining:
-                            raise ValueError(
-                                f"Updated refund amount of ${new_amount_minor / 100:.2f} exceeds remaining refundable balance of ${remaining / 100:.2f}."
-                            )
-
-                updates: Dict[str, Any] = {"amount_minor": new_amount_minor, "updated_at": datetime.now().isoformat()}
+                updates: Dict[str, Any] = {
+                    "amount_minor": target_amount_minor,
+                    "original_amount_minor": new_amount_minor,
+                    "original_currency": parent_acc_curr,
+                    "base_currency": base_currency,
+                    "base_amount_minor": base_amount_minor,
+                    "fx_rate_to_base": fx_rate_to_base,
+                    "fx_rate_date": fx_rate_date,
+                    "fx_rate_source": fx_rate_source,
+                    "fx_status": fx_status,
+                    "updated_at": datetime.now().isoformat()
+                }
                 if transaction_date:
-                    updates["transaction_date"] = validate_iso_date(transaction_date, "Refund transaction date")
+                    updates["transaction_date"] = clean_date
                 if note is not None:
                     updates["note"] = note
                 if account_id is not None:
@@ -385,10 +609,13 @@ class TransactionRepository:
             validate_transaction_type
         )
         allowed = {
-            "account_id", "category_id", "merchant_name", "transaction_type",
+            "account_id", "category_id", "merchant_name", "merchant_id", "transaction_type",
+            "amount_minor",
             "transaction_date", "transaction_time", "description",
             "note", "is_recurring", "payment_method", "essentiality",
-            "needs_review"
+            "needs_review", "original_currency", "original_amount_minor",
+            "base_currency", "base_amount_minor",
+            "fx_rate_to_base", "fx_rate_date", "fx_rate_source", "fx_status"
         }
         updates: Dict[str, Any] = {}
 
@@ -398,17 +625,10 @@ class TransactionRepository:
         if "transaction_date" in data:
             data["transaction_date"] = validate_iso_date(data["transaction_date"], "Transaction date")
 
-        # Normalize amount or amount_minor first
         if "amount_minor" in data:
-            amt_minor = int(data["amount_minor"])
-            if data.get("transaction_type") != "adjustment" and amt_minor <= 0:
-                raise ValueError("Transaction amount must be greater than zero.")
-            updates["amount_minor"] = amt_minor
+            updates["amount_minor"] = int(data["amount_minor"])
         elif "amount" in data:
-            if data.get("transaction_type") != "adjustment":
-                updates["amount_minor"] = validate_positive_amount(data["amount"], "Transaction amount")
-            else:
-                updates["amount_minor"] = int(round(float(data["amount"]) * 100))
+            updates["amount_minor"] = validate_positive_amount(data["amount"], "Transaction amount")
 
         for k in allowed:
             if k in data:
@@ -440,6 +660,7 @@ class TransactionRepository:
         - Transfers must be updated through TransferService.update_transfer()
         - Refunds must be updated through TransactionRepository.update_refund()
         - Prevents converting standard transactions to/from specialised types (transfer, refund)
+        - Recomputes exact multi-currency and FX valuations if amounts, dates, or accounts change.
         """
         existing = TransactionRepository.get_by_id(tx_id)
         if not existing:
@@ -455,7 +676,123 @@ class TransactionRepository:
         if new_type in ("transfer", "refund"):
             raise ValueError(f"Cannot convert a standard transaction into a specialised {new_type}.")
 
-        return TransactionRepository._update_fields(tx_id, data)
+        target_acc_id = data.get("account_id", existing["account_id"])
+        account = AccountRepository.get_by_id(target_acc_id)
+        account_currency = account["currency"] if account else "USD"
+        base_currency = SettingsService.get_setting("currency", "USD") or "USD"
+
+        # Check if amount or currencies or date need re-evaluating
+        has_amount_change = any(k in data for k in ["amount", "amount_minor", "original_amount", "original_amount_minor", "settlement_amount"])
+        has_context_change = ("account_id" in data) or ("transaction_date" in data) or ("original_currency" in data)
+
+        data_copy = dict(data)
+
+        if has_amount_change or has_context_change:
+            clean_date = validate_iso_date(data_copy.get("transaction_date", existing["transaction_date"]), "Transaction date")
+            orig_curr_in = data_copy.get("original_currency")
+            original_currency = validate_currency_code(orig_curr_in) if orig_curr_in else (existing.get("original_currency") or account_currency)
+            eff_type = validate_transaction_type(data_copy.get("transaction_type", existing["transaction_type"]))
+
+            if original_currency == account_currency:
+                if "amount" in data_copy:
+                    amt_val = data_copy["amount"]
+                    if eff_type != "adjustment":
+                        amount_minor = validate_positive_amount(amt_val, "Transaction amount", currency=account_currency)
+                    else:
+                        amount_minor = major_to_minor(amt_val, account_currency)
+                elif "amount_minor" in data_copy:
+                    amt_minor = int(data_copy["amount_minor"])
+                    if eff_type != "adjustment" and amt_minor <= 0:
+                        raise ValueError("Transaction amount must be greater than zero.")
+                    amount_minor = amt_minor
+                elif "original_amount" in data_copy:
+                    amount_minor = validate_positive_amount(data_copy["original_amount"], "Transaction amount", currency=account_currency)
+                else:
+                    amount_minor = existing["amount_minor"]
+
+                original_amount_minor = amount_minor
+                if account_currency == base_currency:
+                    base_amount_minor = amount_minor
+                    fx_status = "not_required"
+                    fx_rate_to_base = "1.0"
+                    fx_rate_date = clean_date
+                    fx_rate_source = "identity"
+                else:
+                    conv = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                    base_amount_minor = conv.target.minor
+                    fx_status = "market_estimate"
+                    fx_rate_to_base = str(conv.rate)
+                    fx_rate_date = conv.rate_date
+                    fx_rate_source = conv.provider
+            else:
+                if "original_amount" in data_copy:
+                    original_amount_minor = validate_positive_amount(data_copy["original_amount"], "Original amount", currency=original_currency)
+                elif "original_amount_minor" in data_copy:
+                    orig_minor = int(data_copy["original_amount_minor"])
+                    if orig_minor <= 0:
+                        raise ValueError("Transaction amount must be greater than zero.")
+                    original_amount_minor = orig_minor
+                elif "amount" in data_copy and data_copy.get("settlement_amount") is None:
+                    original_amount_minor = validate_positive_amount(data_copy["amount"], "Original amount", currency=original_currency)
+                else:
+                    original_amount_minor = existing.get("original_amount_minor") or existing["amount_minor"]
+
+                conv_acct = None
+                if data_copy.get("settlement_amount") is not None:
+                    amount_minor = validate_positive_amount(data_copy["settlement_amount"], "Settlement amount", currency=account_currency)
+                    fx_status = "user_settlement"
+                elif "amount" in data_copy and "original_amount" in data_copy:
+                    amount_minor = validate_positive_amount(data_copy["amount"], "Settlement amount", currency=account_currency)
+                    fx_status = "user_settlement"
+                elif "amount_minor" in data_copy and "original_amount_minor" in data_copy:
+                    amount_minor = int(data_copy["amount_minor"])
+                    fx_status = "user_settlement"
+                else:
+                    conv_acct = FxService.convert_minor(original_amount_minor, original_currency, account_currency, on_date=clean_date)
+                    amount_minor = conv_acct.target.minor
+                    fx_status = "market_estimate"
+
+                if account_currency == base_currency:
+                    base_amount_minor = amount_minor
+                    if conv_acct is not None:
+                        fx_rate_to_base = str(conv_acct.rate)
+                        fx_rate_date = conv_acct.rate_date
+                        fx_rate_source = conv_acct.provider
+                    else:
+                        orig_maj = minor_to_major(original_amount_minor, original_currency)
+                        base_maj = minor_to_major(base_amount_minor, base_currency)
+                        fx_rate_to_base = str(base_maj / orig_maj) if orig_maj > 0 else "1.0"
+                        fx_rate_date = clean_date
+                        fx_rate_source = "user_settlement"
+                else:
+                    conv_base = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                    base_amount_minor = conv_base.target.minor
+                    fx_rate_to_base = str(conv_base.rate)
+                    fx_rate_date = conv_base.rate_date
+                    fx_rate_source = conv_base.provider
+
+            data_copy["amount_minor"] = amount_minor
+            data_copy["original_currency"] = original_currency
+            data_copy["original_amount_minor"] = original_amount_minor
+            data_copy["base_currency"] = base_currency
+            data_copy["base_amount_minor"] = base_amount_minor
+            data_copy["fx_rate_to_base"] = fx_rate_to_base
+            data_copy["fx_rate_date"] = fx_rate_date
+            data_copy["fx_rate_source"] = fx_rate_source
+            data_copy["fx_status"] = fx_status
+
+        # If merchant_name is changing, ensure merchant record is created or updated
+        if "merchant_name" in data_copy:
+            clean_merch = normalize_merchant_name(data_copy["merchant_name"])
+            if clean_merch:
+                data_copy["merchant_id"] = MerchantService.get_or_create_merchant(
+                    clean_merch,
+                    category_id=data_copy.get("category_id", existing.get("category_id")),
+                    account_id=target_acc_id,
+                    essentiality=data_copy.get("essentiality", existing.get("essentiality"))
+                )
+
+        return TransactionRepository._update_fields(tx_id, data_copy)
 
     @staticmethod
     def delete(tx_id: int, hard: bool = False) -> bool:

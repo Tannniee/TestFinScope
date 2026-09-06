@@ -2,6 +2,9 @@ import calendar
 from datetime import datetime, date
 from typing import Dict, Any, List, Optional
 from app.backend.database.connection import get_db_connection
+from app.backend.domain.money import minor_to_major
+from app.backend.services.settings_service import SettingsService
+from app.backend.repositories.account_repo import AccountRepository
 from app.backend.analytics.aggregates import AggregateQueries
 from app.backend.analytics.rolling import RollingAnalyticsEngine
 from app.backend.analytics.changes import WhatChangedEngine
@@ -13,6 +16,14 @@ from app.backend.analytics.insight_rules import InsightRulesGenerator
 from app.backend.analytics.insight_ranker import InsightRanker
 
 class AnalyticsService:
+    @staticmethod
+    def _resolve_analytics_currency(account_id: Optional[int] = None) -> str:
+        if account_id:
+            acc = AccountRepository.get_by_id(account_id)
+            if acc and acc.get("currency"):
+                return acc["currency"]
+        return SettingsService.get_setting("currency", "USD") or "USD"
+
     @staticmethod
     def _get_previous_month(month_str: str) -> str:
         """Takes 'YYYY-MM' and returns the previous month 'YYYY-MM'."""
@@ -27,13 +38,17 @@ class AnalyticsService:
         Calculates core KPIs with central financial semantics:
         - Transfers excluded from Income & Expense.
         - Refunds offset Category Expense (never counted as income).
-        - Calculations performed in exact integer minor units (cents).
+        - Calculations performed in exact integer minor units.
         """
         prev_month = AnalyticsService._get_previous_month(month)
+        curr = AnalyticsService._resolve_analytics_currency(account_id)
+        amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
+        amt_t_expr = "t.amount_minor" if account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
 
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
+            t_acc_clause = " AND t.account_id = ?" if account_id else ""
             params_curr = [f"{month}%"] + ([account_id] if account_id else [])
             params_prev = [f"{prev_month}%"] + ([account_id] if account_id else [])
 
@@ -41,7 +56,7 @@ class AnalyticsService:
             cur.execute(f"""
                 SELECT 
                     transaction_type,
-                    COALESCE(SUM(amount_minor), 0) as total_minor,
+                    COALESCE(SUM({amt_expr}), 0) as total_minor,
                     COUNT(id) as count
                 FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
@@ -53,7 +68,7 @@ class AnalyticsService:
             cur.execute(f"""
                 SELECT 
                     transaction_type,
-                    COALESCE(SUM(amount_minor), 0) as total_minor
+                    COALESCE(SUM({amt_expr}), 0) as total_minor
                 FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
                 GROUP BY transaction_type
@@ -84,9 +99,9 @@ class AnalyticsService:
             expense_delta_pct = ((net_expense_minor - prev_net_expense_minor) / prev_net_expense_minor * 100.0) if prev_net_expense_minor > 0 else 0.0
 
             # Convert to standard decimal units for frontend
-            income = round(income_minor / 100.0, 2)
-            expense = round(net_expense_minor / 100.0, 2)
-            net_flow = round(net_flow_minor / 100.0, 2)
+            income = float(minor_to_major(income_minor, curr))
+            expense = float(minor_to_major(net_expense_minor, curr))
+            net_flow = float(minor_to_major(net_flow_minor, curr))
 
             # Daily Cash Flow & Spending (excluding transfers)
             year, m_int = map(int, month.split("-"))
@@ -97,7 +112,7 @@ class AnalyticsService:
                 SELECT 
                     transaction_date,
                     transaction_type,
-                    SUM(amount_minor) as total_minor
+                    SUM({amt_expr}) as total_minor
                 FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
                   AND transaction_type IN ('income', 'expense', 'refund')
@@ -124,8 +139,8 @@ class AnalyticsService:
             for d in all_days:
                 day_label = d.split("-")[2]
                 trend_days.append(day_label)
-                trend_income.append(round(daily_income_map.get(d, 0) / 100.0, 2))
-                trend_expense.append(round(max(0, daily_expense_map.get(d, 0)) / 100.0, 2))
+                trend_income.append(float(minor_to_major(daily_income_map.get(d, 0), curr)))
+                trend_expense.append(float(minor_to_major(max(0, daily_expense_map.get(d, 0)), curr)))
 
             # Category Breakdown (net of refunds)
             cur.execute(f"""
@@ -136,8 +151,8 @@ class AnalyticsService:
                     c.icon,
                     SUM(
                         CASE 
-                            WHEN t.transaction_type = 'expense' THEN t.amount_minor
-                            WHEN t.transaction_type = 'refund' THEN -t.amount_minor
+                            WHEN t.transaction_type = 'expense' THEN {amt_t_expr}
+                            WHEN t.transaction_type = 'refund' THEN -{amt_t_expr}
                             ELSE 0
                         END
                     ) as net_cat_minor,
@@ -145,7 +160,7 @@ class AnalyticsService:
                 FROM active_transactions t
                 JOIN categories c ON t.category_id = c.id
                 WHERE t.transaction_type IN ('expense', 'refund')
-                  AND t.transaction_date LIKE ? {acc_clause}
+                  AND t.transaction_date LIKE ? {t_acc_clause}
                 GROUP BY c.id
                 HAVING net_cat_minor > 0
                 ORDER BY net_cat_minor DESC
@@ -154,7 +169,7 @@ class AnalyticsService:
             categories_breakdown = []
             for row in cur.fetchall():
                 cat_minor = row["net_cat_minor"]
-                cat_total = round(cat_minor / 100.0, 2)
+                cat_total = float(minor_to_major(cat_minor, curr))
                 pct = (cat_minor / net_expense_minor * 100.0) if net_expense_minor > 0 else 0.0
                 categories_breakdown.append({
                     "id": row["id"],
@@ -172,8 +187,8 @@ class AnalyticsService:
                     essentiality,
                     SUM(
                         CASE 
-                            WHEN transaction_type = 'expense' THEN amount_minor
-                            WHEN transaction_type = 'refund' THEN -amount_minor
+                            WHEN transaction_type = 'expense' THEN {amt_expr}
+                            WHEN transaction_type = 'refund' THEN -{amt_expr}
                             ELSE 0
                         END
                     ) as total_minor
@@ -186,11 +201,12 @@ class AnalyticsService:
             essential_minor = max(0, ess_map.get("essential", 0))
             discretionary_minor = max(0, ess_map.get("discretionary", 0))
 
-            essential_total = round(essential_minor / 100.0, 2)
-            discretionary_total = round(discretionary_minor / 100.0, 2)
+            essential_total = float(minor_to_major(essential_minor, curr))
+            discretionary_total = float(minor_to_major(discretionary_minor, curr))
 
             return {
                 "month": month,
+                "currency": curr,
                 "previous_month": prev_month,
                 "kpis": {
                     "income": income,
@@ -218,6 +234,8 @@ class AnalyticsService:
     @staticmethod
     def get_calendar_data(month: str, account_id: Optional[int] = None) -> Dict[str, Any]:
         """Returns daily sums of income, expense (net of refunds), and net flow."""
+        curr = AnalyticsService._resolve_analytics_currency(account_id)
+        amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
@@ -227,7 +245,7 @@ class AnalyticsService:
                 SELECT 
                     transaction_date,
                     transaction_type,
-                    SUM(amount_minor) as total_minor,
+                    SUM({amt_expr}) as total_minor,
                     COUNT(id) as count
                 FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
@@ -252,9 +270,9 @@ class AnalyticsService:
 
             out = {}
             for d, val in days_data.items():
-                inc = round(val["income_minor"] / 100.0, 2)
-                exp = round(max(0, val["expense_minor"]) / 100.0, 2)
-                net = round((val["income_minor"] - val["expense_minor"]) / 100.0, 2)
+                inc = float(minor_to_major(val["income_minor"], curr))
+                exp = float(minor_to_major(max(0, val["expense_minor"]), curr))
+                net = float(minor_to_major(val["income_minor"] - val["expense_minor"], curr))
                 out[d] = {
                     "income": inc,
                     "expense": exp,
@@ -264,6 +282,7 @@ class AnalyticsService:
 
             return {
                 "month": month,
+                "currency": curr,
                 "days": out
             }
 
@@ -271,6 +290,9 @@ class AnalyticsService:
     def get_analytics_deep_dive(month: str, account_id: Optional[int] = None) -> Dict[str, Any]:
         """Provides 'What Changed?' variance, weekday distributions, cumulative pacing, and top merchants."""
         prev_month = AnalyticsService._get_previous_month(month)
+        curr = AnalyticsService._resolve_analytics_currency(account_id)
+        amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
+        amt_t_expr = "t.amount_minor" if account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
 
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -288,8 +310,8 @@ class AnalyticsService:
                     COALESCE(
                         SUM(
                             CASE 
-                                WHEN t.transaction_type = 'expense' THEN t.amount_minor
-                                WHEN t.transaction_type = 'refund' THEN -t.amount_minor
+                                WHEN t.transaction_type = 'expense' THEN {amt_t_expr}
+                                WHEN t.transaction_type = 'refund' THEN -{amt_t_expr}
                                 ELSE 0
                             END
                         ), 0
@@ -312,8 +334,8 @@ class AnalyticsService:
                     COALESCE(
                         SUM(
                             CASE 
-                                WHEN t.transaction_type = 'expense' THEN t.amount_minor
-                                WHEN t.transaction_type = 'refund' THEN -t.amount_minor
+                                WHEN t.transaction_type = 'expense' THEN {amt_t_expr}
+                                WHEN t.transaction_type = 'refund' THEN -{amt_t_expr}
                                 ELSE 0
                             END
                         ), 0
@@ -331,8 +353,8 @@ class AnalyticsService:
 
             variance_items = []
             for cat_id, data in curr_cats.items():
-                curr_val = round(max(0, data.get("current_minor", 0)) / 100.0, 2)
-                prev_val = round(max(0, data.get("prev_minor", 0)) / 100.0, 2)
+                curr_val = float(minor_to_major(max(0, data.get("current_minor", 0)), curr))
+                prev_val = float(minor_to_major(max(0, data.get("prev_minor", 0)), curr))
                 delta = round(curr_val - prev_val, 2)
                 pct_change = round((delta / prev_val * 100.0), 1) if prev_val > 0 else (100.0 if curr_val > 0 else 0.0)
 
@@ -354,7 +376,7 @@ class AnalyticsService:
             cur.execute(f"""
                 SELECT 
                     transaction_date,
-                    amount_minor
+                    {amt_expr} as amount_minor
                 FROM active_transactions
                 WHERE transaction_type = 'expense'
                   AND transaction_date LIKE ? {acc_clause}
@@ -373,8 +395,8 @@ class AnalyticsService:
             weekday_data = [
                 {
                     "day": weekday_labels[i],
-                    "total": round(weekday_totals[i] / 100.0, 2),
-                    "average": round((weekday_totals[i] / weekday_counts[i]) / 100.0, 2) if weekday_counts[i] > 0 else 0.0,
+                    "total": float(minor_to_major(weekday_totals[i], curr)),
+                    "average": float(minor_to_major(round(weekday_totals[i] / weekday_counts[i]), curr)) if weekday_counts[i] > 0 else 0.0,
                     "count": weekday_counts[i]
                 }
                 for i in range(7)
@@ -389,8 +411,8 @@ class AnalyticsService:
                     transaction_date,
                     SUM(
                         CASE 
-                            WHEN transaction_type = 'expense' THEN amount_minor
-                            WHEN transaction_type = 'refund' THEN -amount_minor
+                            WHEN transaction_type = 'expense' THEN {amt_expr}
+                            WHEN transaction_type = 'refund' THEN -{amt_expr}
                             ELSE 0
                         END
                     ) as day_minor
@@ -405,8 +427,8 @@ class AnalyticsService:
                     transaction_date,
                     SUM(
                         CASE 
-                            WHEN transaction_type = 'expense' THEN amount_minor
-                            WHEN transaction_type = 'refund' THEN -amount_minor
+                            WHEN transaction_type = 'expense' THEN {amt_expr}
+                            WHEN transaction_type = 'refund' THEN -{amt_expr}
                             ELSE 0
                         END
                     ) as day_minor
@@ -426,15 +448,15 @@ class AnalyticsService:
                 cum_days.append(str(d))
                 curr_running += curr_day_spend.get(d, 0)
                 prev_running += prev_day_spend.get(d, 0)
-                cum_curr.append(round(max(0, curr_running) / 100.0, 2))
-                cum_prev.append(round(max(0, prev_running) / 100.0, 2))
+                cum_curr.append(float(minor_to_major(max(0, curr_running), curr)))
+                cum_prev.append(float(minor_to_major(max(0, prev_running), curr)))
 
             # 4. Top Merchants (expense only)
             cur.execute(f"""
                 SELECT 
                     merchant_name,
                     COUNT(id) as count,
-                    SUM(amount_minor) as total_minor
+                    SUM({amt_expr}) as total_minor
                 FROM active_transactions
                 WHERE transaction_type = 'expense' 
                   AND merchant_name != '' 
@@ -448,21 +470,21 @@ class AnalyticsService:
                 {
                     "merchant": row["merchant_name"],
                     "count": row["count"],
-                    "total": round(row["total_minor"] / 100.0, 2)
+                    "total": float(minor_to_major(row["total_minor"], curr))
                 }
                 for row in cur.fetchall()
             ]
 
             # 5. Transaction Distribution
             cur.execute(f"""
-                SELECT amount_minor
+                SELECT {amt_expr} as amount_minor
                 FROM active_transactions
                 WHERE transaction_type = 'expense' AND transaction_date LIKE ? {acc_clause}
             """, params_curr)
 
             buckets = {"<$15": 0, "$15–$50": 0, "$50–$100": 0, "$100–$250": 0, ">$250": 0}
             for row in cur.fetchall():
-                a = row["amount_minor"] / 100.0
+                a = float(minor_to_major(row["amount_minor"], curr))
                 if a < 15:
                     buckets["<$15"] += 1
                 elif a < 50:
@@ -476,6 +498,7 @@ class AnalyticsService:
 
             return {
                 "month": month,
+                "currency": curr,
                 "previous_month": prev_month,
                 "variance": variance_items,
                 "weekday": weekday_data,
@@ -520,6 +543,9 @@ class AnalyticsService:
         """
         from app.backend.analytics.period_series import calendar_month_series, check_data_sufficiency
 
+        curr = AnalyticsService._resolve_analytics_currency(account_id)
+        amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
+
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
@@ -536,6 +562,7 @@ class AnalyticsService:
                 suff = check_data_sufficiency("rolling_3m", 0, 0)
                 return {
                     "available": False,
+                    "currency": curr,
                     "data_sufficiency": suff.to_dict(),
                     "current": 0.0,
                     "mean_3": 0.0, "median_3": 0.0,
@@ -553,8 +580,8 @@ class AnalyticsService:
                         strftime('%Y-%m', transaction_date) as m,
                         SUM(
                             CASE 
-                                WHEN transaction_type = 'expense' THEN amount_minor
-                                WHEN transaction_type = 'refund' THEN -amount_minor
+                                WHEN transaction_type = 'expense' THEN {amt_expr}
+                                WHEN transaction_type = 'refund' THEN -{amt_expr}
                                 ELSE 0
                             END
                         ) as net_minor
@@ -573,9 +600,9 @@ class AnalyticsService:
                         strftime('%Y-%m', transaction_date) as m,
                         SUM(
                             CASE 
-                                WHEN transaction_type = 'income' THEN amount_minor
-                                WHEN transaction_type = 'expense' THEN amount_minor
-                                WHEN transaction_type = 'refund' THEN -amount_minor
+                                WHEN transaction_type = 'income' THEN {amt_expr}
+                                WHEN transaction_type = 'expense' THEN {amt_expr}
+                                WHEN transaction_type = 'refund' THEN -{amt_expr}
                                 ELSE 0
                             END
                         ) as net_minor
@@ -600,6 +627,7 @@ class AnalyticsService:
                 suff = check_data_sufficiency("rolling_3m", 0, 0)
                 return {
                     "available": False,
+                    "currency": curr,
                     "data_sufficiency": suff.to_dict(),
                     "current": 0.0,
                     "mean_3": 0.0, "median_3": 0.0,
@@ -615,6 +643,7 @@ class AnalyticsService:
 
             base_metrics["data_sufficiency"] = suff.to_dict()
             base_metrics["available"] = (len(hist) >= 1)
+            base_metrics["currency"] = curr
             base_metrics["zero_filled_series"] = [s.to_dict() for s in series_objs[-12:]]
             return base_metrics
 

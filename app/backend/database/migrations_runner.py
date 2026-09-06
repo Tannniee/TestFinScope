@@ -7,7 +7,7 @@ from app.backend.config import DB_PATH
 logger = logging.getLogger(__name__)
 
 MIGRATIONS: List[tuple[int, str, Callable[[sqlite3.Connection], None]]] = []
-MAX_SUPPORTED_SCHEMA_VERSION = 7
+MAX_SUPPORTED_SCHEMA_VERSION = 8
 
 def migration(version: int, name: str):
     def decorator(fn: Callable[[sqlite3.Connection], None]):
@@ -427,6 +427,202 @@ def migration_007_analytics_revision_tracking(conn: sqlite3.Connection):
             UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
         END;
     """)
+
+
+def _add_column_if_not_exists(conn: sqlite3.Connection, table: str, column_def: str):
+    col_name = column_def.split()[0]
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = [row[1] for row in cur.fetchall()]
+    if col_name not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+
+
+@migration(8, "multi_currency_foundation")
+def migration_008_multi_currency_foundation(conn: sqlite3.Connection):
+    """
+    Migration 008: Multi-Currency Foundation (F110 / MC-Phase 2)
+    - Adds original_currency, original_amount_minor, base_currency, base_amount_minor,
+      fx_rate_to_base, fx_rate_date, fx_rate_source, fx_status to transactions.
+    - Adds currency to budgets and recurring_rules.
+    - Adds exchange_rates table with revision tracking on analytics_state.
+    - Updates triggers and recreates active_transactions view.
+    - Repairs legacy zero-decimal data (VND, JPY) if needed.
+    - Backfills existing transactions to self-describing multi-currency state.
+    """
+    # 1. Add columns to transactions
+    _add_column_if_not_exists(conn, "transactions", "original_currency TEXT")
+    _add_column_if_not_exists(conn, "transactions", "original_amount_minor INTEGER")
+    _add_column_if_not_exists(conn, "transactions", "base_currency TEXT")
+    _add_column_if_not_exists(conn, "transactions", "base_amount_minor INTEGER")
+    _add_column_if_not_exists(conn, "transactions", "fx_rate_to_base TEXT")
+    _add_column_if_not_exists(conn, "transactions", "fx_rate_date TEXT")
+    _add_column_if_not_exists(conn, "transactions", "fx_rate_source TEXT")
+    _add_column_if_not_exists(conn, "transactions", "fx_status TEXT NOT NULL DEFAULT 'not_required'")
+
+    # 2. Add columns to budgets
+    _add_column_if_not_exists(conn, "budgets", "currency TEXT DEFAULT NULL")
+
+    # 3. Add columns to recurring_rules and versions
+    _add_column_if_not_exists(conn, "recurring_rules", "currency TEXT DEFAULT NULL")
+    _add_column_if_not_exists(conn, "recurring_rules", "original_currency TEXT DEFAULT NULL")
+    _add_column_if_not_exists(conn, "recurring_rules", "original_amount_minor INTEGER DEFAULT NULL")
+
+    _add_column_if_not_exists(conn, "recurring_rule_versions", "currency TEXT DEFAULT NULL")
+    _add_column_if_not_exists(conn, "recurring_rule_versions", "original_currency TEXT DEFAULT NULL")
+    _add_column_if_not_exists(conn, "recurring_rule_versions", "original_amount_minor INTEGER DEFAULT NULL")
+
+    # 4. Create exchange_rates table and triggers
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS exchange_rates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            base_currency TEXT NOT NULL,
+            quote_currency TEXT NOT NULL,
+            rate_date TEXT NOT NULL,
+            rate TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            provider_rate_date TEXT,
+            fetched_at TEXT NOT NULL,
+            UNIQUE(base_currency, quote_currency, rate_date, provider)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_exchange_rates_lookup ON exchange_rates(base_currency, quote_currency, rate_date);
+
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_fx_insert
+        AFTER INSERT ON exchange_rates
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_fx_update
+        AFTER UPDATE ON exchange_rates
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_fx_delete
+        AFTER DELETE ON exchange_rates
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+
+        -- Recreate active_transactions view to expose new columns
+        DROP VIEW IF EXISTS active_transactions;
+        CREATE VIEW active_transactions AS
+        SELECT *
+        FROM transactions
+        WHERE is_deleted = 0;
+
+        -- Update recurring rule version triggers to include currency columns
+        DROP TRIGGER IF EXISTS trg_recurring_rules_insert;
+        CREATE TRIGGER trg_recurring_rules_insert
+        AFTER INSERT ON recurring_rules
+        BEGIN
+            INSERT INTO recurring_rule_versions (
+                rule_id, name, transaction_type, amount_minor, category_id,
+                account_id, frequency, next_due_date, active, valid_from, valid_to, change_type,
+                currency, original_currency, original_amount_minor
+            ) VALUES (
+                NEW.id, NEW.name, NEW.transaction_type, NEW.amount_minor, NEW.category_id,
+                NEW.account_id, NEW.frequency, NEW.next_due_date, NEW.active,
+                COALESCE(NEW.created_at, date('now')), NULL, 'created',
+                NEW.currency, NEW.original_currency, NEW.original_amount_minor
+            );
+        END;
+
+        DROP TRIGGER IF EXISTS trg_recurring_rules_update;
+        CREATE TRIGGER trg_recurring_rules_update
+        AFTER UPDATE ON recurring_rules
+        BEGIN
+            UPDATE recurring_rule_versions
+            SET valid_to = date('now')
+            WHERE rule_id = OLD.id AND valid_to IS NULL;
+
+            INSERT INTO recurring_rule_versions (
+                rule_id, name, transaction_type, amount_minor, category_id,
+                account_id, frequency, next_due_date, active, valid_from, valid_to, change_type,
+                currency, original_currency, original_amount_minor
+            ) VALUES (
+                NEW.id, NEW.name, NEW.transaction_type, NEW.amount_minor, NEW.category_id,
+                NEW.account_id, NEW.frequency, NEW.next_due_date, NEW.active,
+                date('now'), NULL, 'updated',
+                NEW.currency, NEW.original_currency, NEW.original_amount_minor
+            );
+        END;
+    """)
+
+    # 5. Data repair for legacy zero-decimal currencies (VND, JPY)
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM app_settings WHERE key = 'currency'")
+    row = cur.fetchone()
+    base_curr = row[0].strip().upper() if row and row[0] else "USD"
+
+    if base_curr in ("VND", "JPY"):
+        for tbl, col in [
+            ("transactions", "amount_minor"),
+            ("accounts", "opening_balance_minor"),
+            ("budgets", "amount_minor"),
+            ("recurring_rules", "amount_minor"),
+            ("recurring_rule_versions", "amount_minor"),
+        ]:
+            cur.execute(f"SELECT COUNT(*) FROM {tbl} WHERE {col} % 100 != 0")
+            bad_count = cur.fetchone()[0]
+            if bad_count > 0:
+                raise ValueError(
+                    f"Legacy zero-decimal migration safety check failed: "
+                    f"{bad_count} records in {tbl}.{col} are not divisible by 100."
+                )
+            conn.execute(f"UPDATE {tbl} SET {col} = {col} / 100")
+
+    # 6. Backfill transactions with multi-currency fields
+    conn.execute("""
+        UPDATE transactions
+        SET 
+            original_currency = COALESCE(
+                original_currency,
+                (SELECT currency FROM accounts WHERE accounts.id = transactions.account_id),
+                ?
+            ),
+            original_amount_minor = COALESCE(original_amount_minor, amount_minor),
+            base_currency = COALESCE(base_currency, ?),
+            base_amount_minor = COALESCE(base_amount_minor, amount_minor),
+            fx_status = COALESCE(fx_status, 'not_required')
+        WHERE base_currency IS NULL OR original_currency IS NULL
+    """, (base_curr, base_curr))
+
+    # 7. Backfill recurring rules & versions
+    conn.execute("""
+        UPDATE recurring_rules
+        SET
+            currency = COALESCE(
+                currency,
+                (SELECT currency FROM accounts WHERE accounts.id = recurring_rules.account_id),
+                ?
+            ),
+            original_currency = COALESCE(original_currency, currency, ?),
+            original_amount_minor = COALESCE(original_amount_minor, amount_minor)
+        WHERE currency IS NULL
+    """, (base_curr, base_curr))
+
+    conn.execute("""
+        UPDATE recurring_rule_versions
+        SET
+            currency = COALESCE(
+                currency,
+                (SELECT currency FROM accounts WHERE accounts.id = recurring_rule_versions.account_id),
+                ?
+            ),
+            original_currency = COALESCE(original_currency, currency, ?),
+            original_amount_minor = COALESCE(original_amount_minor, amount_minor)
+        WHERE currency IS NULL
+    """, (base_curr, base_curr))
+
+    # 8. Backfill budgets
+    conn.execute("""
+        UPDATE budgets
+        SET currency = COALESCE(currency, ?)
+        WHERE currency IS NULL
+    """, (base_curr,))
 
 
 def run_migrations(conn: sqlite3.Connection):

@@ -100,16 +100,16 @@ export const state = {
     await this.reloadMetadata({ notify: true });
   },
 
-  formatCurrency(amount, forceMask = false) {
-    if (this.privacyMode || forceMask) {
+  formatCurrency(amount, currency = null, forceMask = false) {
+    if (this.privacyMode || (typeof currency === 'boolean' && currency) || forceMask) {
       return '••••••';
     }
     const val = Number(amount || 0);
-    const curr = this.currency || 'USD';
+    const curr = (typeof currency === 'string' && currency) ? currency : (this.currency || 'USD');
 
     try {
       const locale = curr === 'VND' ? 'vi-VN' : 'en-US';
-      const fractionDigits = curr === 'VND' || curr === 'JPY' ? 0 : 2;
+      const fractionDigits = (curr === 'VND' || curr === 'JPY' || curr === 'KRW') ? 0 : (curr === 'KWD' || curr === 'BHD' ? 3 : 2);
 
       return new Intl.NumberFormat(locale, {
         style: 'currency',
@@ -118,7 +118,7 @@ export const state = {
         maximumFractionDigits: fractionDigits
       }).format(val);
     } catch (err) {
-      return `$${val.toFixed(2)}`;
+      return `${curr} ${val.toFixed(2)}`;
     }
   },
 

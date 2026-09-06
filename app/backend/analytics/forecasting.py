@@ -20,6 +20,8 @@ from app.backend.analytics.reconciliation import reconcile_forecast_components
 from app.backend.analytics.rolling import calculate_median, calculate_mean
 from app.backend.services.merchant_service import normalize_merchant_name
 from app.backend.analytics.recurring_schedule import generate_occurrences
+from app.backend.services.settings_service import SettingsService
+from app.backend.fx.service import FxService
 from app.backend.analytics.forecast_strategies import (
     ForecastContext,
     ModelSelector,
@@ -133,6 +135,7 @@ class ForecastingEngine:
             cur = conn.cursor()
             acc_clause = " AND t.account_id = ?" if context.account_id else ""
             acc_params: List[Any] = [context.account_id] if context.account_id else []
+            amt_expr = "t.amount_minor" if context.account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
 
             # 1. Actual Spend & Income To Date
             actual_rows = []
@@ -144,7 +147,7 @@ class ForecastingEngine:
                         t.category_id,
                         c.name as category_name,
                         c.color as category_color,
-                        COALESCE(SUM(t.amount_minor), 0) as total_minor,
+                        COALESCE(SUM({amt_expr}), 0) as total_minor,
                         COUNT(t.id) as count
                     FROM active_transactions t
                     LEFT JOIN categories c ON t.category_id = c.id
@@ -186,9 +189,10 @@ class ForecastingEngine:
                     actual_refund_minor += amt
                     actual_cat_spends_net[cid] = actual_cat_spends_net.get(cid, 0) - amt
 
-            actual_net_spend_to_date = calculate_net_spending(actual_expense_minor, actual_refund_minor)
+            # Net spend to date is strictly expense minus refund
+            actual_spend_to_date_minor = max(0, actual_expense_minor - actual_refund_minor)
 
-            # 2. Known Upcoming Recurring Expenses & Income (F105-02 & F105-03)
+            # 2. Upcoming Recurring Bills & Schedule-Aware Inflows (V103-03, F108-11, F108-13)
             window_start = cur_dt if (cur_dt.year == year and cur_dt.month == m_int) else (
                 date(year, m_int, 1) - timedelta(days=1) if cur_dt < date(year, m_int, 1) else date(year, m_int, elapsed_day)
             )
@@ -200,16 +204,19 @@ class ForecastingEngine:
             seen_rules = set()
             seen_bills = set()
             suppressed_inactive_rule_fallback_count = 0
+            
+            # Helper sets for point-in-time state
+            inactive_rule_ids_at_cutoff = set()
+            inactive_rule_names_at_cutoff = set()
 
             # 2a. Explicit rules: versioned point-in-time for historical & replay modes (F110-06), current rules for current-month live
             rec_acc_clause = " AND account_id = ?" if context.account_id else ""
             if replay_mode or not context.is_current_month:
                 rec_params = [as_of_cutoff, as_of_cutoff] + ([context.account_id] if context.account_id else [])
                 cur.execute(f"""
-                    SELECT rule_id as id, account_id, name, transaction_type, amount_minor, category_id, next_due_date, frequency
+                    SELECT rule_id as id, account_id, name, transaction_type, amount_minor, category_id, next_due_date, frequency, currency, active
                     FROM recurring_rule_versions
-                    WHERE active = 1
-                      AND date(valid_from) <= ?
+                    WHERE date(valid_from) <= ?
                       AND (valid_to IS NULL OR date(valid_to) > ?)
                       {rec_acc_clause}
                     ORDER BY rule_id ASC
@@ -217,13 +224,20 @@ class ForecastingEngine:
             else:
                 rec_params = [context.account_id] if context.account_id else []
                 cur.execute(f"""
-                    SELECT id, account_id, name, transaction_type, amount_minor, category_id, next_due_date, frequency
+                    SELECT id, account_id, name, transaction_type, amount_minor, category_id, next_due_date, frequency, currency, active
                     FROM recurring_rules
-                    WHERE active = 1 {rec_acc_clause}
+                    WHERE 1=1 {rec_acc_clause}
                     ORDER BY id ASC
                 """, rec_params)
 
-            for r in cur.fetchall():
+            base_currency = SettingsService.get_setting("currency", "USD") or "USD"
+            rule_data = cur.fetchall()
+            for r in rule_data:
+                if not r["active"]:
+                    inactive_rule_ids_at_cutoff.add(r["id"])
+                    inactive_rule_names_at_cutoff.add(r["name"])
+                    continue
+                
                 rule_id = r["id"]
                 rule_acc_id = r["account_id"]
                 rule_name = r["name"]
@@ -231,9 +245,15 @@ class ForecastingEngine:
                 seen_rules.add(rule_id)
                 seen_bills.add(key)
 
-                # Active rules without next_due_date are unscheduled (F108-20) -> no occurrences generated
                 if not r["next_due_date"]:
                     continue
+
+                r_curr = r["currency"] if "currency" in r.keys() and r["currency"] else base_currency
+                if not context.account_id and r_curr != base_currency:
+                    conv = FxService.convert_minor(r["amount_minor"], r_curr, base_currency, on_date=as_of_cutoff)
+                    effective_amount_minor = conv.target.minor
+                else:
+                    effective_amount_minor = r["amount_minor"]
 
                 occs = generate_occurrences(
                     next_due_date=r["next_due_date"],
@@ -244,12 +264,12 @@ class ForecastingEngine:
                 occ_count = len(occs)
                 if occ_count > 0:
                     if r["transaction_type"] == "expense":
-                        amt = r["amount_minor"] * occ_count
+                        amt = effective_amount_minor * occ_count
                         upcoming_recurring_minor += amt
                         cid = r["category_id"] or 0
                         upcoming_by_cat[cid] = upcoming_by_cat.get(cid, 0) + amt
                     elif r["transaction_type"] == "income":
-                        upcoming_recurring_income_minor += r["amount_minor"] * occ_count
+                        upcoming_recurring_income_minor += effective_amount_minor * occ_count
 
             # 2b. Historical recurring transactions fallback (AUD-006B & F108-13)
             cur.execute(f"""
@@ -259,7 +279,7 @@ class ForecastingEngine:
                     COALESCE(NULLIF(merchant_name, ''), description) as bill_name,
                     t.category_id,
                     CAST(strftime('%d', transaction_date) AS INTEGER) as usual_day,
-                    amount_minor
+                    {amt_expr} as amount_minor
                 FROM active_transactions t
                 WHERE t.transaction_type = 'expense'
                   AND is_recurring = 1
@@ -271,48 +291,52 @@ class ForecastingEngine:
 
             historical_recurring = cur.fetchall()
             for r in historical_recurring:
+                acc_id = r["account_id"]
+                b_name = r["bill_name"]
                 rule_id = r["recurring_rule_id"]
-                # F108-13: If historical transaction had an explicit rule_id, it is governed by explicit rule state.
-                # If that rule is active, it was already handled in 2a (in seen_rules).
-                # If that rule is inactive or deleted, do NOT resurrect it!
+                key = recurring_key(acc_id, b_name)
+
+                # Point-in-time suppression (F110-06 & F108-13): If bill maps to an inactive/deleted explicit rule at as-of date, do NOT fallback
+                is_suppressed = False
                 if rule_id is not None:
                     if rule_id in seen_rules:
                         continue
                     else:
-                        suppressed_inactive_rule_fallback_count += 1
-                        continue
+                        is_suppressed = True
+                elif b_name in inactive_rule_names_at_cutoff:
+                    is_suppressed = True
 
-                raw_b_name = r["bill_name"]
-                acc_id = r["account_id"]
-                key = recurring_key(acc_id, raw_b_name)
-                if key in seen_bills:
+                if is_suppressed:
+                    if key not in seen_bills:
+                        seen_bills.add(key)
+                        suppressed_inactive_rule_fallback_count += 1
                     continue
 
-                seen_bills.add(key)
+                if key not in seen_bills:
+                    seen_bills.add(key)
+                    usual_day = r["usual_day"]
+                    if usual_day > elapsed_day and usual_day <= num_days:
+                        amt = r["amount_minor"]
+                        upcoming_recurring_minor += amt
+                        cid = r["category_id"] or 0
+                        upcoming_by_cat[cid] = upcoming_by_cat.get(cid, 0) + amt
 
-                day_num = r["usual_day"]
-                if day_num > elapsed_day and day_num <= num_days:
-                    amt = r["amount_minor"]
-                    upcoming_recurring_minor += amt
-                    cid = r["category_id"] or 0
-                    upcoming_by_cat[cid] = upcoming_by_cat.get(cid, 0) + amt
+            # 3. Robust Historical Run-Rates by Day-of-Week
+            cur_dt_obj = datetime.strptime(as_of_cutoff, "%Y-%m-%d").date()
+            h_start_date = cur_dt_obj - timedelta(days=56)
+            h_end_date = cur_dt_obj
 
-            # 3. Dynamic Historical Weekday Rates & Dense Series (past 3 completed months strictly before target month)
-            hist_start_str = f"{year - 1 if m_int <= 3 else year}-{(m_int - 4) % 12 + 1:02d}-01"
-            h_sy, h_sm = map(int, hist_start_str.split("-")[:2])
-            h_start_date = date(h_sy, h_sm, 1)
-            h_end_date = date(year, m_int, 1) - timedelta(days=1)
-            if cur_dt < h_end_date:
-                h_end_date = cur_dt
+            actual_wday_counts: Dict[int, int] = {w: 0 for w in range(7)}
+            day_cursor = h_start_date
+            while day_cursor <= h_end_date:
+                actual_wday_counts[int(day_cursor.strftime("%w"))] += 1
+                day_cursor += timedelta(days=1)
 
-            actual_wday_counts = count_weekdays_in_historical_window(h_start_date, h_end_date)
-
-            # Query non-recurring expenses in the weekday window
             cur.execute(f"""
                 SELECT 
                     transaction_date,
                     strftime('%w', transaction_date) as wday,
-                    SUM(amount_minor) as day_total_minor
+                    SUM({amt_expr}) as day_total_minor
                 FROM active_transactions t
                 WHERE t.transaction_type = 'expense'
                   AND is_recurring = 0
@@ -353,7 +377,7 @@ class ForecastingEngine:
             cur.execute(f"""
                 SELECT 
                     strftime('%w', transaction_date) as wday,
-                    SUM(amount_minor) as total_minor
+                    SUM({amt_expr}) as total_minor
                 FROM active_transactions t
                 WHERE t.transaction_type = 'income'
                   AND is_recurring = 0
@@ -401,7 +425,7 @@ class ForecastingEngine:
                     cur.execute(f"""
                         SELECT 
                             strftime('%Y-%m', t.transaction_date) as m,
-                            SUM(t.amount_minor) as total_minor
+                            SUM({amt_expr}) as total_minor
                         FROM active_transactions t
                         WHERE t.transaction_type = 'expense'
                           AND is_recurring = 0
@@ -416,13 +440,13 @@ class ForecastingEngine:
                 # Daily non-recurring series for robust weekly analysis (up to past 12 months)
                 twelve_m_ago = date(year, m_int, 1) - timedelta(days=365)
                 start_daily = max(datetime.strptime(min_d, "%Y-%m-%d").date(), twelve_m_ago)
-                end_daily = min(prev_m_date, cur_dt)
+                end_daily = min(prev_m_date, cur_dt_obj)
 
                 if start_daily <= end_daily:
                     cur.execute(f"""
                         SELECT 
                             transaction_date,
-                            SUM(amount_minor) as total_minor
+                            SUM({amt_expr}) as total_minor
                         FROM active_transactions t
                         WHERE t.transaction_type = 'expense'
                           AND is_recurring = 0
@@ -436,7 +460,7 @@ class ForecastingEngine:
             cur.execute(f"""
                 SELECT 
                     category_id,
-                    SUM(amount_minor) as total_minor
+                    SUM({amt_expr}) as total_minor
                 FROM active_transactions t
                 WHERE t.transaction_type = 'expense'
                   AND is_recurring = 0
@@ -457,7 +481,7 @@ class ForecastingEngine:
                 actual_expense_minor=actual_expense_minor,
                 actual_income_minor=actual_income_to_date_minor,
                 actual_refund_minor=actual_refund_minor,
-                actual_net_spend_to_date_minor=actual_net_spend_to_date,
+                actual_net_spend_to_date_minor=actual_spend_to_date_minor,
                 actual_non_recurring_expense_minor=actual_non_recurring_expense_minor,
                 actual_recurring_expense_minor=actual_recurring_minor,
                 upcoming_recurring_expense_minor=upcoming_recurring_minor,
@@ -506,7 +530,7 @@ class ForecastingEngine:
 
             # Projected total expense
             projected_total_minor = (
-                actual_net_spend_to_date +
+                actual_spend_to_date_minor +
                 upcoming_recurring_minor +
                 remaining_variable_minor
             )
@@ -521,7 +545,7 @@ class ForecastingEngine:
             projected_savings_rate = round((projected_net_flow_minor / float(projected_income_minor)) * 100.0, 1) if projected_income_minor > 0 else 0.0
 
             recon = reconcile_forecast_components(
-                actual_to_date_minor=actual_net_spend_to_date,
+                actual_to_date_minor=actual_spend_to_date_minor,
                 recurring_minor=upcoming_recurring_minor,
                 variable_minor=remaining_variable_minor,
                 irregular_minor=0,
@@ -712,13 +736,13 @@ class ForecastingEngine:
                 p90 = calculate_percentile(calibrated_residuals, 90)
                 raw_lower = projected_total_minor + p10
                 raw_upper = projected_total_minor + p90
-                lower_bound_minor = max(actual_net_spend_to_date, min(projected_total_minor, raw_lower))
+                lower_bound_minor = max(actual_spend_to_date_minor, min(projected_total_minor, raw_lower))
                 upper_bound_minor = max(projected_total_minor, raw_upper)
             else:
                 range_type = "early_estimate"
                 shrinkage_factor = max(0.20, 1.0 - progress * 0.70)
                 spread_minor = round(remaining_variable_minor * 0.18 * shrinkage_factor)
-                lower_bound_minor = max(actual_net_spend_to_date, projected_total_minor - spread_minor)
+                lower_bound_minor = max(actual_spend_to_date_minor, projected_total_minor - spread_minor)
                 upper_bound_minor = projected_total_minor + spread_minor
 
             # Invariant: lower_bound_minor <= projected_total_minor <= upper_bound_minor (F108-19)
@@ -775,7 +799,7 @@ class ForecastingEngine:
                 range_type=range_type,
                 method=method_name,
                 model_method=model_method,
-                actual_spent_to_date_minor=actual_net_spend_to_date,
+                actual_spent_to_date_minor=actual_spend_to_date_minor,
                 upcoming_recurring_minor=upcoming_recurring_minor,
                 expected_variable_minor=remaining_variable_minor,
                 expected_refunds_minor=0,

@@ -12,12 +12,13 @@ class RecurringService:
 
     @staticmethod
     def get_all(account_id: Optional[int] = None, active_only: bool = False) -> List[Dict[str, Any]]:
+        from app.backend.domain.money import minor_to_major, format_money
         with get_db_connection() as conn:
             cur = conn.cursor()
             query = """
                 SELECT 
                     r.id, r.name, r.transaction_type, r.amount_minor,
-                    ROUND(CAST(r.amount_minor AS REAL) / 100.0, 2) as amount,
+                    r.currency, r.original_currency, r.original_amount_minor,
                     r.category_id, c.name as category_name, c.color as category_color, c.icon as category_icon,
                     r.account_id, a.name as account_name,
                     r.frequency, r.next_due_date, r.active, r.created_at
@@ -35,7 +36,20 @@ class RecurringService:
             query += " ORDER BY r.name ASC"
 
             cur.execute(query, params)
-            return [dict(row) for row in cur.fetchall()]
+            rows = cur.fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                r_curr = d.get("currency") or "USD"
+                d["currency"] = r_curr
+                d["amount"] = float(minor_to_major(d["amount_minor"], r_curr))
+                d["formatted_amount"] = format_money(d["amount_minor"], r_curr)
+                if d.get("original_amount_minor") is not None:
+                    orig_c = d.get("original_currency") or r_curr
+                    d["original_amount"] = float(minor_to_major(d["original_amount_minor"], orig_c))
+                    d["formatted_original_amount"] = format_money(d["original_amount_minor"], orig_c)
+                result.append(d)
+            return result
 
     @classmethod
     def create(cls, data: Dict[str, Any]) -> int:
@@ -47,7 +61,10 @@ class RecurringService:
             category_id=data.get("category_id"),
             account_id=data.get("account_id"),
             frequency=data.get("frequency", "monthly"),
-            next_due_date=data.get("next_due_date")
+            next_due_date=data.get("next_due_date"),
+            currency=data.get("currency"),
+            original_currency=data.get("original_currency"),
+            original_amount=data.get("original_amount")
         )
 
     @staticmethod
@@ -58,7 +75,10 @@ class RecurringService:
         category_id: Optional[int] = None,
         account_id: Optional[int] = None,
         frequency: str = "monthly",
-        next_due_date: Optional[str] = None
+        next_due_date: Optional[str] = None,
+        currency: Optional[str] = None,
+        original_currency: Optional[str] = None,
+        original_amount: Optional[float] = None
     ) -> int:
         if not name or not str(name).strip():
             raise ValueError("Recurring rule name cannot be empty.")
@@ -66,9 +86,29 @@ class RecurringService:
             validate_positive_amount,
             validate_recurring_frequency,
             validate_iso_date,
-            validate_transaction_type
+            validate_transaction_type,
+            validate_currency_code
         )
-        amount_minor = validate_positive_amount(amount, "Recurring amount")
+        from app.backend.services.settings_service import SettingsService
+        from app.backend.repositories.account_repo import AccountRepository
+
+        base_currency = SettingsService.get_setting("currency", "USD") or "USD"
+        target_currency = currency
+        if not target_currency and account_id:
+            acc = AccountRepository.get_by_id(account_id)
+            if acc:
+                target_currency = acc.get("currency")
+        target_currency = target_currency or base_currency
+
+        amount_minor = validate_positive_amount(amount, "Recurring amount", currency=target_currency)
+        orig_curr = validate_currency_code(original_currency) if original_currency else target_currency
+        if original_amount is not None:
+            orig_amount_minor = validate_positive_amount(original_amount, "Original recurring amount", currency=orig_curr)
+        elif orig_curr != target_currency:
+            orig_amount_minor = validate_positive_amount(amount, "Original recurring amount", currency=orig_curr)
+        else:
+            orig_amount_minor = amount_minor
+
         tx_type = validate_transaction_type(transaction_type)
         freq = validate_recurring_frequency(frequency)
         clean_date = validate_iso_date(next_due_date, "Next due date") if next_due_date else None
@@ -78,23 +118,40 @@ class RecurringService:
             cur.execute("""
                 INSERT INTO recurring_rules (
                     name, transaction_type, amount_minor, category_id,
-                    account_id, frequency, next_due_date, active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-            """, (name.strip(), tx_type, amount_minor, category_id, account_id, freq, clean_date))
+                    account_id, frequency, next_due_date, active,
+                    currency, original_currency, original_amount_minor
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            """, (
+                name.strip(), tx_type, amount_minor, category_id, account_id,
+                freq, clean_date, target_currency, orig_curr, orig_amount_minor
+            ))
             conn.commit()
             return cur.lastrowid
 
     @staticmethod
     def update_rule(rule_id: int, **fields) -> bool:
-        allowed = {"name", "transaction_type", "category_id", "account_id", "frequency", "next_due_date", "active"}
+        allowed = {
+            "name", "transaction_type", "category_id", "account_id", "frequency",
+            "next_due_date", "active", "currency", "original_currency", "original_amount_minor"
+        }
         updates = {k: v for k, v in fields.items() if k in allowed}
 
         from app.backend.domain.validators import (
             validate_positive_amount,
             validate_recurring_frequency,
             validate_iso_date,
-            validate_transaction_type
+            validate_transaction_type,
+            validate_currency_code
         )
+
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM recurring_rules WHERE id = ?", (rule_id,))
+            existing = cur.fetchone()
+            if not existing:
+                return False
+
+        r_curr = updates.get("currency") or (existing["currency"] if "currency" in existing.keys() and existing["currency"] else "USD")
 
         if "name" in updates:
             if not updates["name"] or not str(updates["name"]).strip():
@@ -102,7 +159,10 @@ class RecurringService:
             updates["name"] = str(updates["name"]).strip()
 
         if "amount" in fields:
-            updates["amount_minor"] = validate_positive_amount(fields["amount"], "Recurring amount")
+            updates["amount_minor"] = validate_positive_amount(fields["amount"], "Recurring amount", currency=r_curr)
+
+        if "original_currency" in updates:
+            updates["original_currency"] = validate_currency_code(updates["original_currency"])
 
         if "transaction_type" in updates:
             updates["transaction_type"] = validate_transaction_type(updates["transaction_type"])

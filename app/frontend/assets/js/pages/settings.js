@@ -504,7 +504,14 @@ function promptAccountModal(account = null) {
   const institution = prompt('Financial Institution (e.g. Chase, Vietcombank):', account?.institution || '');
   if (institution === null) return;
 
-  const balanceStr = prompt('Opening Balance ($):', String(account?.opening_balance ?? 0));
+  let currency = account?.currency || state.currency || 'USD';
+  if (!isEdit) {
+    const enteredCurr = prompt('Account Currency (ISO 4217, e.g. USD, EUR, VND, JPY):', currency);
+    if (enteredCurr === null) return;
+    currency = enteredCurr.trim().toUpperCase() || 'USD';
+  }
+
+  const balanceStr = prompt(`Opening Balance (${currency}):`, String(account?.opening_balance ?? 0));
   if (balanceStr === null) return;
   const balance = parseFloat(balanceStr) || 0;
 
@@ -524,7 +531,7 @@ function promptAccountModal(account = null) {
           account_type: type.trim(),
           institution: institution.trim(),
           opening_balance: balance,
-          currency: state.currency || 'USD'
+          currency: currency
         });
         showToast('Account created successfully', 'success');
       }

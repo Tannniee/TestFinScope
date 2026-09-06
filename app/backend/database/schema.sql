@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS transactions (
     source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'csv_import', 'recurring_generated', 'adjustment')),
     needs_review INTEGER NOT NULL DEFAULT 0,
     is_deleted INTEGER NOT NULL DEFAULT 0,
+    original_currency TEXT,
+    original_amount_minor INTEGER,
+    base_currency TEXT,
+    base_amount_minor INTEGER,
+    fx_rate_to_base TEXT,
+    fx_rate_date TEXT,
+    fx_rate_source TEXT,
+    fx_status TEXT NOT NULL DEFAULT 'not_required',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -82,6 +90,7 @@ CREATE TABLE IF NOT EXISTS budgets (
     start_date TEXT NOT NULL, -- YYYY-MM format
     end_date TEXT,
     rollover INTEGER NOT NULL DEFAULT 0,
+    currency TEXT DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(category_id, start_date)
 );
@@ -96,6 +105,9 @@ CREATE TABLE IF NOT EXISTS recurring_rules (
     frequency TEXT NOT NULL DEFAULT 'monthly',
     next_due_date TEXT,
     active INTEGER NOT NULL DEFAULT 1,
+    currency TEXT DEFAULT NULL,
+    original_currency TEXT DEFAULT NULL,
+    original_amount_minor INTEGER DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -113,6 +125,9 @@ CREATE TABLE IF NOT EXISTS recurring_rule_versions (
     valid_from TEXT NOT NULL,
     valid_to TEXT,
     change_type TEXT NOT NULL DEFAULT 'created',
+    currency TEXT DEFAULT NULL,
+    original_currency TEXT DEFAULT NULL,
+    original_amount_minor INTEGER DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -140,11 +155,13 @@ AFTER INSERT ON recurring_rules
 BEGIN
     INSERT INTO recurring_rule_versions (
         rule_id, name, transaction_type, amount_minor, category_id,
-        account_id, frequency, next_due_date, active, valid_from, valid_to, change_type
+        account_id, frequency, next_due_date, active, valid_from, valid_to, change_type,
+        currency, original_currency, original_amount_minor
     ) VALUES (
         NEW.id, NEW.name, NEW.transaction_type, NEW.amount_minor, NEW.category_id,
         NEW.account_id, NEW.frequency, NEW.next_due_date, NEW.active,
-        COALESCE(NEW.created_at, date('now')), NULL, 'created'
+        COALESCE(NEW.created_at, date('now')), NULL, 'created',
+        NEW.currency, NEW.original_currency, NEW.original_amount_minor
     );
 END;
 
@@ -157,11 +174,13 @@ BEGIN
 
     INSERT INTO recurring_rule_versions (
         rule_id, name, transaction_type, amount_minor, category_id,
-        account_id, frequency, next_due_date, active, valid_from, valid_to, change_type
+        account_id, frequency, next_due_date, active, valid_from, valid_to, change_type,
+        currency, original_currency, original_amount_minor
     ) VALUES (
         NEW.id, NEW.name, NEW.transaction_type, NEW.amount_minor, NEW.category_id,
         NEW.account_id, NEW.frequency, NEW.next_due_date, NEW.active,
-        date('now'), NULL, 'updated'
+        date('now'), NULL, 'updated',
+        NEW.currency, NEW.original_currency, NEW.original_amount_minor
     );
 END;
 
@@ -218,4 +237,38 @@ AFTER DELETE ON recurring_rules
 BEGIN
     UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
 END;
+
+-- Multi-Currency Exchange Rates Storage (Migration 008)
+CREATE TABLE IF NOT EXISTS exchange_rates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    base_currency TEXT NOT NULL,
+    quote_currency TEXT NOT NULL,
+    rate_date TEXT NOT NULL,
+    rate TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_rate_date TEXT,
+    fetched_at TEXT NOT NULL,
+    UNIQUE(base_currency, quote_currency, rate_date, provider)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exchange_rates_lookup ON exchange_rates(base_currency, quote_currency, rate_date);
+
+CREATE TRIGGER IF NOT EXISTS trg_analytics_state_fx_insert
+AFTER INSERT ON exchange_rates
+BEGIN
+    UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_analytics_state_fx_update
+AFTER UPDATE ON exchange_rates
+BEGIN
+    UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_analytics_state_fx_delete
+AFTER DELETE ON exchange_rates
+BEGIN
+    UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+END;
+
 

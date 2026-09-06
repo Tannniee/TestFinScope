@@ -406,8 +406,13 @@ function renderTableRows(items, isReviewQueueView = false) {
         </td>
         <td style="text-align: right;">
           <span class="amount-display ${amtClass} num-tabular" style="font-size: 14px;">
-            ${sign}${state.formatCurrency(tx.amount)}
+            ${sign}${state.formatCurrency(tx.amount, tx.currency)}
           </span>
+          ${tx.original_currency && tx.original_currency !== (tx.currency || state.currency) ? `
+            <div style="font-size: 11px; color: var(--text-muted); font-family: monospace;">
+              ${escapeHtml(tx.original_currency)} ${Number(tx.original_amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          ` : ''}
         </td>
         <td style="text-align: right;">
           <div style="display: inline-flex; align-items: center; gap: 4px;">
