@@ -205,8 +205,12 @@ function renderCalendarGrid(daysMap) {
   });
 }
 
+let currentDayRequestId = 0;
+
 async function openDayDrawer(dateStr) {
   selectedDate = dateStr;
+  const thisRequestId = ++currentDayRequestId;
+
   const overlay = document.getElementById('day-drawer-overlay');
   const panel = document.getElementById('day-drawer-panel');
 
@@ -217,55 +221,91 @@ async function openDayDrawer(dateStr) {
   overlay?.classList.add('open');
   panel?.classList.add('open');
 
+  const incEl = document.getElementById('drawer-day-income');
+  const expEl = document.getElementById('drawer-day-expense');
+  const netEl = document.getElementById('drawer-day-net');
+  const listEl = document.getElementById('drawer-tx-list');
+
+  if (incEl) incEl.textContent = '...';
+  if (expEl) expEl.textContent = '...';
+  if (netEl) netEl.textContent = '...';
+  if (listEl) {
+    listEl.innerHTML = `
+      <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px 0;">
+        <div style="height: 52px; border-radius: 8px; background: var(--bg-surface); animation: pulse 1.5s infinite;"></div>
+        <div style="height: 52px; border-radius: 8px; background: var(--bg-surface); animation: pulse 1.5s infinite;"></div>
+      </div>
+    `;
+  }
+
   try {
     const params = { start_date: dateStr, end_date: dateStr, limit: 100 };
     if (state.accountId) {
       params.account_id = state.accountId;
     }
     const res = await api.getTransactions(params);
-    const txs = res.items;
+    if (thisRequestId !== currentDayRequestId) return; // Stale request guard (UX-H23)
 
+    const txs = res.items || [];
+
+    // Factoring refunds into net expense and flow (V121-M02 & UX-H22)
     let totalIncome = 0;
-    let totalExpense = 0;
+    let grossExpense = 0;
+    let totalRefund = 0;
     txs.forEach(t => {
       if (t.transaction_type === 'income') totalIncome += t.amount;
-      if (t.transaction_type === 'expense') totalExpense += t.amount;
+      else if (t.transaction_type === 'expense') grossExpense += t.amount;
+      else if (t.transaction_type === 'refund') totalRefund += t.amount;
     });
 
-    document.getElementById('drawer-day-income').textContent = `+${state.formatCurrency(totalIncome)}`;
-    document.getElementById('drawer-day-expense').textContent = `-${state.formatCurrency(totalExpense)}`;
+    const netExpense = Math.max(0, grossExpense - totalRefund);
+    const netVal = totalIncome - netExpense;
 
-    const netVal = totalIncome - totalExpense;
-    const netEl = document.getElementById('drawer-day-net');
-    netEl.textContent = `${netVal >= 0 ? '+' : ''}${state.formatCurrency(netVal)}`;
-    netEl.style.color = netVal >= 0 ? 'var(--color-positive)' : 'var(--color-negative)';
+    if (incEl) incEl.textContent = `+${state.formatCurrency(totalIncome)}`;
+    if (expEl) expEl.textContent = `-${state.formatCurrency(netExpense)}`;
+    if (netEl) {
+      netEl.textContent = `${netVal >= 0 ? '+' : ''}${state.formatCurrency(netVal)}`;
+      netEl.style.color = netVal >= 0 ? 'var(--color-positive)' : 'var(--color-negative)';
+    }
 
-    const listEl = document.getElementById('drawer-tx-list');
     if (txs.length === 0) {
-      listEl.innerHTML = '<div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 20px;">No transactions recorded on this day.</div>';
+      if (listEl) listEl.innerHTML = '<div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 20px;">No transactions recorded on this day.</div>';
       return;
     }
 
-    listEl.innerHTML = txs.map(t => {
-      const isIncome = t.transaction_type === 'income';
-      const sign = isIncome ? '+' : '-';
-      const color = isIncome ? 'var(--color-positive)' : 'var(--color-negative)';
+    if (listEl) {
+      listEl.innerHTML = txs.map(t => {
+        const isIncome = t.transaction_type === 'income';
+        const isRefund = t.transaction_type === 'refund';
+        const isTransfer = t.transaction_type === 'transfer';
+        const sign = (isIncome || isRefund) ? '+' : '-';
+        const color = (isIncome || isRefund) ? 'var(--color-positive)' : 'var(--color-negative)';
+        const typeBadge = isRefund 
+          ? ' <span style="background: rgba(48, 209, 88, 0.15); color: #30d158; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">Refund</span>' 
+          : isTransfer
+          ? ' <span style="background: rgba(10, 132, 255, 0.15); color: #0a84ff; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">Transfer</span>'
+          : '';
 
-      return `
-        <div class="fin-card" style="padding: 14px; display: flex; align-items: center; justify-content: space-between;">
-          <div>
-            <div style="font-weight: 600; font-size: 13.5px;">${escapeHtml(t.merchant_name || t.description || 'Transaction')}</div>
-            <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 2px;">
-              ${escapeHtml(t.category_name || 'Uncategorized')} • ${escapeHtml(t.account_name || 'Everyday')} • ${escapeHtml(t.transaction_time || '')}
+        return `
+          <div class="fin-card" style="padding: 14px; display: flex; align-items: center; justify-content: space-between;">
+            <div>
+              <div style="font-weight: 600; font-size: 13.5px; display: flex; align-items: center;">
+                <span>${escapeHtml(t.merchant_name || t.description || 'Transaction')}</span>
+                ${typeBadge}
+              </div>
+              <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 2px;">
+                ${escapeHtml(t.category_name || (isTransfer ? 'Transfer' : 'Uncategorized'))} • ${escapeHtml(t.account_name || 'Everyday')} • ${escapeHtml(t.transaction_time || '')}
+              </div>
+            </div>
+            <div style="font-weight: 700; color: ${color}; font-size: 14px;">
+              ${sign}${state.formatCurrency(t.amount)}
             </div>
           </div>
-          <div style="font-weight: 700; color: ${color}; font-size: 14px;">
-            ${sign}${state.formatCurrency(t.amount)}
-          </div>
-        </div>
-      `;
-    }).join('');
+        `;
+      }).join('');
+    }
   } catch (err) {
+    if (thisRequestId !== currentDayRequestId) return;
     console.error('Failed to load day transactions:', err);
     showToast('Failed to load day details', 'error');
   }

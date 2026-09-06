@@ -22,32 +22,47 @@ from app.backend.analytics.forecast_strategies.selector import IneligibleForecas
 from app.backend.analytics.forecast_strategies.request import ForecastRequest
 
 from collections import OrderedDict
+from collections.abc import MutableMapping
 
 REPLAY_CACHE_VERSION = "1.1.1"
 
-class LRUCache(OrderedDict):
+class LRUCache(MutableMapping):
     """Bounded LRU cache for replay and residual buckets (FSC-M16)."""
-    def __init__(self, maxsize: int = 32, *args, **kwargs):
+    def __init__(self, maxsize: int = 32):
         self.maxsize = maxsize
-        super().__init__(*args, **kwargs)
+        self._data: OrderedDict = OrderedDict()
 
     def __getitem__(self, key):
-        value = super().__getitem__(key)
-        self.move_to_end(key)
+        value = self._data[key]
+        self._data.move_to_end(key)
         return value
 
     def __setitem__(self, key, value):
-        if key in self:
-            self.move_to_end(key)
-        super().__setitem__(key, value)
-        if len(self) > self.maxsize:
-            self.popitem(last=False)
+        if key in self._data:
+            self._data.move_to_end(key)
+        self._data[key] = value
+        if len(self._data) > self.maxsize:
+            self._data.popitem(last=False)
+
+    def __delitem__(self, key):
+        del self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self):
+        return len(self._data)
+
+    def __contains__(self, key):
+        return key in self._data
 
     def get(self, key, default=None):
-        if key in self:
-            self.move_to_end(key)
+        if key in self._data:
             return self[key]
         return default
+
+    def clear(self):
+        self._data.clear()
 
 # Cache structure: (version, revision, account_id, cutoff) -> replay_results (bounded LRU maxsize=32)
 _REPLAY_CACHE: LRUCache = LRUCache(maxsize=32)

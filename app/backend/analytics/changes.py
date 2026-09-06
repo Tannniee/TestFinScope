@@ -17,6 +17,7 @@ from datetime import datetime
 from app.backend.database.connection import get_db_connection
 from app.backend.analytics.models import DriverDecomposition
 from app.backend.analytics.context import AnalyticsContext, resolve_analytics_context
+from app.backend.analytics.period_series import check_data_sufficiency
 
 def decompose_frequency_ticket_refund(
     n0: int,
@@ -360,7 +361,13 @@ class WhatChangedEngine:
                 "is_total": True
             })
 
+            total_tx = total_n0 + total_n1
+            months_with_data = (1 if total_n1 > 0 else 0) + (1 if total_n0 > 0 else 0)
+            suff = check_data_sufficiency("previous_compare", sample_size=total_tx, months_history=months_with_data)
+
             return {
+                "available": suff.available,
+                "data_sufficiency": suff.to_dict(),
                 "current_month": context.as_of_month,
                 "comparison_month": comparison_month or (context.comparison_start.strftime("%Y-%m") if context.comparison_start else ""),
                 "context": context.to_dict(),

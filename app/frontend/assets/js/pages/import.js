@@ -20,11 +20,18 @@ let currentMapping = {};
 let previewData = null;
 let selectedDateFormat = 'auto';
 
-export async function renderImportPage(container) {
+function resetWizardState() {
   importStep = 1;
   rawCsvText = '';
+  detectedHeaders = [];
+  currentMapping = {};
+  previewData = null;
   selectedDateFormat = 'auto';
   selectedAccountId = state.accountId || (state.accounts[0]?.id || null);
+}
+
+export async function renderImportPage(container) {
+  resetWizardState();
 
   container.innerHTML = `
     <div class="import-view" style="max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px;">
@@ -131,6 +138,10 @@ function attachStep1Listeners() {
   const accountSelect = document.getElementById('import-account-select');
   const continueBtn = document.getElementById('btn-goto-step2');
 
+  textarea?.addEventListener('input', (e) => {
+    rawCsvText = e.target.value;
+  });
+
   accountSelect?.addEventListener('change', (e) => {
     selectedAccountId = parseInt(e.target.value);
   });
@@ -167,7 +178,11 @@ function attachStep1Listeners() {
     const reader = new FileReader();
     reader.onload = (evt) => {
       rawCsvText = evt.target.result;
-      if (textarea) textarea.value = rawCsvText.slice(0, 500) + (rawCsvText.length > 500 ? '\n... (truncated display)' : '');
+      if (textarea) textarea.value = rawCsvText;
+      const dropzoneTitle = dropzone.querySelector('div[style*="font-weight: 600"]');
+      if (dropzoneTitle) {
+        dropzoneTitle.textContent = `Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+      }
       showToast(`Loaded "${file.name}" (${(file.size / 1024).toFixed(1)} KB)`, 'success');
     };
     reader.readAsText(file);
@@ -465,6 +480,7 @@ function renderStep4Html(result) {
 
 function attachStep4Listeners() {
   document.getElementById('btn-import-another')?.addEventListener('click', () => {
+    resetWizardState();
     goToStep(1);
   });
 }

@@ -247,38 +247,39 @@ class FinScopeHTTPHandler(SimpleHTTPRequestHandler):
                 self._send_json_error(403, "FORBIDDEN_ORIGIN", "Invalid Origin")
                 return
             
-            # Check session token for export
-            query_params = parse_qs(parsed.query)
-            token = self.headers.get("X-FinScope-Token") or (query_params.get("token", [None])[0])
+            # Check session token strictly via header for export (V121-L01)
+            token = self.headers.get("X-FinScope-Token")
             if token != CURRENT_SESSION_TOKEN:
                 self._send_json_error(403, "UNAUTHORIZED", "Missing or invalid session token")
                 return
 
-            try:
-                month = query_params.get("month", [None])[0]
-                account_id_val = query_params.get("account_id", [None])[0]
-                account_id = int(account_id_val) if account_id_val and account_id_val.isdigit() else None
-                start_date = query_params.get("start_date", [None])[0]
-                end_date = query_params.get("end_date", [None])[0]
+            with maintenance_coordinator.operation():
+                try:
+                    query_params = parse_qs(parsed.query)
+                    month = query_params.get("month", [None])[0]
+                    account_id_val = query_params.get("account_id", [None])[0]
+                    account_id = int(account_id_val) if account_id_val and account_id_val.isdigit() else None
+                    start_date = query_params.get("start_date", [None])[0]
+                    end_date = query_params.get("end_date", [None])[0]
 
-                csv_path = api_handler.export_csv(
-                    month=month,
-                    account_id=account_id,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-                with open(csv_path, "rb") as f:
-                    csv_content = f.read()
+                    csv_path = api_handler.export_csv(
+                        month=month,
+                        account_id=account_id,
+                        start_date=start_date,
+                        end_date=end_date
+                    )
+                    with open(csv_path, "rb") as f:
+                        csv_content = f.read()
 
-                self.send_response(200)
-                self.send_header("Content-Type", "text/csv; charset=utf-8")
-                self.send_header("Content-Disposition", f"attachment; filename={Path(csv_path).name}")
-                self.send_header("Content-Length", str(len(csv_content)))
-                self.end_headers()
-                self.wfile.write(csv_content)
-            except Exception as e:
-                logger.exception("Error exporting CSV")
-                self._send_json_error(500, "EXPORT_ERROR", str(e))
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/csv; charset=utf-8")
+                    self.send_header("Content-Disposition", f"attachment; filename={Path(csv_path).name}")
+                    self.send_header("Content-Length", str(len(csv_content)))
+                    self.end_headers()
+                    self.wfile.write(csv_content)
+                except Exception as e:
+                    logger.exception("Error exporting CSV")
+                    self._send_json_error(500, "EXPORT_ERROR", str(e))
             return
 
         # 4. HTML Serving with Dynamic Token Injection

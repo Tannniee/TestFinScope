@@ -42,12 +42,55 @@ export const modals = {
     });
   },
 
-  closeTransactionModal() {
+  formSnapshot: null,
+
+  captureFormSnapshot() {
+    const obj = {
+      amount: document.getElementById('tx-amount')?.value || '',
+      account: document.getElementById('tx-account')?.value || '',
+      merchant: document.getElementById('tx-merchant')?.value || '',
+      type: document.getElementById('tx-type')?.value || '',
+      date: document.getElementById('tx-date')?.value || '',
+      description: document.getElementById('tx-description')?.value || '',
+      note: document.getElementById('tx-note')?.value || '',
+      category: document.getElementById('tx-category')?.value || '',
+      toAccount: document.getElementById('tx-to-account')?.value || '',
+      toAmount: document.getElementById('tx-to-amount')?.value || '',
+      refundId: document.getElementById('tx-refund-id')?.value || ''
+    };
+    this.formSnapshot = JSON.stringify(obj);
+  },
+
+  isFormDirty() {
+    if (!this.formSnapshot) return false;
+    const obj = {
+      amount: document.getElementById('tx-amount')?.value || '',
+      account: document.getElementById('tx-account')?.value || '',
+      merchant: document.getElementById('tx-merchant')?.value || '',
+      type: document.getElementById('tx-type')?.value || '',
+      date: document.getElementById('tx-date')?.value || '',
+      description: document.getElementById('tx-description')?.value || '',
+      note: document.getElementById('tx-note')?.value || '',
+      category: document.getElementById('tx-category')?.value || '',
+      toAccount: document.getElementById('tx-to-account')?.value || '',
+      toAmount: document.getElementById('tx-to-amount')?.value || '',
+      refundId: document.getElementById('tx-refund-id')?.value || ''
+    };
+    return JSON.stringify(obj) !== this.formSnapshot;
+  },
+
+  closeTransactionModal(force = false) {
+    if (!force && this.isFormDirty()) {
+      if (!confirm('You have unsaved changes. Are you sure you want to discard them?')) {
+        return;
+      }
+    }
     const modalOverlay = document.getElementById('tx-modal-overlay');
     const form = document.getElementById('tx-form');
     if (!modalOverlay) return;
     modalOverlay.classList.remove('open');
     this.activeTxId = null;
+    this.formSnapshot = null;
     this.hideAutocomplete();
     if (form) form.reset();
   },
@@ -228,6 +271,8 @@ export const modals = {
           this.applyPayeeSuggestion(this.currentSuggestions[this.autocompleteSelectedIndex]);
         }
       } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
         this.hideAutocomplete();
       }
     });
@@ -433,8 +478,8 @@ export const modals = {
           showToast('Transfer completed successfully', 'success');
         }
       } else if (type === 'refund') {
-        const refundTxIdVal = document.getElementById('tx-refund-id').value;
-        const refundTxId = refundTxIdVal ? parseInt(refundTxIdVal) : null;
+        const refundTxIdVal = document.getElementById('tx-refund-id').value.trim();
+        const refundTxId = refundTxIdVal ? parseInt(refundTxIdVal, 10) : null;
 
         if (this.activeTxId) {
           await api.updateRefund({
@@ -445,7 +490,7 @@ export const modals = {
             account_id: accountId
           });
           showToast('Refund updated successfully', 'success');
-        } else if (refundTxId) {
+        } else if (refundTxId && !isNaN(refundTxId) && refundTxId > 0) {
           await api.createRefund({
             original_transaction_id: refundTxId,
             amount: amount,
@@ -458,6 +503,7 @@ export const modals = {
           showToast('Linked refund recorded successfully', 'success');
         } else {
           showToast('Original Transaction ID is required for refunds', 'error');
+          document.getElementById('tx-refund-id')?.focus();
           return;
         }
       } else {
@@ -510,11 +556,12 @@ export const modals = {
         document.getElementById('tx-description').value = '';
         document.getElementById('tx-note').value = '';
         this.hideAutocomplete();
+        this.captureFormSnapshot();
         const amtInput = document.getElementById('tx-amount');
         amtInput?.focus();
         showToast('Ready for next transaction', 'info', 1800);
       } else {
-        this.closeTransactionModal();
+        this.closeTransactionModal(true);
       }
     } catch (err) {
       showToast(`Failed to save: ${err.message}`, 'error');
@@ -613,11 +660,26 @@ export const modals = {
 
     this.populateSelectOptions();
 
-    // Reset date pills
+    // Synchronize date pills with activeDate (UX-H04)
+    const activeDate = txData?.transaction_date || defaultDate || toLocalDateString();
+    const todayStr = toLocalDateString();
+    const yesterdayStr = localYesterdayString();
+
     document.querySelectorAll('.quick-date-btn').forEach(p => p.classList.remove('active'));
-    document.querySelector('.quick-date-btn[data-date="today"]')?.classList.add('active');
     const dateInput = document.getElementById('tx-date');
-    if (dateInput) dateInput.style.display = 'none';
+    if (dateInput) {
+      dateInput.value = activeDate;
+      if (activeDate === todayStr) {
+        document.querySelector('.quick-date-btn[data-date="today"]')?.classList.add('active');
+        dateInput.style.display = 'none';
+      } else if (activeDate === yesterdayStr) {
+        document.querySelector('.quick-date-btn[data-date="yesterday"]')?.classList.add('active');
+        dateInput.style.display = 'none';
+      } else {
+        document.querySelector('.quick-date-btn[data-date="pick"]')?.classList.add('active');
+        dateInput.style.display = 'inline-block';
+      }
+    }
 
     const origCurrInput = document.getElementById('tx-orig-currency');
     const origAmtInput = document.getElementById('tx-orig-amount');
@@ -631,7 +693,6 @@ export const modals = {
       document.getElementById('tx-amount').value = txData.amount;
       document.getElementById('tx-account').value = txData.account_id || '';
       document.getElementById('tx-merchant').value = txData.merchant_name || '';
-      document.getElementById('tx-date').value = txData.transaction_date || '';
       document.getElementById('tx-time').value = txData.transaction_time || '12:00';
       document.getElementById('tx-description').value = txData.description || '';
       document.getElementById('tx-essentiality').value = txData.essentiality || 'discretionary';
@@ -652,6 +713,24 @@ export const modals = {
       });
       this.updateFormFieldsForType(type);
       document.getElementById('tx-category').value = txData.category_id || '';
+
+      // Pre-fill transfer destination account & amount if editing transfer (PR 4 / V121-M03)
+      if (type === 'transfer') {
+        const destAccId = txData.to_account_id || txData.linked_account_id;
+        if (destAccId) {
+          const toAccSelect = document.getElementById('tx-to-account');
+          if (toAccSelect) toAccSelect.value = destAccId;
+        }
+        if (txData.destination_amount != null && toAmtInput) {
+          toAmtInput.value = txData.destination_amount;
+        }
+      } else if (type === 'refund') {
+        if (txData.refund_of_transaction_id) {
+          const refundInput = document.getElementById('tx-refund-id');
+          if (refundInput) refundInput.value = txData.refund_of_transaction_id;
+        }
+      }
+
       this.updateCurrencySymbol();
 
       // Auto-open more details if editing an item with memo, non-default essentiality, note, or foreign currency
@@ -672,8 +751,7 @@ export const modals = {
       const span = moreDetailsToggle?.querySelector('span');
       if (span) span.textContent = 'More Details';
 
-      const todayStr = toLocalDateString();
-      document.getElementById('tx-date').value = defaultDate || todayStr;
+      document.getElementById('tx-date').value = activeDate;
       document.getElementById('tx-time').value = new Date().toTimeString().slice(0, 5);
       document.getElementById('tx-type').value = 'expense';
       modalOverlay.querySelectorAll('.segmented-btn').forEach(btn => {
@@ -690,6 +768,7 @@ export const modals = {
       this.updateCurrencySymbol();
     }
 
+    this.captureFormSnapshot();
     modalOverlay.classList.add('open');
     if (window.lucide) window.lucide.createIcons();
 

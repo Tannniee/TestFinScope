@@ -41,8 +41,8 @@ export async function renderTransactionsPage(container) {
             </select>
 
             <select id="filter-account" class="form-select" style="min-width: 150px;">
-              <option value="">All Accounts</option>
-              ${state.accounts.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`).join('')}
+              <option value="" ${!state.accountId ? 'selected' : ''}>All Accounts</option>
+              ${state.accounts.map(a => `<option value="${escapeHtml(a.id)}" ${state.accountId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}
             </select>
 
             <select id="filter-type" class="form-select" style="min-width: 120px;">
@@ -190,7 +190,7 @@ function setupEventListeners() {
   });
 
   document.getElementById('filter-account')?.addEventListener('change', (e) => {
-    activeFilters.account_id = e.target.value ? parseInt(e.target.value) : null;
+    activeFilters.account_id = e.target.value ? parseInt(e.target.value) : 'ALL';
     currentOffset = 0;
     if (!isReviewQueueActive) loadTransactions();
   });
@@ -208,10 +208,10 @@ function setupEventListeners() {
   });
 
   document.getElementById('btn-reset-filters')?.addEventListener('click', () => {
-    activeFilters = { search: '', category_id: null, account_id: null, transaction_type: null, essentiality: null };
+    activeFilters = { search: '', category_id: null, account_id: state.accountId || null, transaction_type: null, essentiality: null };
     document.getElementById('filter-search').value = '';
     document.getElementById('filter-category').value = '';
-    document.getElementById('filter-account').value = '';
+    document.getElementById('filter-account').value = state.accountId || '';
     document.getElementById('filter-type').value = '';
     document.getElementById('filter-essentiality').value = '';
     isReviewQueueActive = false;
@@ -286,9 +286,17 @@ async function loadTransactions() {
   }
 
   try {
+    let effAccId = null;
+    if (activeFilters.account_id === 'ALL') {
+      effAccId = null;
+    } else if (activeFilters.account_id) {
+      effAccId = activeFilters.account_id;
+    } else if (state.accountId) {
+      effAccId = state.accountId;
+    }
+
     const params = {
       month: state.month,
-      account_id: activeFilters.account_id || state.accountId,
       category_id: activeFilters.category_id,
       transaction_type: activeFilters.transaction_type,
       essentiality: activeFilters.essentiality,
@@ -296,6 +304,7 @@ async function loadTransactions() {
       limit: PAGE_SIZE,
       offset: currentOffset
     };
+    if (effAccId) params.account_id = effAccId;
 
     const res = await api.getTransactions(params, { signal: currentTxAbortController.signal });
     if (reqSeq !== currentTxRequestSeq) return;

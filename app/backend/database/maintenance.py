@@ -31,9 +31,16 @@ class MaintenanceCoordinator:
     def exclusive(self):
         """Used by restore_backup and destructive database reset to gain exclusive access."""
         with self._condition:
-            self._maintenance = True
-            while self._active_ops > 0:
+            while self._maintenance:
                 self._condition.wait()
+            self._maintenance = True
+            try:
+                while self._active_ops > 0:
+                    self._condition.wait()
+            except BaseException:
+                self._maintenance = False
+                self._condition.notify_all()
+                raise
         try:
             yield
         finally:

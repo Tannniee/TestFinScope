@@ -167,7 +167,54 @@ class TransactionRepository:
                 query += " AND t.is_deleted = 0"
             cur.execute(query, (tx_id,))
             row = cur.fetchone()
-            return _hydrate_transaction_row(row) if row else None
+            if not row:
+                return None
+            res = _hydrate_transaction_row(row)
+
+            # Hydrate paired transfer leg if this is a transfer
+            if res.get("transfer_group_id") or res.get("linked_transaction_id"):
+                linked_id = res.get("linked_transaction_id")
+                group_id = res.get("transfer_group_id")
+                if linked_id:
+                    cur.execute("""
+                        SELECT t.id, t.account_id, t.amount_minor, t.transfer_role,
+                               a.name as account_name, a.currency as account_currency
+                        FROM transactions t
+                        LEFT JOIN accounts a ON t.account_id = a.id
+                        WHERE t.id = ?
+                    """, (linked_id,))
+                elif group_id:
+                    cur.execute("""
+                        SELECT t.id, t.account_id, t.amount_minor, t.transfer_role,
+                               a.name as account_name, a.currency as account_currency
+                        FROM transactions t
+                        LEFT JOIN accounts a ON t.account_id = a.id
+                        WHERE t.transfer_group_id = ? AND t.id != ?
+                    """, (group_id, tx_id))
+                else:
+                    linked_row = None
+
+                linked_row = cur.fetchone() if (linked_id or group_id) else None
+                if linked_row:
+                    linked_curr = linked_row["account_currency"] or "USD"
+                    linked_amt = float(minor_to_major(linked_row["amount_minor"], linked_curr))
+                    res["linked_account_id"] = linked_row["account_id"]
+                    res["linked_account_name"] = linked_row["account_name"]
+                    res["linked_account_currency"] = linked_curr
+                    res["linked_amount_minor"] = linked_row["amount_minor"]
+                    res["linked_amount"] = linked_amt
+
+                    if res.get("transfer_role") == "source":
+                        res["from_account_id"] = res["account_id"]
+                        res["to_account_id"] = linked_row["account_id"]
+                        res["destination_amount"] = linked_amt
+                    elif res.get("transfer_role") == "destination":
+                        res["from_account_id"] = linked_row["account_id"]
+                        res["to_account_id"] = res["account_id"]
+                        res["destination_amount"] = res.get("amount")
+                        res["source_amount"] = linked_amt
+
+            return res
 
     @staticmethod
     def create(data: Dict[str, Any]) -> int:

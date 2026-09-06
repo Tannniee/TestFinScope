@@ -307,6 +307,21 @@ async function loadSettingsData() {
     document.getElementById('stat-date-range').textContent = health.date_range;
     document.getElementById('stat-db-path').textContent = health.db_path;
 
+    const integrityPill = document.getElementById('stat-integrity-pill');
+    if (integrityPill) {
+      const isHealthy = health.integrity === 'ok' || health.status === 'Healthy';
+      if (isHealthy) {
+        integrityPill.style.background = 'rgba(77, 213, 165, 0.15)';
+        integrityPill.style.color = '#4DD5A5';
+        integrityPill.innerHTML = '<i data-lucide="check-circle" style="width: 14px; height: 14px;"></i> Healthy';
+      } else {
+        integrityPill.style.background = 'rgba(255, 69, 58, 0.15)';
+        integrityPill.style.color = '#FF453A';
+        integrityPill.innerHTML = `<i data-lucide="alert-triangle" style="width: 14px; height: 14px;"></i> ${escapeHtml(health.status || 'Integrity Warning')}`;
+      }
+      if (window.lucide) window.lucide.createIcons();
+    }
+
     const currSelect = document.getElementById('setting-currency-select');
     if (currSelect && state.currency) {
       currSelect.value = state.currency;

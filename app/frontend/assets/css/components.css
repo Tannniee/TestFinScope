@@ -1226,11 +1226,13 @@ body.privacy-active .kpi-radial-gauge {
   margin-top: 4px;
 }
 
-.payee-autocomplete-box.open {
+.payee-autocomplete-box.open,
+.payee-autocomplete-box.show {
   display: block;
 }
 
-.payee-suggestion-item {
+.payee-suggestion-item,
+.payee-autocomplete-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1241,18 +1243,28 @@ body.privacy-active .kpi-radial-gauge {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.payee-suggestion-item:last-child {
+.payee-suggestion-item:last-child,
+.payee-autocomplete-item:last-child {
   border-bottom: none;
 }
 
 .payee-suggestion-item:hover,
-.payee-suggestion-item.selected {
+.payee-suggestion-item.selected,
+.payee-autocomplete-item:hover,
+.payee-autocomplete-item.active {
   background-color: var(--bg-surface);
 }
 
-.payee-name-badge {
+.payee-name-badge,
+.payee-name {
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.payee-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .payee-cat-hint {
@@ -1261,6 +1273,30 @@ body.privacy-active .kpi-radial-gauge {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.confidence-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.confidence-tag.high {
+  background: rgba(48, 209, 88, 0.15);
+  color: #30d158;
+}
+
+.confidence-tag.recent {
+  background: rgba(10, 132, 255, 0.15);
+  color: #0a84ff;
+}
+
+.confidence-tag.moderate {
+  background: rgba(255, 159, 10, 0.15);
+  color: #ff9f0a;
 }
 
 /* Quick Date Pills */

@@ -638,11 +638,32 @@ class AnalyticsService:
 
             curr_val = values[-1]
             hist = values[:-1]
+
+            # Count actual transactions in the period for accurate sufficiency check
+            t_cnt_filter = "transaction_type = 'income'" if metric == "income" else "transaction_type IN ('expense', 'refund')"
+            if category_id:
+                cur.execute(f"""
+                    SELECT COUNT(id) as tx_cnt
+                    FROM active_transactions
+                    WHERE category_id = ?
+                      AND transaction_type IN ('expense', 'refund')
+                      AND strftime('%Y-%m', transaction_date) <= ? {acc_clause}
+                """, [category_id, end_m] + acc_params)
+            else:
+                cur.execute(f"""
+                    SELECT COUNT(id) as tx_cnt
+                    FROM active_transactions
+                    WHERE {t_cnt_filter}
+                      AND strftime('%Y-%m', transaction_date) <= ? {acc_clause}
+                """, [end_m] + acc_params)
+            tx_cnt_row = cur.fetchone()
+            total_tx = tx_cnt_row["tx_cnt"] if tx_cnt_row else 0
+
             base_metrics = RollingAnalyticsEngine.compute_rolling_baselines(hist, curr_val)
-            suff = check_data_sufficiency("rolling_3m", len(hist), len(hist))
+            suff = check_data_sufficiency("rolling_3m", sample_size=total_tx, months_history=len(hist))
 
             base_metrics["data_sufficiency"] = suff.to_dict()
-            base_metrics["available"] = (len(hist) >= 1)
+            base_metrics["available"] = (len(hist) >= 1) and suff.available
             base_metrics["currency"] = curr
             base_metrics["zero_filled_series"] = [s.to_dict() for s in series_objs[-12:]]
             return base_metrics

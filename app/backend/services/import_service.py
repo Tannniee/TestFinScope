@@ -589,7 +589,21 @@ class ImportService:
 
                 # Semantic category resolution (FSC-H03)
                 assigned_cat_id = None
-                if m_row and m_row["default_category_id"]:
+
+                # 1. Check mapped CSV category column first if present
+                idx_cat = indices.get("category")
+                if idx_cat is not None and idx_cat < len(row) and row[idx_cat].strip():
+                    raw_cat = row[idx_cat].strip()
+                    cat_id_cand = int(raw_cat) if raw_cat.isdigit() else -1
+                    cur.execute("SELECT id, type, is_archived FROM categories WHERE name = ? COLLATE NOCASE OR id = ?", (raw_cat, cat_id_cand))
+                    c_found = cur.fetchone()
+                    if c_found and not c_found["is_archived"]:
+                        expected_cat_type = "expense" if tx_type == "refund" else tx_type
+                        if c_found["type"] == expected_cat_type:
+                            assigned_cat_id = c_found["id"]
+
+                # 2. Fall back to merchant memory if not assigned
+                if not assigned_cat_id and m_row and m_row["default_category_id"]:
                     cand_id = m_row["default_category_id"]
                     cur.execute("SELECT type, is_archived FROM categories WHERE id = ?", (cand_id,))
                     c_cand = cur.fetchone()
@@ -598,6 +612,7 @@ class ImportService:
                         if c_cand["type"] == expected_cat_type:
                             assigned_cat_id = cand_id
 
+                # 3. Fall back to Uncategorized / Other Income
                 if not assigned_cat_id:
                     if tx_type == "income":
                         category_id = fallback_income_id
