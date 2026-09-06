@@ -20,16 +20,16 @@ export async function renderSettingsPage(container) {
       <div class="fin-card">
         <div class="card-header">
           <div class="card-title-wrap">
-            <h3>Currency & Formatting Preferences</h3>
-            <p>Customize primary currency code and display locale</p>
+            <h3>Reporting / Base Currency Preferences</h3>
+            <p>Customize primary portfolio currency code and display denomination</p>
           </div>
         </div>
 
         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;">
           <div>
-            <div style="font-weight: 600; font-size: 14px;">Display Currency</div>
-            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
-              Amounts across all dashboards, reports, and charts will format in this currency.
+            <div style="font-weight: 600; font-size: 14px;">Reporting / Base Currency</div>
+            <div id="setting-currency-desc" style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+              Amounts across portfolio dashboards, reports, and charts will evaluate in this reporting currency.
             </div>
           </div>
 
@@ -284,6 +284,8 @@ function setupSettingsHandlers() {
     loadCategoriesTable();
   });
 
+  initSettingsModals();
+
   // Add Account Button
   document.getElementById('btn-add-account')?.addEventListener('click', () => {
     promptAccountModal();
@@ -323,8 +325,21 @@ async function loadSettingsData() {
     }
 
     const currSelect = document.getElementById('setting-currency-select');
+    const currDesc = document.getElementById('setting-currency-desc');
     if (currSelect && state.currency) {
       currSelect.value = state.currency;
+      const txCount = health.active_transaction_count ?? health.transaction_count ?? 0;
+      if (txCount > 0) {
+        currSelect.disabled = true;
+        if (currDesc) {
+          currDesc.innerHTML = `<span style="color: var(--color-warning); font-weight: 600;">Locked:</span> Reporting currency cannot be changed while active transactions exist (${txCount} records).`;
+        }
+      } else {
+        currSelect.disabled = false;
+        if (currDesc) {
+          currDesc.textContent = 'Amounts across portfolio dashboards, reports, and charts will evaluate in this reporting currency.';
+        }
+      }
     }
 
     renderBackupsTable(backups);
@@ -504,106 +519,165 @@ async function loadCategoriesTable() {
   }
 }
 
-function promptAccountModal(account = null) {
-  const isEdit = Boolean(account && account.id);
-  const name = prompt(`${isEdit ? 'Edit' : 'Create'} Account Name:`, account?.name || '');
-  if (name === null) return;
-  if (!name.trim()) {
-    showToast('Account name cannot be empty', 'error');
-    return;
-  }
+function initSettingsModals() {
+  // Account Modal event handlers
+  const accModal = document.getElementById('account-modal-overlay');
+  const accClose = document.getElementById('account-modal-close');
+  const accCancel = document.getElementById('account-modal-cancel');
+  const accForm = document.getElementById('account-form');
 
-  const type = prompt('Account Type (Everyday, Savings, Credit Card, Investment):', account?.account_type || 'Everyday');
-  if (type === null) return;
+  const closeAccModal = () => accModal?.classList.remove('open');
+  accClose?.addEventListener('click', closeAccModal);
+  accCancel?.addEventListener('click', closeAccModal);
+  accModal?.addEventListener('click', (e) => { if (e.target === accModal) closeAccModal(); });
 
-  const institution = prompt('Financial Institution (e.g. Chase, Vietcombank):', account?.institution || '');
-  if (institution === null) return;
+  accForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = document.getElementById('account-modal-id').value;
+    const isEdit = Boolean(id);
+    const name = document.getElementById('account-modal-name').value.trim();
+    const type = document.getElementById('account-modal-type').value;
+    const institution = document.getElementById('account-modal-institution').value.trim();
+    const currency = document.getElementById('account-modal-currency').value;
+    const balance = parseFloat(document.getElementById('account-modal-balance').value) || 0;
 
-  let currency = account?.currency || state.currency || 'USD';
-  if (!isEdit) {
-    const enteredCurr = prompt('Account Currency (ISO 4217, e.g. USD, EUR, VND, JPY):', currency);
-    if (enteredCurr === null) return;
-    currency = enteredCurr.trim().toUpperCase() || 'USD';
-  }
+    if (!name) {
+      showToast('Account name cannot be empty', 'error');
+      return;
+    }
 
-  const balanceStr = prompt(`Opening Balance (${currency}):`, String(account?.opening_balance ?? 0));
-  if (balanceStr === null) return;
-  const balance = parseFloat(balanceStr) || 0;
-
-  (async () => {
     try {
       if (isEdit) {
-        await api.updateAccount(account.id, {
-          name: name.trim(),
-          account_type: type.trim(),
-          institution: institution.trim(),
+        await api.updateAccount(parseInt(id), {
+          name,
+          account_type: type,
+          institution,
           opening_balance: balance
         });
         showToast('Account updated successfully', 'success');
       } else {
         await api.createAccount({
-          name: name.trim(),
-          account_type: type.trim(),
-          institution: institution.trim(),
+          name,
+          account_type: type,
+          institution,
           opening_balance: balance,
-          currency: currency
+          currency
         });
         showToast('Account created successfully', 'success');
       }
+      closeAccModal();
       await state.reloadMetadata({ notify: false });
       state.notify({ type: 'data_changed' });
       loadAccountsTable();
     } catch (err) {
       showToast(`Failed to save account: ${err.message}`, 'error');
     }
-  })();
-}
+  });
 
-function promptCategoryModal(category = null) {
-  const isEdit = Boolean(category && category.id);
-  const name = prompt(`${isEdit ? 'Edit' : 'Create'} Category Name:`, category?.name || '');
-  if (name === null) return;
-  if (!name.trim()) {
-    showToast('Category name cannot be empty', 'error');
-    return;
-  }
+  // Category Modal event handlers
+  const catModal = document.getElementById('category-modal-overlay');
+  const catClose = document.getElementById('category-modal-close');
+  const catCancel = document.getElementById('category-modal-cancel');
+  const catForm = document.getElementById('category-form');
+  const catColorPicker = document.getElementById('category-modal-color-picker');
+  const catColorInput = document.getElementById('category-modal-color');
 
-  const type = prompt('Category Type (expense or income):', category?.type || 'expense');
-  if (type === null) return;
+  catColorPicker?.addEventListener('input', (e) => {
+    if (catColorInput) catColorInput.value = e.target.value.toUpperCase();
+  });
+  catColorInput?.addEventListener('input', (e) => {
+    if (catColorPicker && /^#[0-9A-Fa-f]{6}$/.test(e.target.value)) {
+      catColorPicker.value = e.target.value;
+    }
+  });
 
-  const color = prompt('Color Hex Code (e.g. #5B8CFF, #FF6B8A, #4DD5A5):', category?.color || '#5B8CFF');
-  if (color === null) return;
-  const hexRegex = /^#[0-9A-Fa-f]{6}$/;
-  if (!hexRegex.test(color.trim())) {
-    showToast('Invalid color format. Please use #RRGGBB (e.g. #5B8CFF)', 'error');
-    return;
-  }
+  const closeCatModal = () => catModal?.classList.remove('open');
+  catClose?.addEventListener('click', closeCatModal);
+  catCancel?.addEventListener('click', closeCatModal);
+  catModal?.addEventListener('click', (e) => { if (e.target === catModal) closeCatModal(); });
 
-  (async () => {
+  catForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = document.getElementById('category-modal-id').value;
+    const isEdit = Boolean(id);
+    const name = document.getElementById('category-modal-name').value.trim();
+    const type = document.getElementById('category-modal-type').value;
+    const color = document.getElementById('category-modal-color').value.trim();
+
+    if (!name) {
+      showToast('Category name cannot be empty', 'error');
+      return;
+    }
+    if (!/^#[0-9A-Fa-f]{6}$/.test(color)) {
+      showToast('Invalid color format. Please use #RRGGBB (e.g. #5B8CFF)', 'error');
+      return;
+    }
+
     try {
       if (isEdit) {
-        await api.updateCategory(category.id, {
-          name: name.trim(),
-          type: type.trim().toLowerCase(),
-          color: color.trim()
+        await api.updateCategory(parseInt(id), {
+          name,
+          type: type.toLowerCase(),
+          color
         });
         showToast('Category updated successfully', 'success');
       } else {
         await api.createCategory({
-          name: name.trim(),
-          cat_type: type.trim().toLowerCase(),
+          name,
+          cat_type: type.toLowerCase(),
           icon: 'tag',
-          color: color.trim()
+          color
         });
         showToast('Category created successfully', 'success');
       }
+      closeCatModal();
       await state.reloadMetadata({ notify: false });
       state.notify({ type: 'data_changed' });
       loadCategoriesTable();
     } catch (err) {
       showToast(`Failed to save category: ${err.message}`, 'error');
     }
-  })();
+  });
+}
+
+function promptAccountModal(account = null) {
+  const modal = document.getElementById('account-modal-overlay');
+  if (!modal) return;
+  const isEdit = Boolean(account && account.id);
+  document.getElementById('account-modal-title').textContent = isEdit ? 'Edit Account' : 'Create Account';
+  document.getElementById('account-modal-id').value = isEdit ? account.id : '';
+  document.getElementById('account-modal-name').value = account?.name || '';
+  document.getElementById('account-modal-type').value = account?.account_type || 'Everyday';
+  document.getElementById('account-modal-institution').value = account?.institution || '';
+  
+  const currSelect = document.getElementById('account-modal-currency');
+  if (currSelect) {
+    currSelect.value = account?.currency || state.currency || 'USD';
+    currSelect.disabled = isEdit; // Currency cannot be mutated after creation
+  }
+
+  document.getElementById('account-modal-balance').value = account?.opening_balance ?? '0.00';
+  modal.classList.add('open');
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function promptCategoryModal(category = null) {
+  const modal = document.getElementById('category-modal-overlay');
+  if (!modal) return;
+  const isEdit = Boolean(category && category.id);
+  document.getElementById('category-modal-title').textContent = isEdit ? 'Edit Category' : 'Create Category';
+  document.getElementById('category-modal-id').value = isEdit ? category.id : '';
+  document.getElementById('category-modal-name').value = category?.name || '';
+  document.getElementById('category-modal-type').value = category?.type || 'expense';
+  
+  const col = category?.color || '#5B8CFF';
+  const colPicker = document.getElementById('category-modal-color-picker');
+  const colInput = document.getElementById('category-modal-color');
+  if (colPicker) colPicker.value = col;
+  if (colInput) colInput.value = col.toUpperCase();
+
+  modal.classList.add('open');
+  if (window.lucide) window.lucide.createIcons();
 }
 
 function renderBackupsTable(backups) {

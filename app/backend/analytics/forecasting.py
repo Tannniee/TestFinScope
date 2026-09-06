@@ -135,11 +135,15 @@ class ForecastingEngine:
         remaining_days = max(0, num_days - elapsed_day)
         remaining_calendar_dates = tuple(f"{context.as_of_month}-{d:02d}" for d in range(elapsed_day + 1, num_days + 1))
 
+        eff_account_id = context.account_id if context else account_id
+        from app.backend.analytics.money_context import resolve_analytics_money_context
+        money_ctx = resolve_analytics_money_context(eff_account_id)
+
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND t.account_id = ?" if context.account_id else ""
             acc_params: List[Any] = [context.account_id] if context.account_id else []
-            amt_expr = "t.amount_minor" if context.account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
+            amt_expr = money_ctx.tx_amount_expr
 
             # 1. Actual Spend & Income To Date
             actual_rows = []
@@ -364,7 +368,8 @@ class ForecastingEngine:
                     med = calculate_median(spends)
                     devs = [abs(x - med) for x in spends]
                     mad = calculate_median(devs)
-                    cap = med + max(1000, round(3.0 * mad))
+                    floor = max(1000, round(money_ctx.materiality_minor() * 0.2))
+                    cap = med + max(floor, round(3.0 * mad))
                     capped_spends = [min(x, cap) for x in spends]
                     capped_mean = round(sum(capped_spends) / float(occ))
                     weekday_avg_minor[w] = round(0.60 * (med * len(spends) / float(occ)) + 0.40 * capped_mean)
@@ -828,6 +833,7 @@ class ForecastingEngine:
                 projected_net_flow_minor=projected_net_flow_minor,
                 projected_savings_rate=projected_savings_rate,
                 actual_income_to_date_minor=actual_income_to_date_minor,
-                diagnostics=diagnostics
+                diagnostics=diagnostics,
+                currency=money_ctx.currency
             )
             return res.to_dict()

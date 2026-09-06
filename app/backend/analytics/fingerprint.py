@@ -12,6 +12,7 @@ Produces objective behavioural metrics describing the user's spending structure:
 - Merchant Concentration
 - Burstiness / Rhythm (Inter-event time CV ratio: B = (r-1)/(r+1))
 - Category Persistence (Monthly cosine vector similarity with sample guard)
+- Multi-Currency Normalization (base currency for portfolio, account native for account)
 - Data Sufficiency Evaluation avoiding fake certainty on sparse data
 """
 
@@ -22,7 +23,9 @@ from typing import Dict, Any, List, Optional
 from app.backend.database.connection import get_db_connection
 from app.backend.analytics.rolling import calculate_median, calculate_mean, calculate_mad
 from app.backend.analytics.models import FingerprintResult
+from app.backend.analytics.money_context import resolve_analytics_money_context
 from app.backend.analytics.period_series import check_data_sufficiency
+
 
 def calculate_percentile(sorted_values: List[int], p: float) -> int:
     """Calculates the p-th percentile (0.0 to 1.0) from a sorted list of ints."""
@@ -37,6 +40,7 @@ def calculate_percentile(sorted_values: List[int], p: float) -> int:
     d1 = sorted_values[int(c)] * (k - f)
     return round(d0 + d1)
 
+
 def calculate_shannon_diversity(proportions: List[float]) -> int:
     """Normalized entropy H / log(K) mapped to 0-100 scale."""
     valid_p = [p for p in proportions if p > 0.0]
@@ -47,6 +51,7 @@ def calculate_shannon_diversity(proportions: List[float]) -> int:
     max_h = math.log(k)
     normalized = h / max_h if max_h > 0 else 0.0
     return round(normalized * 100)
+
 
 def calculate_cosine_similarity(vec_a: Dict[int, int], vec_b: Dict[int, int]) -> float:
     """Cosine similarity between two category spending vectors."""
@@ -60,6 +65,7 @@ def calculate_cosine_similarity(vec_a: Dict[int, int], vec_b: Dict[int, int]) ->
         return 0.0
     return round(dot_product / (norm_a * norm_b), 3)
 
+
 def count_weekday_occurrences_in_range(start_date: date, end_date: date) -> List[int]:
     """Counts actual occurrences of Monday(0)..Sunday(6) between two dates."""
     counts = [0] * 7
@@ -69,6 +75,7 @@ def count_weekday_occurrences_in_range(start_date: date, end_date: date) -> List
         cur += timedelta(days=1)
     return counts
 
+
 class SpendingFingerprintEngine:
     @staticmethod
     def generate_fingerprint(
@@ -77,6 +84,9 @@ class SpendingFingerprintEngine:
         as_of_month: Optional[str] = None
     ) -> Dict[str, Any]:
         """Calculates spending fingerprint for the last N months up to as_of_month."""
+        money_ctx = resolve_analytics_money_context(account_id)
+        tx_amt = money_ctx.tx_amount_expr
+
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
@@ -99,6 +109,7 @@ class SpendingFingerprintEngine:
                 sufficiency = check_data_sufficiency("fingerprint", 0, 0)
                 return {
                     "available": False,
+                    "currency": money_ctx.currency,
                     "data_sufficiency": sufficiency.to_dict(),
                     "period_label": "No data",
                     "sample_months": 0,
@@ -109,21 +120,22 @@ class SpendingFingerprintEngine:
             start_month = recent_months[0]
             end_month = recent_months[-1]
 
-            # 2. Fetch all individual expense transactions in window
+            # 2. Fetch all individual expense transactions in window (normalized to money context)
+            t_acc_clause = " AND t.account_id = ?" if account_id else ""
             cur.execute(f"""
                 SELECT 
-                    id,
-                    transaction_date,
-                    transaction_time,
-                    amount_minor,
-                    category_id,
-                    merchant_name,
-                    essentiality,
-                    is_recurring
-                FROM active_transactions
-                WHERE transaction_type = 'expense'
-                  AND transaction_date >= ? AND transaction_date <= ? || '-31' {acc_clause}
-                ORDER BY transaction_date ASC, transaction_time ASC
+                    t.id,
+                    t.transaction_date,
+                    t.transaction_time,
+                    {tx_amt} as amount_minor,
+                    t.category_id,
+                    t.merchant_name,
+                    t.essentiality,
+                    t.is_recurring
+                FROM active_transactions t
+                WHERE t.transaction_type = 'expense'
+                  AND t.transaction_date >= ? AND t.transaction_date <= ? || '-31' {t_acc_clause}
+                ORDER BY t.transaction_date ASC, t.transaction_time ASC
             """, [start_month, end_month] + acc_params)
 
             tx_rows = cur.fetchall()
@@ -133,6 +145,7 @@ class SpendingFingerprintEngine:
             if not sufficiency.available:
                 return {
                     "available": False,
+                    "currency": money_ctx.currency,
                     "data_sufficiency": sufficiency.to_dict(),
                     "period_label": f"{start_month} to {end_month}",
                     "sample_months": len(recent_months),
@@ -204,17 +217,18 @@ class SpendingFingerprintEngine:
                 tot = weekday_spend_totals[w]
                 cnt = weekday_tx_counts[w]
                 occ = max(1, wday_cal_occurrences[w])
-                avg_tx_size = (tot / cnt) if cnt > 0 else 0
-                avg_daily_spend = (tot / occ)
+                avg_tx_size = round(tot / cnt) if cnt > 0 else 0
+                avg_daily_spend = round(tot / occ)
 
                 weekday_breakdown.append({
                     "day_index": w,
                     "day_name": weekday_names[w],
-                    "total_spend": round(tot / 100.0, 2),
+                    "total_spend_minor": tot,
+                    "total_spend": money_ctx.to_major(tot),
                     "transaction_count": cnt,
                     "calendar_occurrences": occ,
-                    "avg_transaction_size": round(avg_tx_size / 100.0, 2),
-                    "avg_daily_spend": round(avg_daily_spend / 100.0, 2)
+                    "avg_transaction_size": money_ctx.to_major(avg_tx_size),
+                    "avg_daily_spend": money_ctx.to_major(avg_daily_spend)
                 })
 
             weekend_ratio = (weekend_discretionary_spend_minor / discretionary_spend_minor) if discretionary_spend_minor > 0 else (weekend_spend_minor / total_spend_minor if total_spend_minor > 0 else 0.0)
@@ -263,13 +277,13 @@ class SpendingFingerprintEngine:
             # Category Persistence: Average cosine similarity across consecutive months
             cur.execute(f"""
                 SELECT 
-                    strftime('%Y-%m', transaction_date) as m,
-                    category_id,
-                    SUM(amount_minor) as total_minor
-                FROM active_transactions
-                WHERE transaction_type = 'expense'
-                  AND transaction_date >= ? AND transaction_date <= ? || '-31' {acc_clause}
-                GROUP BY m, category_id
+                    strftime('%Y-%m', t.transaction_date) as m,
+                    t.category_id,
+                    SUM({tx_amt}) as total_minor
+                FROM active_transactions t
+                WHERE t.transaction_type = 'expense'
+                  AND t.transaction_date >= ? AND t.transaction_date <= ? || '-31' {t_acc_clause}
+                GROUP BY m, t.category_id
             """, [start_month, end_month] + acc_params)
 
             monthly_cat_vectors: Dict[str, Dict[int, int]] = {}
@@ -336,10 +350,12 @@ class SpendingFingerprintEngine:
                     "months": recent_months,
                     "data_sufficiency": sufficiency.to_dict(),
                     "weekday_breakdown": weekday_breakdown
-                }
+                },
+                currency=money_ctx.currency
             )
             out = fp.to_dict()
             out["available"] = True
+            out["currency"] = money_ctx.currency
             out["data_sufficiency"] = sufficiency.to_dict()
             out["weekday_breakdown"] = weekday_breakdown
             return out

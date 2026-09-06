@@ -128,14 +128,18 @@ class HistoricalReplayRunner:
     @staticmethod
     def get_actual_month_end_net_spend(month_str: str, account_id: Optional[int] = None) -> int:
         """Computes true historical month-end net spending (expense - refunds) for `month_str`."""
+        from app.backend.analytics.money_context import resolve_analytics_money_context
+        money_ctx = resolve_analytics_money_context(account_id)
+        amt_expr = money_ctx.amount_expr
+
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
             params = [f"{month_str}%"] + ([account_id] if account_id else [])
             cur.execute(f"""
                 SELECT 
-                    COALESCE(SUM(CASE WHEN transaction_type = 'expense' THEN amount_minor ELSE 0 END), 0) -
-                    COALESCE(SUM(CASE WHEN transaction_type = 'refund' THEN amount_minor ELSE 0 END), 0) as net_spend
+                    COALESCE(SUM(CASE WHEN transaction_type = 'expense' THEN {amt_expr} ELSE 0 END), 0) -
+                    COALESCE(SUM(CASE WHEN transaction_type = 'refund' THEN {amt_expr} ELSE 0 END), 0) as net_spend
                 FROM active_transactions
                 WHERE transaction_date LIKE ? {acc_clause}
             """, params)
@@ -193,10 +197,14 @@ class HistoricalReplayRunner:
         if cache_key in _REPLAY_CACHE:
             return _REPLAY_CACHE[cache_key]
 
+        from app.backend.analytics.money_context import resolve_analytics_money_context
+        money_ctx = resolve_analytics_money_context(account_id)
+
         completed_months = HistoricalReplayRunner.get_completed_historical_months(account_id, as_of_date=as_of_date)
         if len(completed_months) < 3:
             res = {
                 "available": False,
+                "currency": money_ctx.currency,
                 "reason": "Insufficient completed history for production replay (requires at least 3 completed months)",
                 "evaluations_count": 0,
                 "ranking_metric": "median_absolute_error",
@@ -498,6 +506,7 @@ class HistoricalReplayRunner:
 
         result = {
             "available": True,
+            "currency": money_ctx.currency,
             "replay_contract_version": 2,
             "selection_origin_days": list(FORECAST_CONFIG.selection_cutoff_days),
             "calibration_origin_days": sorted(list(set(FORECAST_CONFIG.selection_cutoff_days) | set(FORECAST_CONFIG.calibration_extra_cutoff_days))),

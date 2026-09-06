@@ -85,7 +85,9 @@ class ApiHandler:
         transaction_date: str,
         transaction_time: str = "12:00",
         description: str = "Account Transfer",
-        note: str = ""
+        note: str = "",
+        to_amount: Optional[float] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         return TransactionRepository.create_transfer(
             from_account_id=from_account_id,
@@ -94,7 +96,8 @@ class ApiHandler:
             transaction_date=transaction_date,
             transaction_time=transaction_time,
             description=description,
-            note=note
+            note=note,
+            to_amount=to_amount or kwargs.get("to_amount") or kwargs.get("destination_amount")
         )
 
     def create_refund(
@@ -112,6 +115,17 @@ class ApiHandler:
             raise ValueError("original_tx_id or original_transaction_id is required for a linked refund.")
         return TransactionRepository.create_refund(orig_id, amount, transaction_date, account_id, note)
 
+    def get_refundable_info(
+        self,
+        tx_id: Optional[int] = None,
+        transaction_id: Optional[int] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        target_id = tx_id or transaction_id or kwargs.get("tx_id") or kwargs.get("transaction_id")
+        if not target_id:
+            raise ValueError("tx_id or transaction_id is required.")
+        return TransactionRepository.get_refundable_info(int(target_id))
+
     def update_transfer(
         self,
         transfer_group_id: Optional[str] = None,
@@ -119,6 +133,7 @@ class ApiHandler:
         from_account_id: Optional[int] = None,
         to_account_id: Optional[int] = None,
         amount: Optional[float] = None,
+        to_amount: Optional[float] = None,
         transaction_date: Optional[str] = None,
         transaction_time: Optional[str] = None,
         description: Optional[str] = None,
@@ -132,6 +147,7 @@ class ApiHandler:
             from_account_id=from_account_id or kwargs.get("from_account_id"),
             to_account_id=to_account_id or kwargs.get("to_account_id"),
             amount=amount if amount is not None else kwargs.get("amount"),
+            to_amount=to_amount if to_amount is not None else (kwargs.get("to_amount") or kwargs.get("destination_amount")),
             transaction_date=transaction_date or kwargs.get("transaction_date"),
             transaction_time=transaction_time or kwargs.get("transaction_time"),
             description=description or kwargs.get("description"),

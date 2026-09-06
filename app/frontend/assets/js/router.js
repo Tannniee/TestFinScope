@@ -28,6 +28,24 @@ export const router = {
   currentRoute: '#overview',
   renderGeneration: 0,
   currentAbortController: null,
+  cleanups: [],
+
+  registerCleanup(fn) {
+    if (typeof fn === 'function') {
+      this.cleanups.push(fn);
+    }
+  },
+
+  runCleanups() {
+    while (this.cleanups.length > 0) {
+      const cleanup = this.cleanups.pop();
+      try {
+        cleanup();
+      } catch (err) {
+        console.error('Router cleanup error:', err);
+      }
+    }
+  },
 
   init() {
     window.addEventListener('hashchange', () => this.handleNavigation());
@@ -63,6 +81,7 @@ export const router = {
   },
 
   async renderCurrentView() {
+    this.runCleanups();
     const container = document.getElementById('page-container');
     const route = routes[this.currentRoute];
     if (!container || !route) return;
@@ -79,7 +98,10 @@ export const router = {
     const generation = this.renderGeneration;
 
     try {
-      await route.render(container, { signal: controller.signal });
+      await route.render(container, {
+        signal: controller.signal,
+        registerCleanup: (fn) => this.registerCleanup(fn)
+      });
     } catch (err) {
       if (err.name === 'AbortError' || controller.signal.aborted || generation !== this.renderGeneration) {
         // Rapid navigation or aborted request; ignore silently
@@ -97,3 +119,7 @@ export const router = {
     }
   }
 };
+
+export function registerCleanup(fn) {
+  router.registerCleanup(fn);
+}

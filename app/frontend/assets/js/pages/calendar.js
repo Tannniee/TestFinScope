@@ -19,7 +19,7 @@ export async function renderCalendarPage(container) {
         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
           <div style="display: flex; align-items: center; gap: 12px;">
             <h3 style="font-size: 16px; font-weight: 700;">${state.formatMonthLabel(state.month)}</h3>
-            <span style="font-size: 12px; color: var(--text-muted);">Double-click any day to quickly record spending</span>
+            <span style="font-size: 12px; color: var(--text-muted);">Click any day to inspect details or record spending</span>
           </div>
 
           <!-- Legend -->
@@ -193,14 +193,10 @@ function renderCalendarGrid(daysMap) {
 
   container.innerHTML = html;
 
-  // Add click & dblclick listeners
+  // Single-click cleanly opens day drawer without click/dblclick race conditions
   container.querySelectorAll('.calendar-cell:not(.other-month)').forEach(cell => {
     cell.addEventListener('click', () => {
       openDayDrawer(cell.dataset.date);
-    });
-
-    cell.addEventListener('dblclick', () => {
-      modals.openTransactionModal(null, cell.dataset.date);
     });
   });
 }
@@ -247,24 +243,31 @@ async function openDayDrawer(dateStr) {
     if (thisRequestId !== currentDayRequestId) return; // Stale request guard (UX-H23)
 
     const txs = res.items || [];
+    const isPortfolio = !state.accountId;
+    const scopeCurrency = isPortfolio 
+      ? (state.currency || 'USD') 
+      : (state.accounts.find(a => a.id === state.accountId)?.currency || state.currency || 'USD');
 
-    // Factoring refunds into net expense and flow (V121-M02 & UX-H22)
+    // Factoring refunds into net expense and flow using base currency in portfolio scope
     let totalIncome = 0;
     let grossExpense = 0;
     let totalRefund = 0;
     txs.forEach(t => {
-      if (t.transaction_type === 'income') totalIncome += t.amount;
-      else if (t.transaction_type === 'expense') grossExpense += t.amount;
-      else if (t.transaction_type === 'refund') totalRefund += t.amount;
+      const amt = (isPortfolio && t.base_amount !== undefined && t.base_amount !== null) 
+        ? Number(t.base_amount) 
+        : Number(t.amount);
+      if (t.transaction_type === 'income') totalIncome += amt;
+      else if (t.transaction_type === 'expense') grossExpense += amt;
+      else if (t.transaction_type === 'refund') totalRefund += amt;
     });
 
     const netExpense = Math.max(0, grossExpense - totalRefund);
     const netVal = totalIncome - netExpense;
 
-    if (incEl) incEl.textContent = `+${state.formatCurrency(totalIncome)}`;
-    if (expEl) expEl.textContent = `-${state.formatCurrency(netExpense)}`;
+    if (incEl) incEl.textContent = `+${state.formatCurrency(totalIncome, scopeCurrency)}`;
+    if (expEl) expEl.textContent = `-${state.formatCurrency(netExpense, scopeCurrency)}`;
     if (netEl) {
-      netEl.textContent = `${netVal >= 0 ? '+' : ''}${state.formatCurrency(netVal)}`;
+      netEl.textContent = `${netVal >= 0 ? '+' : ''}${state.formatCurrency(netVal, scopeCurrency)}`;
       netEl.style.color = netVal >= 0 ? 'var(--color-positive)' : 'var(--color-negative)';
     }
 
@@ -280,6 +283,7 @@ async function openDayDrawer(dateStr) {
         const isTransfer = t.transaction_type === 'transfer';
         const sign = (isIncome || isRefund) ? '+' : '-';
         const color = (isIncome || isRefund) ? 'var(--color-positive)' : 'var(--color-negative)';
+        const txCurrency = t.currency || t.account_currency || scopeCurrency;
         const typeBadge = isRefund 
           ? ' <span style="background: rgba(48, 209, 88, 0.15); color: #30d158; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">Refund</span>' 
           : isTransfer
@@ -298,7 +302,7 @@ async function openDayDrawer(dateStr) {
               </div>
             </div>
             <div style="font-weight: 700; color: ${color}; font-size: 14px;">
-              ${sign}${state.formatCurrency(t.amount)}
+              ${sign}${state.formatCurrency(t.amount, txCurrency)}
             </div>
           </div>
         `;

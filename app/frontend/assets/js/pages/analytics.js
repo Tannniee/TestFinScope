@@ -12,16 +12,46 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { showToast } from '../components/toast.js';
 import { escapeHtml, getMerchantInitials } from '../utils.js';
+import { formatChartMoney, formatAxisMoney } from '../charts/money-format.js';
+import { registerCleanup } from '../router.js';
 
 let varianceChart = null;
 let weekdayChart = null;
 let cumulativeChart = null;
-let patternsTrendChart = null;
 
 let currentTab = 'overview'; // 'overview', 'changes', 'patterns', 'anomalies', 'forecast'
 let selectedCategoryDrilldown = null;
 
-export async function renderAnalyticsPage(container) {
+export async function renderAnalyticsPage(container, context = {}) {
+  const onResize = () => {
+    varianceChart?.resize();
+    weekdayChart?.resize();
+    cumulativeChart?.resize();
+  };
+  window.addEventListener('resize', onResize);
+
+  const cleanup = () => {
+    window.removeEventListener('resize', onResize);
+    if (varianceChart) {
+      try { varianceChart.dispose(); } catch (e) {}
+      varianceChart = null;
+    }
+    if (weekdayChart) {
+      try { weekdayChart.dispose(); } catch (e) {}
+      weekdayChart = null;
+    }
+    if (cumulativeChart) {
+      try { cumulativeChart.dispose(); } catch (e) {}
+      cumulativeChart = null;
+    }
+  };
+
+  if (context.registerCleanup) {
+    context.registerCleanup(cleanup);
+  } else {
+    registerCleanup(cleanup);
+  }
+
   let contextData = null;
   try {
     contextData = await api.getAnalyticsContext(state.month, state.accountId);
@@ -191,14 +221,14 @@ async function renderOverviewTab(container) {
           if (ins.evidence && Object.keys(ins.evidence).length > 0) {
             evidenceHtml = Object.entries(ins.evidence).map(([k, v]) => `
               <div class="evidence-item">
-                <span class="evidence-label">${k.replace(/_/g, ' ')}</span>
-                <span class="evidence-val">${typeof v === 'number' ? state.formatCurrency(v) : v}</span>
+                <span class="evidence-label">${escapeHtml(k.replace(/_/g, ' '))}</span>
+                <span class="evidence-val">${typeof v === 'number' ? state.formatCurrency(v) : escapeHtml(String(v))}</span>
               </div>
             `).join('');
           }
 
           return `
-            <div class="insight-card ${ins.severity || 'info'}" style="margin-bottom: 0;">
+            <div class="insight-card ${escapeHtml(ins.severity || 'info')}" style="margin-bottom: 0;">
               <div class="insight-card-main">
                 <div class="insight-content-wrap">
                   <div class="insight-icon-box" style="background: ${sevBg}; color: ${sevColor};">
@@ -206,15 +236,15 @@ async function renderOverviewTab(container) {
                   </div>
                   <div>
                     <div class="insight-title">
-                      ${ins.title}
+                      ${escapeHtml(ins.title)}
                       <span class="delta-badge neutral" style="font-size: 10px; padding: 1px 6px;">Impact: ${Math.round((ins.impact_score || 0.5) * 100)}</span>
                     </div>
-                    <div class="insight-summary">${ins.summary}</div>
+                    <div class="insight-summary">${escapeHtml(ins.summary)}</div>
                   </div>
                 </div>
                 <div class="insight-actions">
                   ${evidenceHtml ? `<button class="btn btn-secondary btn-sm evidence-toggle-btn" data-target="${drawerId}" style="padding: 4px 10px; font-size: 11px;">Why?</button>` : ''}
-                  <button class="btn btn-secondary btn-sm insight-dismiss-btn" data-key="${ins.insight_key || ins.id}" title="Dismiss insight" style="padding: 4px 8px; font-size: 11px;"><i data-lucide="x" style="width: 12px; height: 12px;"></i></button>
+                  <button class="btn btn-secondary btn-sm insight-dismiss-btn" data-key="${escapeHtml(ins.insight_key || ins.id)}" title="Dismiss insight" style="padding: 4px 8px; font-size: 11px;"><i data-lucide="x" style="width: 12px; height: 12px;"></i></button>
                 </div>
               </div>
               ${evidenceHtml ? `<div id="${drawerId}" class="insight-evidence-drawer">${evidenceHtml}</div>` : ''}
@@ -1228,7 +1258,7 @@ function renderVarianceWaterfallChart(steps) {
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: '#8E8E93', formatter: '${value}' },
+      axisLabel: { color: '#8E8E93', formatter: (val) => formatAxisMoney(val, state.currency) },
       splitLine: { lineStyle: { color: 'rgba(255, 255, 255, 0.06)' } }
     },
     series: [
@@ -1244,7 +1274,13 @@ function renderVarianceWaterfallChart(steps) {
         name: 'Variance',
         type: 'bar',
         stack: 'Total',
-        label: { show: true, position: 'top', color: '#E0E0E0', fontSize: 10.5, formatter: '${c}' },
+        label: {
+          show: true,
+          position: 'top',
+          color: '#E0E0E0',
+          fontSize: 10.5,
+          formatter: (params) => formatChartMoney(params.value, state.currency)
+        },
         itemStyle: {
           color: function (params) {
             const idx = params.dataIndex;
@@ -1272,7 +1308,13 @@ function renderWeekdayChart(weekdayData) {
   const averages = weekdayData.map(d => d.average);
 
   const option = {
-    tooltip: { trigger: 'axis', formatter: '{b}: ${c} avg daily expense' },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        const p = Array.isArray(params) ? params[0] : params;
+        return `${escapeHtml(p.name)}: ${formatChartMoney(p.value, state.currency)} avg daily expense`;
+      }
+    },
     grid: { top: 20, right: 20, bottom: 25, left: 50 },
     xAxis: {
       type: 'category',
@@ -1281,7 +1323,7 @@ function renderWeekdayChart(weekdayData) {
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: '#8E8E93', formatter: '${value}' },
+      axisLabel: { color: '#8E8E93', formatter: (val) => formatAxisMoney(val, state.currency) },
       splitLine: { lineStyle: { color: 'rgba(255, 255, 255, 0.06)' } }
     },
     series: [{
@@ -1302,7 +1344,17 @@ function renderCumulativeChart(cumData) {
   cumulativeChart = window.echarts.init(chartDom);
 
   const option = {
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        if (!Array.isArray(params) || params.length === 0) return '';
+        let str = `<div style="font-weight:600; margin-bottom:4px;">Day ${escapeHtml(params[0].name)}</div>`;
+        params.forEach(p => {
+          str += `<div style="font-size:12px;">${p.marker} ${escapeHtml(p.seriesName)}: <b>${formatChartMoney(p.value, state.currency)}</b></div>`;
+        });
+        return str;
+      }
+    },
     legend: {
       data: ['Current Period', 'Comparison Period'],
       textStyle: { color: '#8E8E93', fontSize: 11 },
@@ -1316,7 +1368,7 @@ function renderCumulativeChart(cumData) {
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: '#8E8E93', formatter: '${value}' },
+      axisLabel: { color: '#8E8E93', formatter: (val) => formatAxisMoney(val, state.currency) },
       splitLine: { lineStyle: { color: 'rgba(255, 255, 255, 0.06)' } }
     },
     series: [

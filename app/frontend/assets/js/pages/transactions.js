@@ -209,15 +209,24 @@ function setupEventListeners() {
 
   document.getElementById('btn-reset-filters')?.addEventListener('click', () => {
     activeFilters = { search: '', category_id: null, account_id: state.accountId || null, transaction_type: null, essentiality: null };
-    document.getElementById('filter-search').value = '';
-    document.getElementById('filter-category').value = '';
-    document.getElementById('filter-account').value = state.accountId || '';
-    document.getElementById('filter-type').value = '';
-    document.getElementById('filter-essentiality').value = '';
+    const searchEl = document.getElementById('filter-search');
+    const catEl = document.getElementById('filter-category');
+    const accEl = document.getElementById('filter-account');
+    const typeEl = document.getElementById('filter-type');
+    const essEl = document.getElementById('filter-essentiality');
+
+    if (searchEl) searchEl.value = '';
+    if (catEl) catEl.value = '';
+    if (accEl) accEl.value = state.accountId || '';
+    if (typeEl) typeEl.value = '';
+    if (essEl) essEl.value = '';
+
     isReviewQueueActive = false;
     document.getElementById('btn-review-queue')?.classList.remove('active');
-    document.getElementById('tx-pagination-wrap').style.display = 'flex';
-    document.getElementById('tx-table-title').textContent = 'Transaction Records';
+    const paginationWrap = document.getElementById('tx-pagination-wrap');
+    if (paginationWrap) paginationWrap.style.display = 'flex';
+    const titleEl = document.getElementById('tx-table-title');
+    if (titleEl) titleEl.textContent = 'Transaction Records';
     currentOffset = 0;
     loadTransactions();
   });
@@ -380,7 +389,10 @@ function renderTableRows(items, isReviewQueueView = false) {
       </span>
     `;
 
-    const canRefund = tx.transaction_type === 'expense' && !tx.refund_of_transaction_id;
+    const isExpense = tx.transaction_type === 'expense';
+    const isLinkedRefund = Boolean(tx.refund_of_transaction_id);
+    const isFullyRefunded = tx.remaining_refundable_minor !== undefined && tx.remaining_refundable_minor <= 0;
+    const canRefund = isExpense && !isLinkedRefund && !isFullyRefunded;
     const canDuplicate = tx.transaction_type !== 'transfer' && tx.transaction_type !== 'refund';
 
     return `
@@ -431,7 +443,11 @@ function renderTableRows(items, isReviewQueueView = false) {
               <button class="btn btn-secondary btn-icon btn-sm action-refund" data-id="${tx.id}" title="Record Refund for this purchase">
                 <i data-lucide="corner-down-left" style="width: 14px; height: 14px;"></i>
               </button>
-            ` : ''}
+            ` : (isExpense && !isLinkedRefund ? `
+              <button class="btn btn-secondary btn-icon btn-sm" disabled style="opacity: 0.35; cursor: not-allowed;" title="Fully refunded">
+                <i data-lucide="corner-down-left" style="width: 14px; height: 14px;"></i>
+              </button>
+            ` : '')}
             <button class="btn btn-secondary btn-icon btn-sm action-edit" data-id="${tx.id}" title="Edit">
               <i data-lucide="edit-2" style="width: 14px; height: 14px;"></i>
             </button>

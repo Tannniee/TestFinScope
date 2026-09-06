@@ -55,6 +55,7 @@ ROUTES: Dict[str, Route] = {
     "update_transfer": Route(api_handler.update_transfer, "WRITE"),
     "create_refund": Route(api_handler.create_refund, "WRITE"),
     "update_refund": Route(api_handler.update_refund, "WRITE"),
+    "get_refundable_info": Route(api_handler.get_refundable_info, "READ"),
     "update_transaction": Route(api_handler.update_transaction, "WRITE"),
     "delete_transaction": Route(api_handler.delete_transaction, "DESTRUCTIVE"),
     "undo_delete_transaction": Route(api_handler.undo_delete_transaction, "WRITE"),
@@ -163,6 +164,12 @@ def authorize_request(
 class FinScopeHTTPHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(FRONTEND_DIR), **kwargs)
+
+    def end_headers(self):
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none';")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        super().end_headers()
 
     def log_message(self, format, *args):
         # Silence routine static asset logs

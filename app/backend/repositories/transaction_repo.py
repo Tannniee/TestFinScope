@@ -380,7 +380,8 @@ class TransactionRepository:
         transaction_date: str,
         transaction_time: str = "12:00",
         description: str = "Account Transfer",
-        note: str = ""
+        note: str = "",
+        to_amount: Optional[float] = None
     ) -> Dict[str, Any]:
         """Creates proper double-entry transfer records using TransferService."""
         from app.backend.services.transfer_service import TransferService
@@ -391,7 +392,8 @@ class TransactionRepository:
             transaction_date=transaction_date,
             transaction_time=transaction_time,
             description=description,
-            note=note
+            note=note,
+            to_amount=to_amount
         )
 
     @staticmethod
@@ -466,23 +468,25 @@ class TransactionRepository:
             try:
                 cur = conn.cursor()
                 cur.execute("""
-                    SELECT COALESCE(SUM(amount_minor), 0)
+                    SELECT COALESCE(SUM(COALESCE(original_amount_minor, amount_minor)), 0)
                     FROM active_transactions
                     WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
                 """, (original_tx_id,))
                 existing_refunded_minor = cur.fetchone()[0]
 
-                remaining_refundable_minor = orig["amount_minor"] - existing_refunded_minor
+                orig_dict = dict(orig)
+                orig_total_minor = orig_dict.get("original_amount_minor") if orig_dict.get("original_amount_minor") is not None else orig_dict["amount_minor"]
+                remaining_refundable_minor = orig_total_minor - existing_refunded_minor
                 if refund_minor > remaining_refundable_minor:
                     if orig_acc_curr == "USD":
                         err_str = (
                             f"Refund amount of ${refund_minor / 100:.2f} exceeds remaining refundable balance of ${remaining_refundable_minor / 100:.2f} "
-                            f"(Original: ${orig['amount_minor'] / 100:.2f}, Prior Refunds: ${existing_refunded_minor / 100:.2f})."
+                            f"(Original: ${orig_total_minor / 100:.2f}, Prior Refunds: ${existing_refunded_minor / 100:.2f})."
                         )
                     else:
                         err_str = (
                             f"Refund amount of {format_money(refund_minor, orig_acc_curr)} exceeds remaining refundable balance of {format_money(remaining_refundable_minor, orig_acc_curr)} "
-                            f"(Original: {format_money(orig['amount_minor'], orig_acc_curr)}, Prior Refunds: {format_money(existing_refunded_minor, orig_acc_curr)})."
+                            f"(Original: {format_money(orig_total_minor, orig_acc_curr)}, Prior Refunds: {format_money(existing_refunded_minor, orig_acc_curr)})."
                         )
                     raise ValueError(err_str)
 
@@ -606,13 +610,15 @@ class TransactionRepository:
                 cur = conn.cursor()
                 if parent_id and parent_tx:
                     cur.execute("""
-                        SELECT COALESCE(SUM(original_amount_minor), SUM(amount_minor), 0)
+                        SELECT COALESCE(SUM(COALESCE(original_amount_minor, amount_minor)), 0)
                         FROM active_transactions
                         WHERE refund_of_transaction_id = ? AND transaction_type = 'refund' AND id != ?
                     """, (parent_id, tx_id))
                     other_refunds = cur.fetchone()[0]
 
-                    remaining = parent_tx["amount_minor"] - other_refunds
+                    p_dict = dict(parent_tx)
+                    parent_total_minor = p_dict.get("original_amount_minor") if p_dict.get("original_amount_minor") is not None else p_dict["amount_minor"]
+                    remaining = parent_total_minor - other_refunds
                     if new_amount_minor > remaining:
                         if parent_acc_curr == "USD":
                             err_str = f"Updated refund amount of ${new_amount_minor / 100:.2f} exceeds remaining refundable balance of ${remaining / 100:.2f}."
@@ -647,6 +653,45 @@ class TransactionRepository:
             except Exception:
                 conn.rollback()
                 raise
+
+    @staticmethod
+    def get_refundable_info(tx_id: int) -> Dict[str, Any]:
+        """
+        Returns refund status and remaining refundable balance in the transaction's original purchase currency.
+        """
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"Transaction {tx_id} not found.")
+            tx = dict(row)
+
+            cur.execute("SELECT currency FROM accounts WHERE id = ?", (tx["account_id"],))
+            acc_row = cur.fetchone()
+            orig_curr = (tx.get("original_currency") or (acc_row["currency"] if acc_row else "USD")) or "USD"
+            orig_amount_minor = tx.get("original_amount_minor") if tx.get("original_amount_minor") is not None else tx["amount_minor"]
+
+            cur.execute("""
+                SELECT COALESCE(SUM(COALESCE(original_amount_minor, amount_minor)), 0)
+                FROM active_transactions
+                WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
+            """, (tx_id,))
+            refunded_minor = cur.fetchone()[0]
+            remaining_minor = max(0, orig_amount_minor - refunded_minor)
+
+            return {
+                "transaction_id": tx_id,
+                "original_currency": orig_curr,
+                "original_amount_minor": orig_amount_minor,
+                "original_amount": float(minor_to_major(orig_amount_minor, orig_curr)),
+                "refunded_amount_minor": refunded_minor,
+                "refunded_amount": float(minor_to_major(refunded_minor, orig_curr)),
+                "remaining_refundable_minor": remaining_minor,
+                "remaining_refundable": float(minor_to_major(remaining_minor, orig_curr)),
+                "can_refund": remaining_minor > 0 and tx["transaction_type"] == "expense",
+                "is_expense": tx["transaction_type"] == "expense"
+            }
 
     @staticmethod
     def _update_fields(tx_id: int, data: Dict[str, Any]) -> bool:

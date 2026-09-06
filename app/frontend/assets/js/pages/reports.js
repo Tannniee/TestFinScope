@@ -180,18 +180,19 @@ function setupReportHandlers() {
 async function loadReportData() {
   try {
     const summary = await api.getMonthSummary(state.month, state.accountId);
+    const curr = summary.currency || (state.accountId ? state.accounts.find(a => a.id === state.accountId)?.currency : state.currency) || state.currency;
 
     document.getElementById('report-period-label').textContent = state.formatMonthLabel(state.month);
-    document.getElementById('rep-income').textContent = state.formatCurrency(summary.kpis.income);
-    document.getElementById('rep-expense').textContent = state.formatCurrency(summary.kpis.expense);
+    document.getElementById('rep-income').textContent = state.formatCurrency(summary.kpis.income, curr);
+    document.getElementById('rep-expense').textContent = state.formatCurrency(summary.kpis.expense, curr);
     
     const netEl = document.getElementById('rep-net');
-    netEl.textContent = state.formatCurrency(summary.kpis.net_flow);
+    netEl.textContent = state.formatCurrency(summary.kpis.net_flow, curr);
     netEl.style.color = summary.kpis.net_flow >= 0 ? 'var(--color-positive)' : 'var(--color-negative)';
 
     document.getElementById('rep-savings').textContent = `${summary.kpis.savings_rate}%`;
-    document.getElementById('rep-essential-val').textContent = `${state.formatCurrency(summary.essentiality.essential)} (${summary.essentiality.essential_pct}%)`;
-    document.getElementById('rep-discretionary-val').textContent = `${state.formatCurrency(summary.essentiality.discretionary)} (${summary.essentiality.discretionary_pct}%)`;
+    document.getElementById('rep-essential-val').textContent = `${state.formatCurrency(summary.essentiality.essential, curr)} (${summary.essentiality.essential_pct}%)`;
+    document.getElementById('rep-discretionary-val').textContent = `${state.formatCurrency(summary.essentiality.discretionary, curr)} (${summary.essentiality.discretionary_pct}%)`;
 
     // Render category table
     const tbody = document.getElementById('report-category-body');
@@ -207,7 +208,7 @@ async function loadReportData() {
           ${escapeHtml(c.name)}
         </td>
         <td style="text-align: right; color: var(--text-muted);">${c.count}</td>
-        <td style="text-align: right; font-weight: 600;">${state.formatCurrency(c.amount)}</td>
+        <td style="text-align: right; font-weight: 600;">${state.formatCurrency(c.amount, curr)}</td>
         <td style="text-align: right;">
           <div style="display:flex; align-items:center; justify-content:flex-end; gap:8px;">
             <div class="budget-progress-wrap" style="width: 60px; height: 6px;">

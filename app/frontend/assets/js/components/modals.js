@@ -44,39 +44,34 @@ export const modals = {
 
   formSnapshot: null,
 
-  captureFormSnapshot() {
-    const obj = {
+  _getFormValues() {
+    return {
       amount: document.getElementById('tx-amount')?.value || '',
       account: document.getElementById('tx-account')?.value || '',
       merchant: document.getElementById('tx-merchant')?.value || '',
       type: document.getElementById('tx-type')?.value || '',
       date: document.getElementById('tx-date')?.value || '',
+      time: document.getElementById('tx-time')?.value || '',
       description: document.getElementById('tx-description')?.value || '',
       note: document.getElementById('tx-note')?.value || '',
       category: document.getElementById('tx-category')?.value || '',
+      essentiality: document.getElementById('tx-essentiality')?.value || '',
+      recurring: Boolean(document.getElementById('tx-recurring')?.checked),
       toAccount: document.getElementById('tx-to-account')?.value || '',
       toAmount: document.getElementById('tx-to-amount')?.value || '',
+      origCurrency: document.getElementById('tx-orig-currency')?.value || '',
+      origAmount: document.getElementById('tx-orig-amount')?.value || '',
       refundId: document.getElementById('tx-refund-id')?.value || ''
     };
-    this.formSnapshot = JSON.stringify(obj);
+  },
+
+  captureFormSnapshot() {
+    this.formSnapshot = JSON.stringify(this._getFormValues());
   },
 
   isFormDirty() {
     if (!this.formSnapshot) return false;
-    const obj = {
-      amount: document.getElementById('tx-amount')?.value || '',
-      account: document.getElementById('tx-account')?.value || '',
-      merchant: document.getElementById('tx-merchant')?.value || '',
-      type: document.getElementById('tx-type')?.value || '',
-      date: document.getElementById('tx-date')?.value || '',
-      description: document.getElementById('tx-description')?.value || '',
-      note: document.getElementById('tx-note')?.value || '',
-      category: document.getElementById('tx-category')?.value || '',
-      toAccount: document.getElementById('tx-to-account')?.value || '',
-      toAmount: document.getElementById('tx-to-amount')?.value || '',
-      refundId: document.getElementById('tx-refund-id')?.value || ''
-    };
-    return JSON.stringify(obj) !== this.formSnapshot;
+    return JSON.stringify(this._getFormValues()) !== this.formSnapshot;
   },
 
   closeTransactionModal(force = false) {
@@ -140,8 +135,11 @@ export const modals = {
     // Payee Autocomplete & Merchant Memory
     this.setupPayeeAutocomplete(payeeInput);
 
-    // Account currency symbol update
+    // Account currency symbol and step update
     document.getElementById('tx-account')?.addEventListener('change', () => {
+      this.updateCurrencySymbol();
+    });
+    document.getElementById('tx-to-account')?.addEventListener('change', () => {
       this.updateCurrencySymbol();
     });
 
@@ -636,6 +634,26 @@ export const modals = {
     const curr = selectedOpt?.dataset?.currency || state.currency || 'USD';
     const symbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥', VND: '₫' };
     symbolEl.textContent = symbols[curr] || curr;
+
+    const fractionDigits = (curr === 'VND' || curr === 'JPY' || curr === 'KRW') ? 0 : (curr === 'KWD' || curr === 'BHD' ? 3 : 2);
+    const stepVal = fractionDigits === 0 ? '1' : (fractionDigits === 3 ? '0.001' : '0.01');
+    const placeholderVal = fractionDigits === 0 ? '0' : (fractionDigits === 3 ? '0.000' : '0.00');
+
+    const amtInput = document.getElementById('tx-amount');
+    if (amtInput) {
+      amtInput.step = stepVal;
+      amtInput.placeholder = placeholderVal;
+    }
+
+    const toAccSelect = document.getElementById('tx-to-account');
+    const toAmtInput = document.getElementById('tx-to-amount');
+    if (toAccSelect && toAmtInput) {
+      const toOpt = toAccSelect.options[toAccSelect.selectedIndex];
+      const toCurr = toOpt?.dataset?.currency || curr;
+      const toDigits = (toCurr === 'VND' || toCurr === 'JPY' || toCurr === 'KRW') ? 0 : (toCurr === 'KWD' || toCurr === 'BHD' ? 3 : 2);
+      toAmtInput.step = toDigits === 0 ? '1' : (toDigits === 3 ? '0.001' : '0.01');
+      toAmtInput.placeholder = toDigits === 0 ? '0' : (toDigits === 3 ? '0.000' : '0.00');
+    }
   },
 
   filterCategoryDropdown(type) {
@@ -782,7 +800,19 @@ export const modals = {
     }, 60);
   },
 
-  openRefundModal(originalTx) {
+  async openRefundModal(originalTx) {
+    let refundable = null;
+    try {
+      refundable = await api.getRefundableInfo(originalTx.id);
+    } catch (e) {
+      console.warn('Could not fetch refundable info:', e);
+    }
+
+    if (refundable && !refundable.can_refund) {
+      showToast('This transaction has already been fully refunded.', 'warning');
+      return;
+    }
+
     this.openTransactionModal();
     const modalOverlay = document.getElementById('tx-modal-overlay');
     const title = document.getElementById('tx-modal-title');
@@ -795,13 +825,23 @@ export const modals = {
     });
     this.updateFormFieldsForType('refund');
 
-    // Pre-fill from original transaction
-    document.getElementById('tx-amount').value = originalTx.amount;
+    // Pre-fill remaining refundable amount in purchase currency
+    const initialAmount = refundable ? refundable.remaining_refundable : originalTx.amount;
+    document.getElementById('tx-amount').value = initialAmount;
     document.getElementById('tx-account').value = originalTx.account_id || '';
     document.getElementById('tx-merchant').value = originalTx.merchant_name || '';
     document.getElementById('tx-category').value = originalTx.category_id || '';
     document.getElementById('tx-refund-id').value = originalTx.id;
     document.getElementById('tx-description').value = `Refund for ${originalTx.merchant_name || originalTx.description || 'purchase'}`;
+
+    this.updateCurrencySymbol();
+    this.captureFormSnapshot();
+
+    if (refundable) {
+      const origCurr = refundable.original_currency;
+      const remFormatted = state.formatCurrency(refundable.remaining_refundable, origCurr);
+      showToast(`Remaining refundable balance: ${remFormatted}`, 'info', 3500);
+    }
   },
 
   setupBudgetModal() {

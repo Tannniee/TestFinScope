@@ -386,6 +386,15 @@ class BackupService:
         backups = BackupService.list_backups()
         last_backup = backups[0]["created_at"] if backups else "Never"
 
+        from app.backend.services.integrity_service import IntegrityService
+        financial_integrity = IntegrityService.run_diagnostics()
+
+        overall_status = "Healthy"
+        if integrity != "ok":
+            overall_status = "Database Corruption"
+        elif not financial_integrity["is_healthy"]:
+            overall_status = "Financial Invariant Warning"
+
         return {
             "db_path": str(config.DB_PATH),
             "data_dir": str(config.DATA_DIR),
@@ -401,5 +410,6 @@ class BackupService:
             "backup_count": len(backups),
             "last_backup": last_backup,
             "integrity": integrity,
-            "status": "Healthy" if integrity == "ok" else "Integrity Warning"
+            "financial_integrity": financial_integrity,
+            "status": overall_status
         }

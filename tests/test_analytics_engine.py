@@ -58,10 +58,18 @@ TEST_DIR = Path(__file__).parent / "analytics_test_data"
 class TestAnalyticsEngine(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        os.environ["FINSCOPE_DATA_DIR"] = str(TEST_DIR)
+        from app.backend import config
+        config.set_data_dir(TEST_DIR)
         if TEST_DIR.exists():
             shutil.rmtree(TEST_DIR, ignore_errors=True)
         TEST_DIR.mkdir(parents=True, exist_ok=True)
         init_db()
+
+    def setUp(self):
+        os.environ["FINSCOPE_DATA_DIR"] = str(TEST_DIR)
+        from app.backend import config
+        config.set_data_dir(TEST_DIR)
 
     @classmethod
     def tearDownClass(cls):
@@ -292,6 +300,10 @@ class TestAnalyticsEngine(unittest.TestCase):
         - Forecast
         - Ranked Insights
         """
+        with get_db_connection() as conn:
+            conn.execute("DELETE FROM transactions")
+            conn.commit()
+
         acc_id = AccountRepository.create("Checking", "Everyday", "Bank A", 5000.0, "USD")
         cat_food = CategoryRepository.create("Food & Dining", "expense", "utensils", "#FF9500")
         cat_shop = CategoryRepository.create("Shopping", "expense", "shopping-bag", "#AF52DE")

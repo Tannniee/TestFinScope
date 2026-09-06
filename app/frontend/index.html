@@ -285,6 +285,110 @@
     </div>
   </div>
 
+  <!-- Account Modal (Add / Edit) -->
+  <div class="modal-overlay" id="account-modal-overlay">
+    <div class="modal-card" style="width: 460px;">
+      <div class="modal-header">
+        <h3 id="account-modal-title">Create Account</h3>
+        <button id="account-modal-close" class="modal-close" type="button">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <form id="account-form">
+        <input type="hidden" id="account-modal-id" />
+        <div class="form-group">
+          <label class="form-label" for="account-modal-name">Account Name</label>
+          <input type="text" id="account-modal-name" class="form-input" placeholder="e.g. Everyday Checking, High Yield Savings" required />
+        </div>
+
+        <div class="form-row" style="margin-top: 12px;">
+          <div class="form-group">
+            <label class="form-label" for="account-modal-type">Account Type</label>
+            <select id="account-modal-type" class="form-select" required>
+              <option value="Everyday">Everyday Checking</option>
+              <option value="Savings">Savings</option>
+              <option value="Credit Card">Credit Card</option>
+              <option value="Cash">Cash Wallet</option>
+              <option value="Investment">Investment</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="account-modal-currency">Currency</label>
+            <select id="account-modal-currency" class="form-select" required>
+              <option value="USD">USD ($)</option>
+              <option value="VND">VND (₫)</option>
+              <option value="EUR">EUR (€)</option>
+              <option value="GBP">GBP (£)</option>
+              <option value="JPY">JPY (¥)</option>
+              <option value="AUD">AUD ($)</option>
+              <option value="CAD">CAD ($)</option>
+              <option value="SGD">SGD ($)</option>
+              <option value="KWD">KWD (KD)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <label class="form-label" for="account-modal-institution">Financial Institution</label>
+          <input type="text" id="account-modal-institution" class="form-input" placeholder="e.g. Chase, Vietcombank, Revolut" />
+        </div>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <label class="form-label" for="account-modal-balance">Opening Balance</label>
+          <input type="number" id="account-modal-balance" class="form-input" placeholder="0.00" step="any" required />
+        </div>
+
+        <div class="modal-actions" style="margin-top: 18px;">
+          <button type="button" id="account-modal-cancel" class="btn btn-secondary">Cancel</button>
+          <button type="submit" id="account-modal-submit" class="btn btn-primary">Save Account</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Category Modal (Add / Edit) -->
+  <div class="modal-overlay" id="category-modal-overlay">
+    <div class="modal-card" style="width: 440px;">
+      <div class="modal-header">
+        <h3 id="category-modal-title">Create Category</h3>
+        <button id="category-modal-close" class="modal-close" type="button">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <form id="category-form">
+        <input type="hidden" id="category-modal-id" />
+        <div class="form-group">
+          <label class="form-label" for="category-modal-name">Category Name</label>
+          <input type="text" id="category-modal-name" class="form-input" placeholder="e.g. Health & Wellness, Groceries" required />
+        </div>
+
+        <div class="form-row" style="margin-top: 12px;">
+          <div class="form-group">
+            <label class="form-label" for="category-modal-type">Type</label>
+            <select id="category-modal-type" class="form-select" required>
+              <option value="expense">Expense</option>
+              <option value="income">Income</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="category-modal-color">Color Indicator</label>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <input type="color" id="category-modal-color-picker" value="#5B8CFF" style="width: 38px; height: 38px; border: none; border-radius: 6px; cursor: pointer; background: transparent;" />
+              <input type="text" id="category-modal-color" class="form-input" value="#5B8CFF" style="font-family: monospace; text-transform: uppercase;" required />
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-actions" style="margin-top: 18px;">
+          <button type="button" id="category-modal-cancel" class="btn btn-secondary">Cancel</button>
+          <button type="submit" id="category-modal-submit" class="btn btn-primary">Save Category</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Toast Notification Container -->
   <div id="toast-container"></div>
 

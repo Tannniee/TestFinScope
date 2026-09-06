@@ -113,6 +113,9 @@ export const api = {
   updateRefund(params) {
     return this.call('update_refund', params);
   },
+  getRefundableInfo(id) {
+    return this.call('get_refundable_info', { tx_id: id });
+  },
   undoDeleteTransaction(id) {
     return this.call('undo_delete_transaction', { tx_id: id });
   },

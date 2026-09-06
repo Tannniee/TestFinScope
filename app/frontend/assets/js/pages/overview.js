@@ -17,12 +17,43 @@ import {
   verticalGradient
 } from '../charts/chart-theme.js';
 import { renderSparkline, renderRadialGauge, disposeChart } from '../charts/sparkline.js';
+import { formatChartMoney, formatAxisMoney } from '../charts/money-format.js';
+import { registerCleanup } from '../router.js';
 
 let trendChartInstance = null;
 let donutChartInstance = null;
 let dailyChartInstance = null;
 
-export async function renderOverviewPage(container) {
+export async function renderOverviewPage(container, context = {}) {
+  const onResize = () => {
+    trendChartInstance?.resize();
+    donutChartInstance?.resize();
+    dailyChartInstance?.resize();
+  };
+  window.addEventListener('resize', onResize);
+
+  const cleanup = () => {
+    window.removeEventListener('resize', onResize);
+    if (trendChartInstance) {
+      try { trendChartInstance.dispose(); } catch (e) {}
+      trendChartInstance = null;
+    }
+    if (donutChartInstance) {
+      try { donutChartInstance.dispose(); } catch (e) {}
+      donutChartInstance = null;
+    }
+    if (dailyChartInstance) {
+      try { dailyChartInstance.dispose(); } catch (e) {}
+      dailyChartInstance = null;
+    }
+  };
+
+  if (context.registerCleanup) {
+    context.registerCleanup(cleanup);
+  } else {
+    registerCleanup(cleanup);
+  }
+
   container.innerHTML = `
     <div class="overview-view">
       <!-- KPI Cards Row -->
@@ -189,11 +220,12 @@ async function loadDashboardData() {
       state.accounts = accounts;
     }
 
-    renderKPIs(summary.kpis, accounts, summary.trend);
+    const summaryCurrency = summary.currency || state.currency || 'USD';
+    renderKPIs(summary.kpis, accounts, summary.trend, summaryCurrency);
     renderRankedInsights(insightsData ? insightsData.insights : []);
-    renderTrendChart(summary.trend);
-    renderDonutChart(summary.categories);
-    renderDailyChart(summary.trend);
+    renderTrendChart(summary.trend, summaryCurrency);
+    renderDonutChart(summary.categories, summaryCurrency);
+    renderDailyChart(summary.trend, summaryCurrency);
     renderRecentTransactions(recentTxs.items);
   } catch (err) {
     console.error('Error loading dashboard data:', err);
@@ -302,17 +334,19 @@ function renderRankedInsights(insights) {
   });
 }
 
-function renderKPIs(kpis, accounts = [], trend = null) {
+function renderKPIs(kpis, accounts = [], trend = null, currency = null) {
   const incEl = document.getElementById('kpi-income-val');
   const expEl = document.getElementById('kpi-expense-val');
   const netValEl = document.getElementById('kpi-net-val');
   const savEl = document.getElementById('kpi-savings-val');
   const savPrevEl = document.getElementById('kpi-savings-prev');
 
+  const curr = currency || (state.accountId ? state.accounts.find(a => a.id === state.accountId)?.currency : state.currency) || state.currency;
+
   // Count-up animations for KPI figures
-  animateCountUp(incEl, kpis.income, { formatter: v => state.formatCurrency(v) });
-  animateCountUp(expEl, kpis.expense, { formatter: v => state.formatCurrency(v) });
-  animateCountUp(netValEl, kpis.net_flow, { formatter: v => state.formatCurrency(v) });
+  animateCountUp(incEl, kpis.income, { formatter: v => state.formatCurrency(v, curr) });
+  animateCountUp(expEl, kpis.expense, { formatter: v => state.formatCurrency(v, curr) });
+  animateCountUp(netValEl, kpis.net_flow, { formatter: v => state.formatCurrency(v, curr) });
   animateCountUp(savEl, kpis.savings_rate, { formatter: v => `${v.toFixed(1)}%` });
   savPrevEl.textContent = `Previous: ${kpis.prev_savings_rate}%`;
 
@@ -337,26 +371,34 @@ function renderKPIs(kpis, accounts = [], trend = null) {
     netValEl.style.color = 'var(--text-primary)';
   }
 
-  // Net Cash Position (Liquid balances)
+  // Net Cash Position (Liquid balances, evaluated in base currency for portfolio)
   const netCashEl = document.getElementById('kpi-net-cash-val');
   const netCashSub = document.getElementById('kpi-net-cash-sub');
   let netCash = 0;
+  let cashCurr = curr;
   if (netCashEl) {
     const activeAccounts = (accounts && accounts.length > 0) ? accounts : (state.accounts || []);
     if (state.accountId) {
       const targetAcc = activeAccounts.find(a => a.id === state.accountId);
       netCash = targetAcc ? Number(targetAcc.current_balance || 0) : 0;
+      cashCurr = targetAcc ? (targetAcc.currency || curr) : curr;
       if (netCashSub) {
         netCashSub.textContent = targetAcc ? `${targetAcc.name} balance` : 'Selected Account';
       }
     } else {
-      netCash = activeAccounts.reduce((sum, a) => sum + Number(a.current_balance || 0), 0);
+      netCash = activeAccounts.reduce((sum, a) => {
+        const bal = (a.current_balance_base !== null && a.current_balance_base !== undefined)
+          ? Number(a.current_balance_base)
+          : Number(a.current_balance || 0);
+        return sum + bal;
+      }, 0);
+      cashCurr = state.currency || 'USD';
       if (netCashSub) {
         const count = activeAccounts.length;
         netCashSub.textContent = `${count} active account${count === 1 ? '' : 's'}`;
       }
     }
-    animateCountUp(netCashEl, netCash, { formatter: v => state.formatCurrency(v) });
+    animateCountUp(netCashEl, netCash, { formatter: v => state.formatCurrency(v, cashCurr) });
   }
 
   // Render Sparklines & Mini Gauges (P1.1, P1.2, P1.4)
@@ -395,7 +437,7 @@ function renderKPIs(kpis, accounts = [], trend = null) {
   }
 }
 
-function renderTrendChart(trend) {
+function renderTrendChart(trend, currency = 'USD') {
   const chartDom = document.getElementById('trend-chart');
   if (!chartDom || !window.echarts) return;
 
@@ -403,7 +445,6 @@ function renderTrendChart(trend) {
     try { trendChartInstance.dispose(); } catch (e) {}
   }
   trendChartInstance = window.echarts.init(chartDom);
-  window.addEventListener('resize', () => trendChartInstance?.resize());
 
   const option = {
     backgroundColor: 'transparent',
@@ -413,7 +454,7 @@ function renderTrendChart(trend) {
       formatter: (params) => {
         let res = `<div style="font-weight:700; margin-bottom:6px; color: var(--text-primary);">Day ${params[0].axisValue}</div>`;
         params.forEach(p => {
-          const val = state.privacyMode ? '••••••' : `$${Number(p.value).toLocaleString()}`;
+          const val = state.privacyMode ? '••••••' : formatChartMoney(p.value, currency);
           res += `<div style="display:flex; justify-content:space-between; gap:20px; font-size:12px; margin-top:2px;">
             <span>${p.marker} ${p.seriesName}:</span>
             <span style="font-weight:700; font-family:monospace;">${val}</span>
@@ -440,7 +481,7 @@ function renderTrendChart(trend) {
       splitLine: SPLIT_LINE_STYLE,
       axisLabel: {
         ...AXIS_LABEL_STYLE,
-        formatter: (val) => state.privacyMode ? '••' : `$${val >= 1000 ? (val / 1000).toFixed(0) + 'k' : val}`
+        formatter: (val) => state.privacyMode ? '••' : formatAxisMoney(val, currency)
       }
     },
     series: [
@@ -472,7 +513,7 @@ function renderTrendChart(trend) {
   trendChartInstance.setOption(option, true);
 }
 
-function renderDonutChart(categories) {
+function renderDonutChart(categories, currency = 'USD') {
   const chartDom = document.getElementById('donut-chart');
   if (!chartDom || !window.echarts) return;
 
@@ -480,9 +521,8 @@ function renderDonutChart(categories) {
     try { donutChartInstance.dispose(); } catch (e) {}
   }
   donutChartInstance = window.echarts.init(chartDom);
-  window.addEventListener('resize', () => donutChartInstance?.resize());
 
-  const chartData = categories.map(c => ({
+  const chartData = (categories || []).map(c => ({
     name: c.name,
     value: c.amount,
     itemStyle: { color: c.color }
@@ -494,8 +534,8 @@ function renderDonutChart(categories) {
       ...TOOLTIP_STYLE,
       trigger: 'item',
       formatter: (p) => {
-        const val = state.privacyMode ? '••••••' : `$${Number(p.value).toLocaleString()}`;
-        return `<div style="font-size:12px;">${p.marker} <b>${p.name}</b><br/><span style="font-weight:700; font-family:monospace;">${val}</span> (${p.percent}%)</div>`;
+        const val = state.privacyMode ? '••••••' : formatChartMoney(p.value, currency);
+        return `<div style="font-size:12px;">${p.marker} <b>${escapeHtml(p.name)}</b><br/><span style="font-weight:700; font-family:monospace;">${val}</span> (${p.percent}%)</div>`;
       }
     },
     series: [
@@ -528,7 +568,7 @@ function renderDonutChart(categories) {
   donutChartInstance.setOption(option, true);
 }
 
-function renderDailyChart(trend) {
+function renderDailyChart(trend, currency = 'USD') {
   const chartDom = document.getElementById('daily-chart');
   if (!chartDom || !window.echarts) return;
 
@@ -536,7 +576,6 @@ function renderDailyChart(trend) {
     try { dailyChartInstance.dispose(); } catch (e) {}
   }
   dailyChartInstance = window.echarts.init(chartDom);
-  window.addEventListener('resize', () => dailyChartInstance?.resize());
 
   // Find max spending value and day for peak highlight (P1.6)
   const maxSpend = Math.max(0, ...(trend.expense || []));
@@ -547,7 +586,7 @@ function renderDailyChart(trend) {
       ...TOOLTIP_STYLE,
       trigger: 'axis',
       formatter: (p) => {
-        const val = state.privacyMode ? '••••••' : `$${Number(p[0].value).toLocaleString()}`;
+        const val = state.privacyMode ? '••••••' : formatChartMoney(p[0].value, currency);
         const isPeak = p[0].value === maxSpend && maxSpend > 0;
         return `<div style="font-size:12px;">Day ${p[0].axisValue}<br/>Daily Spend: <b style="font-family:monospace;">${val}</b>${isPeak ? ' <span class="delta-badge negative" style="font-size:9.5px; padding:1px 4px; margin-left:4px;">Peak Day</span>' : ''}</div>`;
       }
@@ -564,7 +603,7 @@ function renderDailyChart(trend) {
       splitLine: SPLIT_LINE_STYLE,
       axisLabel: {
         ...AXIS_LABEL_STYLE,
-        formatter: (v) => state.privacyMode ? '••' : `$${v >= 1000 ? (v / 1000).toFixed(0) + 'k' : v}`
+        formatter: (v) => state.privacyMode ? '••' : formatAxisMoney(v, currency)
       }
     },
     series: [
@@ -648,7 +687,7 @@ function renderRecentTransactions(transactions) {
         </td>
         <td style="text-align: right;">
           <span class="amount-display ${amtClass} num-tabular">
-            ${sign}${state.formatCurrency(tx.amount)}
+            ${sign}${state.formatCurrency(tx.amount, tx.currency || tx.account_currency)}
           </span>
         </td>
       </tr>

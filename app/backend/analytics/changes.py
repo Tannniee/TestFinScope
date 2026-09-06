@@ -8,7 +8,7 @@ Implements multi-level variance decomposition with explicit refund effects:
     Freq Effect = (N1 - N0) * (A0 + A1) / 2
     Refund Effect = -(R1 - R0)
     Ticket Effect = Net Delta - (Freq Effect + Refund Effect)
-    Identity: Freq Effect + Ticket Effect + Refund Effect == Net Delta (exact integer cents)
+    Identity: Freq Effect + Ticket Effect + Refund Effect == Net Delta (exact integer cents/minor units)
 - Level 5: Time Contribution (Monday–Sunday and Weekday vs Weekend)
 """
 
@@ -17,7 +17,9 @@ from datetime import datetime
 from app.backend.database.connection import get_db_connection
 from app.backend.analytics.models import DriverDecomposition
 from app.backend.analytics.context import AnalyticsContext, resolve_analytics_context
+from app.backend.analytics.money_context import resolve_analytics_money_context
 from app.backend.analytics.period_series import check_data_sufficiency
+
 
 def decompose_frequency_ticket_refund(
     n0: int,
@@ -31,7 +33,7 @@ def decompose_frequency_ticket_refund(
     Computes exact integer minor unit decomposition:
     - Frequency Effect: purchase count change on gross transactions
     - Refund Effect: -(R1 - R0)
-    - Ticket Effect: remainder assigned to guarantee exact penny reconciliation
+    - Ticket Effect: remainder assigned to guarantee exact penny/minor unit reconciliation
     Identity: freq + ticket + refund === net_delta
     """
     net0_minor = max(0, gross0_minor - refund0_minor)
@@ -63,6 +65,7 @@ def decompose_frequency_ticket_refund(
 
     return freq_effect, ticket_effect, refund_effect
 
+
 def decompose_frequency_and_ticket(
     n0: int,
     n1: int,
@@ -72,6 +75,7 @@ def decompose_frequency_and_ticket(
     """Backward-compatible helper returning (freq_effect, ticket_effect) with 0 refunds."""
     freq, ticket, _ = decompose_frequency_ticket_refund(n0, n1, spend0_minor, spend1_minor, 0, 0)
     return freq, ticket
+
 
 class WhatChangedEngine:
     @staticmethod
@@ -85,6 +89,7 @@ class WhatChangedEngine:
         """
         Performs full What Changed? v2.1 analysis with refund decomposition
         and category drivers. Accepts either months or canonical AnalyticsContext.
+        Guarantees canonical multi-currency valuation (base currency for portfolio, native for account).
         """
         if context is None:
             context = resolve_analytics_context(
@@ -93,6 +98,9 @@ class WhatChangedEngine:
                 account_id=account_id,
                 max_day=max_day
             )
+
+        eff_account_id = context.account_id if context else account_id
+        money_ctx = resolve_analytics_money_context(eff_account_id)
 
         curr_start, curr_end = context.sql_date_range()
         comp_range = context.comparison_sql_date_range()
@@ -105,6 +113,7 @@ class WhatChangedEngine:
             cur = conn.cursor()
             acc_clause = " AND t.account_id = ?" if context.account_id else ""
             acc_params = [context.account_id] if context.account_id else []
+            tx_amt = money_ctx.tx_amount_expr
 
             # 1. Fetch categories for current period (including archived categories with spend in either period)
             cur.execute(f"""
@@ -113,8 +122,8 @@ class WhatChangedEngine:
                     c.name,
                     c.color,
                     c.icon,
-                    COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount_minor ELSE 0 END), 0) as gross_minor,
-                    COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN t.amount_minor ELSE 0 END), 0) as refund_minor,
+                    COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN {tx_amt} ELSE 0 END), 0) as gross_minor,
+                    COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN {tx_amt} ELSE 0 END), 0) as refund_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
                 FROM categories c
                 LEFT JOIN active_transactions t ON t.category_id = c.id
@@ -154,8 +163,8 @@ class WhatChangedEngine:
                     c.name,
                     c.color,
                     c.icon,
-                    COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount_minor ELSE 0 END), 0) as gross_minor,
-                    COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN t.amount_minor ELSE 0 END), 0) as refund_minor,
+                    COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN {tx_amt} ELSE 0 END), 0) as gross_minor,
+                    COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN {tx_amt} ELSE 0 END), 0) as refund_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
                 FROM categories c
                 LEFT JOIN active_transactions t ON t.category_id = c.id
@@ -254,7 +263,8 @@ class WhatChangedEngine:
                         "g0": g0, "g1": g1,
                         "r0": r0, "r1": r1,
                         "icon": cdata["icon"]
-                    }
+                    },
+                    currency=money_ctx.currency
                 ))
 
             # Sort drivers: highest positive impact first, then decreases
@@ -279,8 +289,8 @@ class WhatChangedEngine:
                     strftime('%w', transaction_date) as wday,
                     SUM(
                         CASE 
-                            WHEN transaction_type = 'expense' THEN amount_minor
-                            WHEN transaction_type = 'refund' THEN -amount_minor
+                            WHEN transaction_type = 'expense' THEN {tx_amt}
+                            WHEN transaction_type = 'refund' THEN -{tx_amt}
                             ELSE 0
                         END
                     ) as net_minor
@@ -296,8 +306,8 @@ class WhatChangedEngine:
                     strftime('%w', transaction_date) as wday,
                     SUM(
                         CASE 
-                            WHEN transaction_type = 'expense' THEN amount_minor
-                            WHEN transaction_type = 'refund' THEN -amount_minor
+                            WHEN transaction_type = 'expense' THEN {tx_amt}
+                            WHEN transaction_type = 'refund' THEN -{tx_amt}
                             ELSE 0
                         END
                     ) as net_minor
@@ -316,9 +326,9 @@ class WhatChangedEngine:
                 day_contributions.append({
                     "day": weekday_labels[d_idx],
                     "day_index": d_idx,
-                    "current": round(c_val / 100.0, 2),
-                    "previous": round(p_val / 100.0, 2),
-                    "delta": round(d_delta / 100.0, 2),
+                    "current": money_ctx.to_major(c_val),
+                    "previous": money_ctx.to_major(p_val),
+                    "delta": money_ctx.to_major(d_delta),
                     "delta_minor": d_delta
                 })
 
@@ -335,14 +345,14 @@ class WhatChangedEngine:
             waterfall_steps = []
             waterfall_steps.append({
                 "label": context.comparison_label,
-                "amount": round(total_prev_minor / 100.0, 2),
+                "amount": money_ctx.to_major(total_prev_minor),
                 "is_total": True
             })
             for d in drivers[:6]:
                 if abs(d.delta_minor) > 0:
                     waterfall_steps.append({
                         "label": d.name,
-                        "amount": round(d.delta_minor / 100.0, 2),
+                        "amount": money_ctx.to_major(d.delta_minor),
                         "color": d.color,
                         "is_total": False
                     })
@@ -351,13 +361,13 @@ class WhatChangedEngine:
             if abs(other_delta) > 0:
                 waterfall_steps.append({
                     "label": "Other Categories",
-                    "amount": round(other_delta / 100.0, 2),
+                    "amount": money_ctx.to_major(other_delta),
                     "color": "#8E8E93",
                     "is_total": False
                 })
             waterfall_steps.append({
                 "label": context.period_label,
-                "amount": round(total_curr_minor / 100.0, 2),
+                "amount": money_ctx.to_major(total_curr_minor),
                 "is_total": True
             })
 
@@ -371,22 +381,26 @@ class WhatChangedEngine:
                 "current_month": context.as_of_month,
                 "comparison_month": comparison_month or (context.comparison_start.strftime("%Y-%m") if context.comparison_start else ""),
                 "context": context.to_dict(),
+                "currency": money_ctx.currency,
                 "total_current_minor": total_curr_minor,
-                "total_current": round(total_curr_minor / 100.0, 2),
+                "current_spend_minor": total_curr_minor,
+                "total_current": money_ctx.to_major(total_curr_minor),
                 "total_previous_minor": total_prev_minor,
-                "total_previous": round(total_prev_minor / 100.0, 2),
+                "previous_spend_minor": total_prev_minor,
+                "total_previous": money_ctx.to_major(total_prev_minor),
                 "total_delta_minor": total_delta_minor,
-                "total_delta": round(total_delta_minor / 100.0, 2),
+                "net_spend_delta_minor": total_delta_minor,
+                "total_delta": money_ctx.to_major(total_delta_minor),
                 "overall_frequency_effect_minor": overall_freq_minor,
-                "overall_frequency_effect": round(overall_freq_minor / 100.0, 2),
+                "overall_frequency_effect": money_ctx.to_major(overall_freq_minor),
                 "overall_ticket_effect_minor": overall_ticket_minor,
-                "overall_ticket_effect": round(overall_ticket_minor / 100.0, 2),
+                "overall_ticket_effect": money_ctx.to_major(overall_ticket_minor),
                 "overall_refund_effect_minor": overall_refund_minor,
-                "overall_refund_effect": round(overall_refund_minor / 100.0, 2),
+                "overall_refund_effect": money_ctx.to_major(overall_refund_minor),
                 "weekend_delta_minor": weekend_delta_minor,
-                "weekend_delta": round(weekend_delta_minor / 100.0, 2),
+                "weekend_delta": money_ctx.to_major(weekend_delta_minor),
                 "weekday_delta_minor": weekday_delta_minor,
-                "weekday_delta": round(weekday_delta_minor / 100.0, 2),
+                "weekday_delta": money_ctx.to_major(weekday_delta_minor),
                 "day_contributions": day_contributions,
                 "drivers": [d.to_dict() for d in drivers],
                 "waterfall": waterfall_steps
@@ -410,6 +424,9 @@ class WhatChangedEngine:
                 category_id=category_id
             )
 
+        eff_account_id = context.account_id if context else account_id
+        money_ctx = resolve_analytics_money_context(eff_account_id)
+
         curr_start, curr_end = context.sql_date_range()
         comp_range = context.comparison_sql_date_range()
         comp_start, comp_end = comp_range if comp_range else (curr_start, curr_end)
@@ -418,13 +435,14 @@ class WhatChangedEngine:
             cur = conn.cursor()
             acc_clause = " AND t.account_id = ?" if context.account_id else ""
             acc_params = [context.account_id] if context.account_id else []
+            tx_amt = money_ctx.tx_amount_expr
 
             # Current merchants
             cur.execute(f"""
                 SELECT 
                     COALESCE(NULLIF(t.merchant_name, ''), 'Unknown') as m_name,
-                    COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount_minor ELSE 0 END), 0) as gross_minor,
-                    COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN t.amount_minor ELSE 0 END), 0) as refund_minor,
+                    COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN {tx_amt} ELSE 0 END), 0) as gross_minor,
+                    COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN {tx_amt} ELSE 0 END), 0) as refund_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
                 FROM active_transactions t
                 WHERE t.category_id = ?
@@ -446,8 +464,8 @@ class WhatChangedEngine:
             cur.execute(f"""
                 SELECT 
                     COALESCE(NULLIF(t.merchant_name, ''), 'Unknown') as m_name,
-                    COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount_minor ELSE 0 END), 0) as gross_minor,
-                    COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN t.amount_minor ELSE 0 END), 0) as refund_minor,
+                    COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN {tx_amt} ELSE 0 END), 0) as gross_minor,
+                    COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN {tx_amt} ELSE 0 END), 0) as refund_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
                 FROM active_transactions t
                 WHERE t.category_id = ?
@@ -500,18 +518,19 @@ class WhatChangedEngine:
 
                 items.append({
                     "merchant": name,
+                    "currency": money_ctx.currency,
                     "current_minor": c_net,
-                    "current": round(c_net / 100.0, 2),
+                    "current": money_ctx.to_major(c_net),
                     "previous_minor": p_net,
-                    "previous": round(p_net / 100.0, 2),
+                    "previous": money_ctx.to_major(p_net),
                     "delta_minor": delta,
-                    "delta": round(delta / 100.0, 2),
+                    "delta": money_ctx.to_major(delta),
                     "frequency_effect_minor": freq_eff,
-                    "frequency_effect": round(freq_eff / 100.0, 2),
+                    "frequency_effect": money_ctx.to_major(freq_eff),
                     "ticket_effect_minor": ticket_eff,
-                    "ticket_effect": round(ticket_eff / 100.0, 2),
+                    "ticket_effect": money_ctx.to_major(ticket_eff),
                     "refund_effect_minor": ref_eff,
-                    "refund_effect": round(ref_eff / 100.0, 2),
+                    "refund_effect": money_ctx.to_major(ref_eff),
                     "tag": tag,
                     "tx_count_current": c["tx_count"],
                     "tx_count_previous": p["tx_count"]

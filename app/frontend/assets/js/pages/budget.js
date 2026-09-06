@@ -83,11 +83,12 @@ async function loadBudgetData() {
 }
 
 function renderBudgetOverview(data) {
-  const { summary, elapsed_pct, items } = data;
+  const { summary, elapsed_pct, items, currency } = data;
+  const curr = currency || state.currency || 'USD';
 
   // Header stats
-  document.getElementById('budget-summary-spent').textContent = state.formatCurrency(summary.total_spent);
-  document.getElementById('budget-summary-total').textContent = state.formatCurrency(summary.total_budget);
+  document.getElementById('budget-summary-spent').textContent = state.formatCurrency(summary.total_spent, curr);
+  document.getElementById('budget-summary-total').textContent = state.formatCurrency(summary.total_budget, curr);
   document.getElementById('budget-elapsed-pct').textContent = `${elapsed_pct}%`;
   
   const consumedEl = document.getElementById('budget-consumed-pct');
@@ -95,7 +96,7 @@ function renderBudgetOverview(data) {
   consumedEl.style.color = summary.consumed_pct > 100 ? 'var(--color-negative)' : (summary.consumed_pct > elapsed_pct + 15 ? 'var(--color-warning)' : 'var(--color-positive)');
 
   const remainingEl = document.getElementById('budget-remaining-val');
-  remainingEl.textContent = state.formatCurrency(summary.remaining);
+  remainingEl.textContent = state.formatCurrency(summary.remaining, curr);
   remainingEl.style.color = summary.remaining < 0 ? 'var(--color-negative)' : 'var(--color-positive)';
 
   const fillEl = document.getElementById('budget-summary-fill');
@@ -123,6 +124,7 @@ function renderBudgetOverview(data) {
     const hasBudget = cat.budget > 0;
     const barWidth = Math.min(cat.consumed_pct || 0, 100);
     const catColor = cat.category_color || '#5B8CFF';
+    const catCurr = cat.currency || curr;
 
     let statusBadgeClass = 'neutral';
     if (cat.status === 'on_track') statusBadgeClass = 'positive';
@@ -139,7 +141,7 @@ function renderBudgetOverview(data) {
             <div>
               <div style="font-weight: 600; font-size: 14px;">${escapeHtml(cat.category_name)}</div>
               <div style="font-size: 12px; color: var(--text-muted);">
-                ${hasBudget ? `${state.formatCurrency(cat.spent)} of ${state.formatCurrency(cat.budget)}` : `Spent: ${state.formatCurrency(cat.spent)}`}
+                ${hasBudget ? `${state.formatCurrency(cat.spent, catCurr)} of ${state.formatCurrency(cat.budget, catCurr)}` : `Spent: ${state.formatCurrency(cat.spent, catCurr)}`}
               </div>
             </div>
           </div>
@@ -159,7 +161,7 @@ function renderBudgetOverview(data) {
 
           <div style="display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-muted);">
             <span>${cat.consumed_pct}% consumed</span>
-            <span>Projected: <b>${state.formatCurrency(cat.projected)}</b></span>
+            <span>Projected: <b>${state.formatCurrency(cat.projected, catCurr)}</b></span>
           </div>
         ` : `
           <div style="font-size: 12px; color: var(--text-muted); margin-top: 10px; font-style: italic;">

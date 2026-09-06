@@ -198,6 +198,14 @@ def seed_sample_data(clear_existing: bool = False):
                                 ) VALUES (?, ?, ?, 'expense', ?, ?, ?, ?, '', ?, 'Card')
                             """, (account_chosen, cat_id, m_name, amt_minor, date_str, t_time, f"{cat_choice} at {m_name}", is_ess))
 
+            # Ensure all sample transactions have base currency valuation
+            conn.execute("""
+                UPDATE transactions
+                SET base_amount_minor = COALESCE(base_amount_minor, amount_minor),
+                    base_currency = COALESCE(base_currency, (SELECT currency FROM accounts WHERE accounts.id = transactions.account_id), 'USD')
+                WHERE base_amount_minor IS NULL OR base_currency IS NULL OR base_currency = ''
+            """)
+
             conn.commit()
 
     # Invariant Verification: Ensure all transfer groups are valid

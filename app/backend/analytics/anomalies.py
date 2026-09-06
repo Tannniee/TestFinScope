@@ -9,6 +9,7 @@ Detects unusual spending relative to personal historical norms:
 - Separate Recurring Payment Jump Detection
 - Dismissal/Expected feedback tracking via InsightHistoryTracker
 - False Positive Controls (transfers & refunds separated)
+- Multi-Currency & Canonical Money Normalization (base currency for portfolio, account native for account)
 """
 
 import math
@@ -18,7 +19,9 @@ from app.backend.database.connection import get_db_connection
 from app.backend.analytics.rolling import calculate_median, calculate_mad, calculate_scaled_mad
 from app.backend.analytics.models import AnomalyResult
 from app.backend.analytics.context import AnalyticsContext, resolve_analytics_context
+from app.backend.analytics.money_context import resolve_analytics_money_context
 from app.backend.analytics.insight_history import InsightHistoryTracker
+
 
 def calculate_robust_z_score(value: int, median_val: int, mad_val: int) -> float:
     """Computes robust z-score: 0.6745 * (x - median) / MAD."""
@@ -28,12 +31,14 @@ def calculate_robust_z_score(value: int, median_val: int, mad_val: int) -> float
         return (value - median_val) / (median_val if median_val > 0 else 1.0)
     return 0.6745 * (value - median_val) / float(mad_val)
 
+
 def compute_normal_range(median_val: int, mad_scaled: int, k: float = 2.5) -> Tuple[int, int]:
     """Computes normal range [max(0, median - k*MAD_scaled), median + k*MAD_scaled]."""
     spread = round(k * mad_scaled)
     lower = max(0, median_val - spread)
     upper = median_val + spread
     return lower, upper
+
 
 class AnomalyDetectionEngine:
     @staticmethod
@@ -52,6 +57,10 @@ class AnomalyDetectionEngine:
         if context is None:
             context = resolve_analytics_context(month=month, account_id=account_id)
 
+        eff_account_id = context.account_id if context else account_id
+        money_ctx = resolve_analytics_money_context(eff_account_id)
+        mat_threshold = money_ctx.materiality_minor()
+
         curr_start, curr_end = context.sql_date_range()
         anomalies: List[AnomalyResult] = []
 
@@ -59,6 +68,7 @@ class AnomalyDetectionEngine:
             cur = conn.cursor()
             acc_clause = " AND t.account_id = ?" if context.account_id else ""
             acc_params: List[Any] = [context.account_id] if context.account_id else []
+            tx_amt = money_ctx.tx_amount_expr
 
             # Historical 6-month window prior to current period
             hist_end = curr_start
@@ -69,7 +79,7 @@ class AnomalyDetectionEngine:
                 SELECT 
                     COALESCE(NULLIF(t.merchant_name, ''), 'Unknown') as m_name,
                     t.category_id,
-                    t.amount_minor
+                    {tx_amt} as amount_minor
                 FROM active_transactions t
                 WHERE t.transaction_type = 'expense'
                   AND t.transaction_date < ?
@@ -98,58 +108,67 @@ class AnomalyDetectionEngine:
 
             # Precalculate category baselines
             category_baselines: Dict[int, Dict[str, Any]] = {}
-            for cid, history in category_history.items():
-                if len(history) >= 10:  # Minimum category sample guard
-                    med = calculate_median(history)
-                    mad = calculate_mad(history)
-                    mad_scaled = calculate_scaled_mad(history)
+            for cid, amounts in category_history.items():
+                if len(amounts) >= 10:
+                    med = calculate_median(amounts)
+                    mad = calculate_mad(amounts)
+                    mad_scaled = calculate_scaled_mad(amounts)
                     low, up = compute_normal_range(med, mad_scaled, k_range)
                     category_baselines[cid] = {
-                        "median": med, "mad": mad, "mad_scaled": mad_scaled,
-                        "lower": low, "upper": up, "n": len(history)
+                        "median": med,
+                        "mad": mad,
+                        "lower": low,
+                        "upper": up,
+                        "n": len(amounts)
                     }
 
             # Precalculate merchant baselines
             merchant_baselines: Dict[str, Dict[str, Any]] = {}
-            for m_name, history in merchant_history.items():
-                if len(history) >= 5:  # Minimum merchant sample guard
-                    med = calculate_median(history)
-                    mad = calculate_mad(history)
-                    mad_scaled = calculate_scaled_mad(history)
+            for m_name, amounts in merchant_history.items():
+                if len(amounts) >= 5:
+                    med = calculate_median(amounts)
+                    mad = calculate_mad(amounts)
+                    mad_scaled = calculate_scaled_mad(amounts)
                     low, up = compute_normal_range(med, mad_scaled, k_range)
                     merchant_baselines[m_name] = {
-                        "median": med, "mad": mad, "mad_scaled": mad_scaled,
-                        "lower": low, "upper": up, "n": len(history)
+                        "median": med,
+                        "mad": mad,
+                        "lower": low,
+                        "upper": up,
+                        "n": len(amounts)
                     }
 
-            # Precalculate overall baseline (FSC-M07)
+            # Precalculate overall baseline
             overall_baseline = None
-            if len(overall_history) >= 20:  # Minimum overall sample guard
+            if len(overall_history) >= 20:
                 med = calculate_median(overall_history)
                 mad = calculate_mad(overall_history)
                 mad_scaled = calculate_scaled_mad(overall_history)
                 low, up = compute_normal_range(med, mad_scaled, k_range)
                 overall_baseline = {
-                    "median": med, "mad": mad, "mad_scaled": mad_scaled,
-                    "lower": low, "upper": up, "n": len(overall_history)
+                    "median": med,
+                    "mad": mad,
+                    "lower": low,
+                    "upper": up,
+                    "n": len(overall_history)
                 }
 
-            # 2. Inspect Current Transactions
+            # 2. Evaluate Individual Expense Transactions in Current Month
             cur.execute(f"""
                 SELECT 
                     t.id,
-                    t.transaction_date,
-                    t.description,
                     t.merchant_name,
-                    t.amount_minor,
+                    t.description,
+                    {tx_amt} as amount_minor,
                     t.category_id,
                     c.name as category_name,
+                    t.transaction_date,
                     t.is_recurring
                 FROM active_transactions t
                 LEFT JOIN categories c ON t.category_id = c.id
                 WHERE t.transaction_type = 'expense'
                   AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
-                ORDER BY t.amount_minor DESC
+                ORDER BY {tx_amt} DESC
             """, [curr_start, curr_end] + acc_params)
 
             curr_txs = cur.fetchall()
@@ -160,7 +179,6 @@ class AnomalyDetectionEngine:
                 cid = tx["category_id"]
                 cname = tx["category_name"] or "General"
                 m_name = tx["merchant_name"] or tx["description"]
-                is_recurring = bool(tx["is_recurring"])
 
                 # Check dismissal
                 anomaly_key = f"tx_amount_{tx_id}"
@@ -183,24 +201,25 @@ class AnomalyDetectionEngine:
 
                 if baseline:
                     score = calculate_robust_z_score(amt, baseline["median"], baseline["mad"])
-                    if amt > baseline["upper"] and score >= 3.0:
+                    diff_from_med = amt - baseline["median"]
+                    if amt > baseline["upper"] and score >= 3.0 and diff_from_med >= mat_threshold:
                         severity = "strong" if score >= 4.5 else "moderate"
                         if baseline_level == "merchant":
                             explanation = (
-                                f"Purchase of ${round(amt / 100.0, 2):.2f} at '{m_name}' is unusually large "
-                                f"compared to your usual merchant range (${round(baseline['lower'] / 100.0, 2):.2f}–${round(baseline['upper'] / 100.0, 2):.2f})."
+                                f"Purchase of {money_ctx.format(amt)} at '{m_name}' is unusually large "
+                                f"compared to your usual merchant range ({money_ctx.format(baseline['lower'])}–{money_ctx.format(baseline['upper'])})."
                             )
                             title = f"Unusually large payment to {m_name}"
                         elif baseline_level == "category":
                             explanation = (
-                                f"Purchase of ${round(amt / 100.0, 2):.2f} at '{m_name}' is unusually large "
-                                f"for {cname} (typical range ${round(baseline['lower'] / 100.0, 2):.2f}–${round(baseline['upper'] / 100.0, 2):.2f})."
+                                f"Purchase of {money_ctx.format(amt)} at '{m_name}' is unusually large "
+                                f"for {cname} (typical range {money_ctx.format(baseline['lower'])}–{money_ctx.format(baseline['upper'])})."
                             )
                             title = f"Unusually large {cname} purchase"
                         else:
                             explanation = (
-                                f"Purchase of ${round(amt / 100.0, 2):.2f} at '{m_name}' is unusually large "
-                                f"compared to your overall typical spending (typical range ${round(baseline['lower'] / 100.0, 2):.2f}–${round(baseline['upper'] / 100.0, 2):.2f})."
+                                f"Purchase of {money_ctx.format(amt)} at '{m_name}' is unusually large "
+                                f"compared to your overall typical spending (typical range {money_ctx.format(baseline['lower'])}–{money_ctx.format(baseline['upper'])})."
                             )
                             title = f"Unusually large purchase"
 
@@ -219,7 +238,8 @@ class AnomalyDetectionEngine:
                             severity=severity,
                             confidence="high" if baseline["n"] >= 15 else "moderate",
                             explanation=explanation,
-                            drilldown_filter={"transaction_id": tx_id, "category_id": cid}
+                            drilldown_filter={"transaction_id": tx_id, "category_id": cid},
+                            currency=money_ctx.currency
                         ))
 
             # 3. Recurring Payment Jumps
@@ -228,7 +248,7 @@ class AnomalyDetectionEngine:
                     t.id,
                     t.merchant_name,
                     t.description,
-                    t.amount_minor,
+                    {tx_amt} as amount_minor,
                     t.category_id,
                     c.name as category_name
                 FROM active_transactions t
@@ -248,13 +268,13 @@ class AnomalyDetectionEngine:
                 amt = rec["amount_minor"]
 
                 cur.execute(f"""
-                    SELECT amount_minor
-                    FROM active_transactions
-                    WHERE transaction_type = 'expense'
-                      AND is_recurring = 1
-                      AND (merchant_name = ? OR description = ?)
-                      AND transaction_date < ? {acc_clause}
-                    ORDER BY transaction_date DESC
+                    SELECT {tx_amt} as amount_minor
+                    FROM active_transactions t
+                    WHERE t.transaction_type = 'expense'
+                      AND t.is_recurring = 1
+                      AND (t.merchant_name = ? OR t.description = ?)
+                      AND t.transaction_date < ? {acc_clause}
+                    ORDER BY t.transaction_date DESC
                     LIMIT 5
                 """, [merchant_key, merchant_key, curr_start] + acc_params)
 
@@ -262,10 +282,10 @@ class AnomalyDetectionEngine:
                 if len(prev_rec_amts) >= 2:
                     med_prev = calculate_median(prev_rec_amts)
                     diff = amt - med_prev
-                    if diff > 300 and (diff / float(med_prev)) >= 0.10:
+                    if diff >= (mat_threshold // 10) and (diff / float(med_prev if med_prev > 0 else 1)) >= 0.10:
                         explanation = (
-                            f"Recurring bill '{merchant_key}' increased from usual ${round(med_prev / 100.0, 2):.2f} "
-                            f"to ${round(amt / 100.0, 2):.2f} (+${round(diff / 100.0, 2):.2f})."
+                            f"Recurring bill '{merchant_key}' increased from usual {money_ctx.format(med_prev)} "
+                            f"to {money_ctx.format(amt)} (+{money_ctx.format(diff)})."
                         )
                         anomalies.append(AnomalyResult(
                             anomaly_id=anomaly_key,
@@ -278,11 +298,12 @@ class AnomalyDetectionEngine:
                             expected_median_minor=med_prev,
                             normal_range_lower_minor=med_prev,
                             normal_range_upper_minor=med_prev,
-                            robust_score=round(diff / med_prev * 5.0, 2),
-                            severity="moderate" if diff > 1000 else "mild",
+                            robust_score=round(diff / (med_prev if med_prev > 0 else 1) * 5.0, 2),
+                            severity="moderate" if diff > (mat_threshold // 5) else "mild",
                             confidence="high",
                             explanation=explanation,
-                            drilldown_filter={"transaction_id": rec_id, "category_id": rec["category_id"]}
+                            drilldown_filter={"transaction_id": rec_id, "category_id": rec["category_id"]},
+                            currency=money_ctx.currency
                         ))
 
             # 4. Category Monthly Total Anomalies (Dense zero months & matched comparison, FSC-M07)
@@ -311,8 +332,8 @@ class AnomalyDetectionEngine:
                     strftime('%Y-%m', t.transaction_date) as m,
                     SUM(
                         CASE 
-                            WHEN t.transaction_type = 'expense' THEN t.amount_minor
-                            WHEN t.transaction_type = 'refund' THEN -t.amount_minor
+                            WHEN t.transaction_type = 'expense' THEN {tx_amt}
+                            WHEN t.transaction_type = 'refund' THEN -{tx_amt}
                             ELSE 0
                         END
                     ) as monthly_net
@@ -343,8 +364,8 @@ class AnomalyDetectionEngine:
                     c.name,
                     SUM(
                         CASE 
-                            WHEN t.transaction_type = 'expense' THEN t.amount_minor
-                            WHEN t.transaction_type = 'refund' THEN -t.amount_minor
+                            WHEN t.transaction_type = 'expense' THEN {tx_amt}
+                            WHEN t.transaction_type = 'refund' THEN -{tx_amt}
                             ELSE 0
                         END
                     ) as current_net
@@ -372,10 +393,10 @@ class AnomalyDetectionEngine:
                     low, up = compute_normal_range(med, mad_scaled, k_range)
                     score = calculate_robust_z_score(curr_net, med, mad)
 
-                    if curr_net > up and (curr_net - med) > 2000 and score >= 2.5:
+                    if curr_net > up and (curr_net - med) >= mat_threshold and score >= 2.5:
                         explanation = (
-                            f"{cname} spending of ${round(curr_net / 100.0, 2):.2f} is above "
-                            f"its typical range (${round(low / 100.0, 2):.2f}–${round(up / 100.0, 2):.2f})."
+                            f"{cname} spending of {money_ctx.format(curr_net)} is above "
+                            f"its typical range ({money_ctx.format(low)}–{money_ctx.format(up)})."
                         )
                         anomalies.append(AnomalyResult(
                             anomaly_id=anomaly_key,
@@ -392,7 +413,8 @@ class AnomalyDetectionEngine:
                             severity="strong" if score >= 4.0 else "moderate",
                             confidence="high" if len(hist) >= 6 else "moderate",
                             explanation=explanation,
-                            drilldown_filter={"category_id": cid, "month": context.as_of_month}
+                            drilldown_filter={"category_id": cid, "month": context.as_of_month},
+                            currency=money_ctx.currency
                         ))
 
         sev_weight = {"strong": 3, "moderate": 2, "mild": 1}
@@ -406,6 +428,9 @@ class AnomalyDetectionEngine:
     ) -> List[Dict[str, Any]]:
         """Computes baseline normal ranges for all expense categories for visualization."""
         ref_date = as_of_date or date.today().isoformat()
+        money_ctx = resolve_analytics_money_context(account_id)
+        tx_amt = money_ctx.tx_amount_expr
+
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND t.account_id = ?" if account_id else ""
@@ -419,8 +444,8 @@ class AnomalyDetectionEngine:
                     strftime('%Y-%m', t.transaction_date) as m,
                     SUM(
                         CASE 
-                            WHEN t.transaction_type = 'expense' THEN t.amount_minor
-                            WHEN t.transaction_type = 'refund' THEN -t.amount_minor
+                            WHEN t.transaction_type = 'expense' THEN {tx_amt}
+                            WHEN t.transaction_type = 'refund' THEN -{tx_amt}
                             ELSE 0
                         END
                     ) as net_minor
@@ -450,12 +475,13 @@ class AnomalyDetectionEngine:
                         "category_id": cid,
                         "category_name": data["name"],
                         "color": data["color"],
+                        "currency": money_ctx.currency,
                         "median_minor": med,
-                        "median": round(med / 100.0, 2),
+                        "median": money_ctx.to_major(med),
                         "lower_minor": low,
-                        "lower": round(low / 100.0, 2),
+                        "lower": money_ctx.to_major(low),
                         "upper_minor": up,
-                        "upper": round(up / 100.0, 2),
+                        "upper": money_ctx.to_major(up),
                         "sample_months": len(vals)
                     })
 

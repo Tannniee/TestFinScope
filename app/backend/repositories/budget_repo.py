@@ -25,9 +25,9 @@ class BudgetRepository:
             acc_clause = " AND t.account_id = ?" if account_id else ""
             params = [month, f"{month}%"] + ([account_id] if account_id else [])
 
-            # When filtering by specific account, compare against t.amount_minor (in account currency)
-            # When portfolio-wide, compare against base_amount_minor (in reporting base currency)
-            amt_col = "t.amount_minor" if account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
+            # Category budgets are denominated in Reporting/Base Currency.
+            # Spend (whether portfolio or account-scoped) must be evaluated in that same currency to allow valid comparison.
+            amt_col = "COALESCE(t.base_amount_minor, t.amount_minor)"
 
             cur.execute(f"""
                 SELECT 
@@ -74,8 +74,8 @@ class BudgetRepository:
                     item["budget_amount"] = None
                     item["formatted_budget_amount"] = None
 
-                item["spent_amount"] = float(minor_to_major(spent_min, filter_currency))
-                item["formatted_spent_amount"] = format_money(spent_min, filter_currency)
+                item["spent_amount"] = float(minor_to_major(spent_min, b_curr))
+                item["formatted_spent_amount"] = format_money(spent_min, b_curr)
                 result.append(item)
 
             return result
