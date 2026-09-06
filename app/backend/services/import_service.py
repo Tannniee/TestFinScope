@@ -536,10 +536,20 @@ class ImportService:
             account_currency = a_row["currency"] if a_row and a_row["currency"] else "USD"
             base_currency = SettingsService.get_setting("currency", "USD") or "USD"
 
-            # Load default category for unassigned
-            cur.execute("SELECT id FROM categories WHERE type = 'expense' ORDER BY id ASC LIMIT 1")
-            default_cat_row = cur.fetchone()
-            fallback_category_id = default_cat_row["id"] if default_cat_row else 1
+            # Load default categories for unassigned (FSC-H03)
+            cur.execute("SELECT id FROM categories WHERE name = 'Uncategorized' AND type = 'expense' AND is_archived = 0 LIMIT 1")
+            uncat_row = cur.fetchone()
+            if not uncat_row:
+                cur.execute("SELECT id FROM categories WHERE type = 'expense' AND is_archived = 0 ORDER BY id ASC LIMIT 1")
+                uncat_row = cur.fetchone()
+            fallback_expense_id = uncat_row["id"] if uncat_row else 1
+
+            cur.execute("SELECT id FROM categories WHERE name = 'Other Income' AND type = 'income' AND is_archived = 0 LIMIT 1")
+            inc_row = cur.fetchone()
+            if not inc_row:
+                cur.execute("SELECT id FROM categories WHERE type = 'income' AND is_archived = 0 ORDER BY id ASC LIMIT 1")
+                inc_row = cur.fetchone()
+            fallback_income_id = inc_row["id"] if inc_row else None
 
             now_str = datetime.now().isoformat()
             imported_count = 0
@@ -563,13 +573,42 @@ class ImportService:
                 amount_minor = parsed["amount_minor"]
                 tx_type = parsed["transaction_type"]
 
-                # Merchant memory lookup
-                cur.execute("SELECT default_category_id, default_essentiality FROM merchants WHERE name = ? COLLATE NOCASE", (payee,))
-                m_row = cur.fetchone()
+                # Merchant memory & persistence (FSC-H04 & FSC-M15)
+                merchant_id = None
+                m_row = None
+                if payee:
+                    clean_merchant = normalize_merchant_name(payee)
+                    if clean_merchant:
+                        merchant_id = MerchantService.get_or_create_merchant_in_conn(
+                            conn=conn,
+                            raw_name=clean_merchant,
+                            account_id=account_id
+                        )
+                    cur.execute("SELECT default_category_id, default_essentiality FROM merchants WHERE name = ? COLLATE NOCASE", (payee,))
+                    m_row = cur.fetchone()
 
-                category_id = m_row["default_category_id"] if m_row and m_row["default_category_id"] else fallback_category_id
+                # Semantic category resolution (FSC-H03)
+                assigned_cat_id = None
+                if m_row and m_row["default_category_id"]:
+                    cand_id = m_row["default_category_id"]
+                    cur.execute("SELECT type, is_archived FROM categories WHERE id = ?", (cand_id,))
+                    c_cand = cur.fetchone()
+                    if c_cand and not c_cand["is_archived"]:
+                        expected_cat_type = "expense" if tx_type == "refund" else tx_type
+                        if c_cand["type"] == expected_cat_type:
+                            assigned_cat_id = cand_id
+
+                if not assigned_cat_id:
+                    if tx_type == "income":
+                        category_id = fallback_income_id
+                    else:
+                        category_id = fallback_expense_id
+                    needs_review = 1
+                else:
+                    category_id = assigned_cat_id
+                    needs_review = 0
+
                 essentiality = m_row["default_essentiality"] if m_row and m_row["default_essentiality"] else "discretionary"
-                needs_review = 0 if (m_row and m_row["default_category_id"]) else 1
 
                 if account_currency == base_currency:
                     base_amount_minor = amount_minor
@@ -587,7 +626,7 @@ class ImportService:
 
                 cur.execute("""
                     INSERT INTO transactions (
-                        account_id, category_id, merchant_name, transaction_type,
+                        account_id, category_id, merchant_id, merchant_name, transaction_type,
                         amount_minor, transaction_date, transaction_time, description,
                         note, essentiality, payment_method, source, needs_review,
                         is_deleted, created_at, updated_at,
@@ -595,12 +634,18 @@ class ImportService:
                         base_currency, base_amount_minor,
                         fx_rate_to_base, fx_rate_date, fx_rate_source, fx_status
                     ) VALUES (
-                        ?, ?, ?, ?, ?, ?, '12:00', ?, '', ?, 'Bank Import', 'csv_import', ?, 0, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?,
+                        ?, ?, '12:00', ?,
+                        '', ?, 'Bank Import', 'csv_import', ?,
+                        0, ?, ?,
+                        ?, ?,
+                        ?, ?,
+                        ?, ?, ?, ?
                     )
                 """, (
                     account_id,
                     category_id,
+                    merchant_id,
                     payee,
                     tx_type,
                     amount_minor,

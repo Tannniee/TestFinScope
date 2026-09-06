@@ -10,6 +10,7 @@ from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 from app.backend.config import FRONTEND_DIR
 from app.backend.api.handler import ApiHandler
+from app.backend.database.maintenance import maintenance_coordinator
 
 logger = logging.getLogger(__name__)
 
@@ -364,15 +365,16 @@ class FinScopeHTTPHandler(SimpleHTTPRequestHandler):
                 self._send_json_error(400, "MALFORMED_JSON", f"Invalid JSON payload: {str(e)}")
                 return
 
-        # 7. Execute Route Handler
+        # 7. Execute Route Handler with Maintenance Coordination (FSC-H01)
         try:
             fn = route.handler
-            if isinstance(params, dict):
-                result = fn(**params)
-            elif isinstance(params, list):
-                result = fn(*params)
-            else:
-                result = fn(params)
+            with maintenance_coordinator.operation():
+                if isinstance(params, dict):
+                    result = fn(**params)
+                elif isinstance(params, list):
+                    result = fn(*params)
+                else:
+                    result = fn(params)
 
             response_data = {
                 "api_version": 2,

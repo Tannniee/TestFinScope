@@ -31,17 +31,34 @@ def main():
     parser = argparse.ArgumentParser(description="FinScope — Personal Finance Analytics")
     parser.add_argument("--browser", action="store_true", help="Launch in default web browser instead of desktop window")
     parser.add_argument("--port", type=int, default=8000, help="Local server port (default: 8000)")
-    parser.add_argument("--seed", action="store_true", help="Force populate sample demo data")
+    parser.add_argument("--seed", action="store_true", help="Populate sample demo data if database is empty")
+    parser.add_argument("--reset-demo-data", action="store_true", help="Wipe all data and populate fresh demo data (creates safety backup first)")
+    parser.add_argument("--yes-really-reset-data", action="store_true", help="Required confirmation flag when using --reset-demo-data")
     args = parser.parse_args()
 
     # 1. Initialize SQLite Database
     logger.info("Initializing database...")
     init_db()
 
-    # Seed sample demo data ONLY if explicitly requested via --seed flag
-    if args.seed:
-        logger.info("Explicit --seed flag passed. Populating realistic demo data...")
+    # Handle demo data population with safety guards (FSC-H15)
+    if args.reset_demo_data:
+        if not args.yes_really_reset_data:
+            logger.error("Destructive reset requires --yes-really-reset-data confirmation flag to prevent data loss.")
+            sys.exit(1)
+        logger.info("Explicit --reset-demo-data confirmed. Creating safety backup and resetting data...")
         seed_sample_data(clear_existing=True)
+    elif args.seed:
+        with get_db_connection() as conn:
+            tx_count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+        if tx_count == 0:
+            logger.info("Empty database detected with --seed. Populating sample demo data...")
+            seed_sample_data(clear_existing=False)
+        else:
+            logger.warning(
+                "Database already contains %d transactions. --seed will not overwrite existing data. "
+                "Use --reset-demo-data --yes-really-reset-data to force reset.",
+                tx_count
+            )
 
     # 2. Start Local Server
     server, actual_port = start_server(port=args.port)

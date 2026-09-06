@@ -100,6 +100,7 @@ _CURRENCIES_LIST = [
 ]
 
 ISO_4217_CATALOGUE: Dict[str, CurrencyMeta] = {c.code: c for c in _CURRENCIES_LIST}
+CURRENCIES: Dict[str, CurrencyMeta] = ISO_4217_CATALOGUE
 ACTIVE_ISO_4217_CODES: Set[str] = set(ISO_4217_CATALOGUE.keys())
 
 

@@ -4,14 +4,19 @@ import zipfile
 import csv
 import sqlite3
 import logging
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from app.backend import config
 from app.backend.database.connection import get_db_connection
 from app.backend.database.migrations_runner import MAX_SUPPORTED_SCHEMA_VERSION, run_migrations
+from app.backend.database.maintenance import maintenance_coordinator
 
 logger = logging.getLogger(__name__)
+
+MAX_UNCOMPRESSED_BACKUP_BYTES = 250 * 1024 * 1024  # 250 MB max uncompressed DB cap
+MAX_COMPRESSION_RATIO = 100  # Zip-bomb expansion ratio guard
 
 class BackupService:
     @staticmethod
@@ -21,11 +26,12 @@ class BackupService:
         Flushes and copies any uncheckpointed WAL frames safely.
         """
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        unique_suffix = uuid.uuid4().hex[:8]
         prefix = "Safety_PreRestore_" if is_safety_snapshot else "FinScope_Backup_"
-        backup_filename = f"{prefix}{timestamp}.financebackup"
+        backup_filename = f"{prefix}{timestamp}_{unique_suffix}.financebackup"
         config.BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
         backup_filepath = config.BACKUPS_DIR / backup_filename
-        temp_db_path = config.BACKUPS_DIR / f"temp_snapshot_{timestamp}.db"
+        temp_db_path = config.BACKUPS_DIR / f"temp_snapshot_{timestamp}_{unique_suffix}.db"
 
         try:
             # 1. Open source and destination connections, perform SQLite live backup
@@ -163,14 +169,31 @@ class BackupService:
         safety_res = BackupService.create_backup(is_safety_snapshot=True)
         safety_backup_path = Path(safety_res["filepath"])
 
-        temp_extract_db = config.BACKUPS_DIR / f"temp_restore_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
+        temp_extract_db = config.BACKUPS_DIR / f"temp_restore_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:6]}.db"
         live_db_swapped = False
 
         try:
-            # 3. Extract database to temp file for pre-swap validation
+            # 3. Extract database to temp file for pre-swap validation with zip-bomb & size guards (FSC-M02)
             with zipfile.ZipFile(backup_file, "r") as zf:
-                with open(temp_extract_db, "wb") as f:
-                    f.write(zf.read("finance.db"))
+                info = zf.getinfo("finance.db")
+                if info.file_size > MAX_UNCOMPRESSED_BACKUP_BYTES:
+                    raise ValueError(
+                        f"Backup member finance.db exceeds maximum uncompressed limit ({info.file_size} > {MAX_UNCOMPRESSED_BACKUP_BYTES} bytes)"
+                    )
+                if info.compress_size > 0 and (info.file_size / info.compress_size) > MAX_COMPRESSION_RATIO:
+                    raise ValueError("Suspicious zip compression ratio exceeds safety limit.")
+
+                with zf.open("finance.db") as src, open(temp_extract_db, "wb") as dst:
+                    total_written = 0
+                    chunk_size = 64 * 1024
+                    while True:
+                        chunk = src.read(chunk_size)
+                        if not chunk:
+                            break
+                        total_written += len(chunk)
+                        if total_written > MAX_UNCOMPRESSED_BACKUP_BYTES:
+                            raise ValueError("Extraction aborted: uncompressed database exceeded size limit.")
+                        dst.write(chunk)
 
             # 4. Validate extracted database with integrity check and schema verification
             check_conn = sqlite3.connect(str(temp_extract_db))
@@ -197,29 +220,30 @@ class BackupService:
             finally:
                 check_conn.close()
 
-            # 5. Swap validated database into live database using SQLite native backup API
-            live_db_swapped = True
-            src_conn = sqlite3.connect(str(temp_extract_db))
-            try:
-                dest_conn = sqlite3.connect(str(config.DB_PATH))
+            # 5. Swap validated database into live database under exclusive maintenance lock (FSC-H01)
+            with maintenance_coordinator.exclusive():
+                live_db_swapped = True
+                src_conn = sqlite3.connect(str(temp_extract_db))
                 try:
-                    src_conn.backup(dest_conn)
-                    dest_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                    dest_conn = sqlite3.connect(str(config.DB_PATH))
+                    try:
+                        src_conn.backup(dest_conn)
+                        dest_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                    finally:
+                        dest_conn.close()
                 finally:
-                    dest_conn.close()
-            finally:
-                src_conn.close()
+                    src_conn.close()
 
-            # 6. Post-restore integrity verification on live database
-            post_conn = sqlite3.connect(str(config.DB_PATH))
-            try:
-                post_cur = post_conn.cursor()
-                post_cur.execute("PRAGMA integrity_check;")
-                post_status = post_cur.fetchone()[0]
-                if post_status != "ok":
-                    raise ValueError(f"Post-restore check failed: {post_status}")
-            finally:
-                post_conn.close()
+                # 6. Post-restore integrity verification on live database
+                post_conn = sqlite3.connect(str(config.DB_PATH))
+                try:
+                    post_cur = post_conn.cursor()
+                    post_cur.execute("PRAGMA integrity_check;")
+                    post_status = post_cur.fetchone()[0]
+                    if post_status != "ok":
+                        raise ValueError(f"Post-restore check failed: {post_status}")
+                finally:
+                    post_conn.close()
 
             return {
                 "success": True,
@@ -313,6 +337,11 @@ class BackupService:
             cur.execute(query, params)
             rows = cur.fetchall()
 
+        def _sanitize_csv_cell(val: Any) -> Any:
+            if isinstance(val, str) and val and val[0] in ("=", "+", "-", "@", "\t", "\r"):
+                return f"'{val}"
+            return val
+
         with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -320,7 +349,7 @@ class BackupService:
                 "Category", "Account", "Essentiality", "Payment Method", "Description", "Note"
             ])
             for r in rows:
-                writer.writerow(list(r))
+                writer.writerow([_sanitize_csv_cell(c) for c in r])
 
         return str(filepath)
 
@@ -332,8 +361,20 @@ class BackupService:
             cur.execute("PRAGMA integrity_check;")
             integrity = cur.fetchone()[0]
 
-            cur.execute("SELECT COUNT(*), MIN(transaction_date), MAX(transaction_date) FROM transactions")
-            tx_count, min_date, max_date = cur.fetchone()
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN is_deleted = 0 THEN 1 ELSE 0 END) as active,
+                    SUM(CASE WHEN is_deleted = 1 THEN 1 ELSE 0 END) as deleted,
+                    MIN(transaction_date),
+                    MAX(transaction_date)
+                FROM transactions
+            """)
+            tx_row = cur.fetchone()
+            tx_total = tx_row[0] or 0
+            tx_active = tx_row[1] or 0
+            tx_deleted = tx_row[2] or 0
+            min_date, max_date = tx_row[3], tx_row[4]
 
             cur.execute("SELECT COUNT(*) FROM accounts")
             acc_count = cur.fetchone()[0]
@@ -350,7 +391,10 @@ class BackupService:
             "data_dir": str(config.DATA_DIR),
             "db_size_bytes": db_size,
             "db_size_formatted": f"{db_size / (1024 * 1024):.2f} MB" if db_size >= 1024 * 1024 else f"{db_size / 1024:.1f} KB",
-            "transaction_count": tx_count or 0,
+            "transaction_count": tx_active,
+            "active_transaction_count": tx_active,
+            "deleted_transaction_count": tx_deleted,
+            "total_transaction_records": tx_total,
             "account_count": acc_count or 0,
             "category_count": cat_count or 0,
             "date_range": f"{min_date} to {max_date}" if min_date else "No data yet",

@@ -272,6 +272,9 @@ class TransactionRepository:
                         category_id = uncat_row["id"]
                         needs_review = 1
 
+                from app.backend.domain.validators import validate_category_for_transaction
+                category_id = validate_category_for_transaction(conn, category_id, tx_type)
+
                 cur.execute("""
                     INSERT INTO transactions (
                         account_id, category_id, merchant_id, merchant_name, transaction_type,
@@ -628,7 +631,18 @@ class TransactionRepository:
         if "amount_minor" in data:
             updates["amount_minor"] = int(data["amount_minor"])
         elif "amount" in data:
-            updates["amount_minor"] = validate_positive_amount(data["amount"], "Transaction amount")
+            eff_type = data.get("transaction_type")
+            if not eff_type:
+                with get_db_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT transaction_type FROM transactions WHERE id = ?", (tx_id,))
+                    row = cur.fetchone()
+                    if row:
+                        eff_type = row["transaction_type"]
+            if eff_type == "adjustment":
+                updates["amount_minor"] = major_to_minor(data["amount"])
+            else:
+                updates["amount_minor"] = validate_positive_amount(data["amount"], "Transaction amount")
 
         for k in allowed:
             if k in data:
@@ -675,6 +689,13 @@ class TransactionRepository:
         new_type = data.get("transaction_type")
         if new_type in ("transfer", "refund"):
             raise ValueError(f"Cannot convert a standard transaction into a specialised {new_type}.")
+
+        eff_type = data.get("transaction_type") or existing.get("transaction_type")
+        eff_cat_id = data["category_id"] if "category_id" in data else existing.get("category_id")
+        if "category_id" in data or "transaction_type" in data:
+            with get_db_connection() as conn:
+                from app.backend.domain.validators import validate_category_for_transaction
+                validate_category_for_transaction(conn, eff_cat_id, eff_type)
 
         target_acc_id = data.get("account_id", existing["account_id"])
         account = AccountRepository.get_by_id(target_acc_id)
@@ -832,11 +853,11 @@ class TransactionRepository:
             return cur.rowcount > 0
 
     @staticmethod
-    def get_review_queue(limit: int = 50, offset: int = 0) -> Dict[str, Any]:
-        """Returns transactions that require review (e.g. Uncategorized or flagged)."""
+    def get_review_queue(limit: int = 50, offset: int = 0, account_id: Optional[int] = None) -> Dict[str, Any]:
+        """Returns transactions that require review (e.g. Uncategorized or flagged), optionally filtered by account."""
         with get_db_connection() as conn:
             cur = conn.cursor()
-            cur.execute("""
+            query = """
                 SELECT 
                     t.id, t.account_id, t.category_id, t.merchant_name, t.amount_minor,
                     ROUND(CAST(t.amount_minor AS REAL) / 100.0, 2) as amount,
@@ -847,16 +868,27 @@ class TransactionRepository:
                 LEFT JOIN accounts a ON t.account_id = a.id
                 LEFT JOIN categories c ON t.category_id = c.id
                 WHERE (t.needs_review = 1 OR c.name = 'Uncategorized')
-                ORDER BY t.transaction_date DESC, t.id DESC
-                LIMIT ? OFFSET ?
-            """, (limit, offset))
-            items = [dict(r) for r in cur.fetchall()]
-
-            cur.execute("""
+            """
+            count_query = """
                 SELECT COUNT(*) FROM active_transactions t
                 LEFT JOIN categories c ON t.category_id = c.id
                 WHERE (t.needs_review = 1 OR c.name = 'Uncategorized')
-            """)
+            """
+            params: List[Any] = []
+            count_params: List[Any] = []
+            if account_id is not None:
+                query += " AND t.account_id = ?"
+                count_query += " AND t.account_id = ?"
+                params.append(account_id)
+                count_params.append(account_id)
+
+            query += " ORDER BY t.transaction_date DESC, t.id DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cur.execute(query, params)
+            items = [dict(r) for r in cur.fetchall()]
+
+            cur.execute(count_query, count_params)
             total = cur.fetchone()[0]
 
             return {
@@ -868,17 +900,18 @@ class TransactionRepository:
 
     @staticmethod
     def resolve_review(tx_id: int, category_id: int, merchant_name: Optional[str] = None) -> bool:
-        """Sets category, clears review flag, and teaches MerchantService."""
+        """Sets category, clears review flag, and authoritatively re-learns merchant defaults (FSC-M14)."""
         tx = TransactionRepository.get_by_id(tx_id)
         if not tx:
             return False
 
         effective_merchant = normalize_merchant_name(merchant_name or tx.get("merchant_name", ""))
         if effective_merchant:
-            MerchantService.get_or_create_merchant(
+            MerchantService.learn_defaults(
                 effective_merchant,
                 category_id=category_id,
-                account_id=tx.get("account_id")
+                account_id=tx.get("account_id"),
+                overwrite=True
             )
 
         with get_db_connection() as conn:

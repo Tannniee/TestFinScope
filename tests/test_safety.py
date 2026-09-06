@@ -206,5 +206,44 @@ class TestFinScopeSafety(unittest.TestCase):
         SettingsService.set_setting("currency", "USD", force=True)
         self.assertEqual(SettingsService.get_setting("currency"), "USD")
 
+    def test_07_seed_sample_data_creates_safety_backup_on_clear(self):
+        """FSC-H15: seed_sample_data(clear_existing=True) auto-creates a safety backup when data exists."""
+        from app.backend.services.sample_data import seed_sample_data
+        from app.backend.database.connection import get_db_connection
+        
+        # Ensure at least 1 transaction exists
+        with get_db_connection() as conn:
+            conn.execute("""
+                INSERT INTO transactions (account_id, transaction_type, amount_minor, transaction_date)
+                VALUES (1, 'expense', 5000, '2026-05-01')
+            """)
+            conn.commit()
+
+        initial_backups = len(list((TEST_DATA_DIR / "backups").glob("Safety_PreRestore_*.financebackup")))
+        seed_sample_data(clear_existing=True)
+        new_backups = len(list((TEST_DATA_DIR / "backups").glob("Safety_PreRestore_*.financebackup")))
+        self.assertGreater(new_backups, initial_backups)
+
+    def test_08_seed_clears_intelligence_remnants(self):
+        """FSC-M23: Resetting demo data cleans merchants, recurring rules, and insight history."""
+        from app.backend.services.sample_data import seed_sample_data
+        from app.backend.database.connection import get_db_connection
+
+        with get_db_connection() as conn:
+            conn.execute("INSERT OR IGNORE INTO merchants (name) VALUES ('Custom Leftover Merchant')")
+            conn.execute("""
+                INSERT INTO recurring_rules (name, transaction_type, amount_minor, account_id)
+                VALUES ('Old Leftover Rule', 'expense', 1000, 1)
+            """)
+            conn.commit()
+
+        seed_sample_data(clear_existing=True)
+
+        with get_db_connection() as conn:
+            m_cnt = conn.execute("SELECT COUNT(*) FROM merchants WHERE name = 'Custom Leftover Merchant'").fetchone()[0]
+            r_cnt = conn.execute("SELECT COUNT(*) FROM recurring_rules WHERE name = 'Old Leftover Rule'").fetchone()[0]
+            self.assertEqual(m_cnt, 0)
+            self.assertEqual(r_cnt, 0)
+
 if __name__ == "__main__":
     unittest.main()

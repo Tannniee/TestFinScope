@@ -1,6 +1,6 @@
 import calendar
 from datetime import datetime, date
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from app.backend.repositories.budget_repo import BudgetRepository
 
 class BudgetService:

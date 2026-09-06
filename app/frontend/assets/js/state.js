@@ -75,29 +75,41 @@ export const state = {
     this.notify({ type: 'privacy_toggled', privacyMode: this.privacyMode });
   },
 
-  async reloadMetadata({ notify = true } = {}) {
-    try {
-      const [accs, cats, settings] = await Promise.all([
-        api.getAccounts(),
-        api.getCategories(),
-        api.getSettings()
-      ]);
-      this.accounts = accs;
-      this.categories = cats;
-      this.settings = settings || {};
-      if (this.settings.currency) {
-        this.currency = this.settings.currency;
+  async reloadMetadata({ notify = true, retries = 2 } = {}) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const [accs, cats, settings] = await Promise.all([
+          api.getAccounts(),
+          api.getCategories(),
+          api.getSettings()
+        ]);
+        this.accounts = accs;
+        this.categories = cats;
+        this.settings = settings || {};
+        if (this.settings.currency) {
+          this.currency = this.settings.currency;
+        }
+        if (notify) {
+          this.notify({ type: 'meta_loaded' });
+        }
+        return;
+      } catch (err) {
+        if (attempt === retries) {
+          console.error('Failed to reload metadata after retries:', err);
+          this.notify({ type: 'meta_load_error', error: err });
+          throw err;
+        }
+        await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
       }
-      if (notify) {
-        this.notify({ type: 'meta_loaded' });
-      }
-    } catch (err) {
-      console.error('Failed to reload metadata:', err);
     }
   },
 
   async loadInitialData() {
-    await this.reloadMetadata({ notify: true });
+    try {
+      await this.reloadMetadata({ notify: true });
+    } catch (err) {
+      console.error('Initial data bootstrap failed:', err);
+    }
   },
 
   formatCurrency(amount, currency = null, forceMask = false) {

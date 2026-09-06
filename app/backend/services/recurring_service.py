@@ -86,7 +86,7 @@ class RecurringService:
             validate_positive_amount,
             validate_recurring_frequency,
             validate_iso_date,
-            validate_transaction_type,
+            validate_recurring_transaction_type,
             validate_currency_code
         )
         from app.backend.services.settings_service import SettingsService
@@ -109,7 +109,7 @@ class RecurringService:
         else:
             orig_amount_minor = amount_minor
 
-        tx_type = validate_transaction_type(transaction_type)
+        tx_type = validate_recurring_transaction_type(transaction_type)
         freq = validate_recurring_frequency(frequency)
         clean_date = validate_iso_date(next_due_date, "Next due date") if next_due_date else None
 
@@ -140,7 +140,7 @@ class RecurringService:
             validate_positive_amount,
             validate_recurring_frequency,
             validate_iso_date,
-            validate_transaction_type,
+            validate_recurring_transaction_type,
             validate_currency_code
         )
 
@@ -165,7 +165,7 @@ class RecurringService:
             updates["original_currency"] = validate_currency_code(updates["original_currency"])
 
         if "transaction_type" in updates:
-            updates["transaction_type"] = validate_transaction_type(updates["transaction_type"])
+            updates["transaction_type"] = validate_recurring_transaction_type(updates["transaction_type"])
 
         if "frequency" in updates:
             updates["frequency"] = validate_recurring_frequency(updates["frequency"])
@@ -282,7 +282,9 @@ class RecurringService:
                         continue
 
                     tx_desc = (tx["merchant_name"] or tx["description"] or "").lower()
-                    if (rule_name in tx_desc or tx_desc in rule_name) or (tx["amount_minor"] == amt_minor and tx["category_id"] == r["category_id"]):
+                    name_match = bool(rule_name and tx_desc) and (rule_name in tx_desc or tx_desc in rule_name)
+                    cat_amt_match = (amt_minor is not None and tx["amount_minor"] == amt_minor and r.get("category_id") is not None and tx["category_id"] == r["category_id"])
+                    if name_match or cat_amt_match:
                         is_paid = True
                         paid_date = tx["transaction_date"]
                         matched_tx_ids.add(tx["id"])

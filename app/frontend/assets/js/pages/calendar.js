@@ -218,7 +218,11 @@ async function openDayDrawer(dateStr) {
   panel?.classList.add('open');
 
   try {
-    const res = await api.getTransactions({ start_date: dateStr, end_date: dateStr, limit: 100 });
+    const params = { start_date: dateStr, end_date: dateStr, limit: 100 };
+    if (state.accountId) {
+      params.account_id = state.accountId;
+    }
+    const res = await api.getTransactions(params);
     const txs = res.items;
 
     let totalIncome = 0;

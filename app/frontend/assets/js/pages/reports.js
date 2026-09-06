@@ -109,16 +109,67 @@ export async function renderReportsPage(container) {
 
 function setupReportHandlers() {
   document.getElementById('btn-export-current-csv')?.addEventListener('click', async () => {
-    const token = await api.getSessionToken();
-    const accQuery = state.accountId ? `&account_id=${state.accountId}` : '';
-    window.location.href = `/api/export_csv?token=${encodeURIComponent(token || '')}&month=${encodeURIComponent(state.month || '')}${accQuery}`;
-    showToast(`Exporting ${state.month} CSV statement...`, 'info');
+    try {
+      showToast(`Exporting ${state.month} CSV statement...`, 'info');
+      const token = await api.getSessionToken();
+      const params = new URLSearchParams();
+      if (state.month) params.append('month', state.month);
+      if (state.accountId) params.append('account_id', state.accountId);
+
+      const resp = await fetch(`/api/export_csv?${params.toString()}`, {
+        headers: { 'X-FinScope-Token': token || '' }
+      });
+      if (!resp.ok) {
+        throw new Error(`Export failed with status ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      const disposition = resp.headers.get('Content-Disposition');
+      let filename = `FinScope_${state.month || 'statement'}.csv`;
+      if (disposition && disposition.includes('filename=')) {
+        filename = disposition.split('filename=')[1].replace(/"/g, '').trim();
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('CSV statement downloaded successfully', 'success');
+    } catch (err) {
+      showToast(`Export error: ${err.message}`, 'error');
+    }
   });
 
   document.getElementById('btn-export-full-csv')?.addEventListener('click', async () => {
-    const token = await api.getSessionToken();
-    window.location.href = `/api/export_csv?token=${encodeURIComponent(token || '')}`;
-    showToast('Exporting complete database CSV archive...', 'info');
+    try {
+      showToast('Exporting complete database CSV archive...', 'info');
+      const token = await api.getSessionToken();
+      const resp = await fetch('/api/export_csv', {
+        headers: { 'X-FinScope-Token': token || '' }
+      });
+      if (!resp.ok) {
+        throw new Error(`Export failed with status ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      const disposition = resp.headers.get('Content-Disposition');
+      let filename = 'FinScope_All_Transactions.csv';
+      if (disposition && disposition.includes('filename=')) {
+        filename = disposition.split('filename=')[1].replace(/"/g, '').trim();
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Full CSV archive downloaded successfully', 'success');
+    } catch (err) {
+      showToast(`Export error: ${err.message}`, 'error');
+    }
   });
 
   document.getElementById('btn-print-report')?.addEventListener('click', () => {

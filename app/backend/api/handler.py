@@ -176,8 +176,8 @@ class ApiHandler:
         return MerchantService.get_recent_payees(limit)
 
     # --- Review Queue & Data Quality ---
-    def get_review_queue(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
-        return TransactionRepository.get_review_queue(limit, offset)
+    def get_review_queue(self, limit: int = 50, offset: int = 0, account_id: Optional[int] = None) -> Dict[str, Any]:
+        return TransactionRepository.get_review_queue(limit, offset, account_id=account_id)
 
     def resolve_review(self, tx_id: int, category_id: int, merchant_name: Optional[str] = None) -> bool:
         return TransactionRepository.resolve_review(tx_id, category_id, merchant_name)

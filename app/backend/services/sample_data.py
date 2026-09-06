@@ -2,10 +2,12 @@ import random
 import calendar
 from datetime import datetime, timedelta, date
 from app.backend.database.connection import get_db_connection
+from app.backend.database.maintenance import maintenance_coordinator
 from app.backend.repositories.account_repo import AccountRepository
 from app.backend.repositories.category_repo import CategoryRepository
 from app.backend.repositories.transaction_repo import TransactionRepository
 from app.backend.services.transfer_service import TransferService
+from app.backend.services.backup_service import BackupService
 
 SAMPLE_MERCHANTS = {
     "Groceries": [("Woolworths", 65.5, 140.0), ("Coles", 42.0, 110.0), ("Aldi", 35.0, 85.0), ("Fresh Market", 25.0, 60.0)],
@@ -58,129 +60,145 @@ def seed_sample_data(clear_existing: bool = False):
     cat_freelance_id = cat_map.get("Freelance & Consulting")
     cat_shopping_id = cat_map.get("Shopping & Tech")
 
-    with get_db_connection() as conn:
-        cur = conn.cursor()
-        if clear_existing:
-            cur.execute("DELETE FROM transactions")
-            cur.execute("DELETE FROM budgets")
+    # Auto-create safety backup before destructive clear (FSC-H15)
+    if clear_existing:
+        try:
+            with get_db_connection() as check_conn:
+                cnt = check_conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                if cnt > 0:
+                    BackupService.create_backup(is_safety_snapshot=True)
+        except Exception:
+            pass
 
-        today = date.today()
-        months_to_seed = []
-        for i in range(4):
-            m = today.month - i
-            y = today.year
-            while m <= 0:
-                m += 12
-                y -= 1
-            months_to_seed.append((y, m))
+    with maintenance_coordinator.exclusive():
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            if clear_existing:
+                # FSC-M23: Clear all transactions, budgets, recurring rules, merchants, and insights cleanly
+                cur.execute("DELETE FROM transactions")
+                cur.execute("DELETE FROM budgets")
+                cur.execute("DELETE FROM recurring_rules")
+                cur.execute("DELETE FROM recurring_rule_versions")
+                cur.execute("DELETE FROM merchants")
+                cur.execute("DELETE FROM merchant_rules")
+                cur.execute("DELETE FROM insight_history")
 
-        months_to_seed.reverse()
+            today = date.today()
+            months_to_seed = []
+            for i in range(4):
+                m = today.month - i
+                y = today.year
+                while m <= 0:
+                    m += 12
+                    y -= 1
+                months_to_seed.append((y, m))
 
-        for y, m in months_to_seed:
-            month_str = f"{y}-{m:02d}"
-            max_days = calendar.monthrange(y, m)[1]
-            limit_day = min(today.day, max_days) if (y == today.year and m == today.month) else max_days
+            months_to_seed.reverse()
 
-            # 1. Seed Budgets for this month in integer minor units
-            for cat_name, b_amt in SAMPLE_BUDGETS.items():
-                c_id = cat_map.get(cat_name)
-                if c_id:
-                    conn.execute("""
-                        INSERT INTO budgets (category_id, start_date, amount_minor, period_type)
-                        VALUES (?, ?, ?, 'monthly')
-                        ON CONFLICT(category_id, start_date) DO UPDATE SET
-                            amount_minor = excluded.amount_minor
-                    """, (c_id, month_str, int(round(b_amt * 100))))
+            for y, m in months_to_seed:
+                month_str = f"{y}-{m:02d}"
+                max_days = calendar.monthrange(y, m)[1]
+                limit_day = min(today.day, max_days) if (y == today.year and m == today.month) else max_days
 
-            # 2. Seed Monthly Incomes: 2 salaries (1st and 15th)
-            conn.execute("""
-                INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, essentiality, payment_method)
-                VALUES (?, ?, 'TechCorp Global', 'income', 285000, ?, '09:00', 'Bi-weekly Salary', 'Direct Deposit', 'savings', 'Direct Deposit')
-            """, (acc_everyday, cat_salary_id, f"{month_str}-01"))
+                # 1. Seed Budgets for this month in integer minor units
+                for cat_name, b_amt in SAMPLE_BUDGETS.items():
+                    c_id = cat_map.get(cat_name)
+                    if c_id:
+                        conn.execute("""
+                            INSERT INTO budgets (category_id, start_date, amount_minor, period_type)
+                            VALUES (?, ?, ?, 'monthly')
+                            ON CONFLICT(category_id, start_date) DO UPDATE SET
+                                amount_minor = excluded.amount_minor
+                        """, (c_id, month_str, int(round(b_amt * 100))))
 
-            if limit_day >= 15:
+                # 2. Seed Monthly Incomes: 2 salaries (1st and 15th)
                 conn.execute("""
                     INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, essentiality, payment_method)
                     VALUES (?, ?, 'TechCorp Global', 'income', 285000, ?, '09:00', 'Bi-weekly Salary', 'Direct Deposit', 'savings', 'Direct Deposit')
-                """, (acc_everyday, cat_salary_id, f"{month_str}-15"))
+                """, (acc_everyday, cat_salary_id, f"{month_str}-01"))
 
-            # 3. Monthly Savings Transfer on 3rd (Double-entry transfer via TransferService)
-            if limit_day >= 3:
-                TransferService.create_transfer_in_conn(
-                    conn=conn,
-                    from_account_id=acc_everyday,
-                    to_account_id=acc_savings,
-                    amount=500.0,
-                    transaction_date=f"{month_str}-03",
-                    transaction_time="10:00",
-                    description="Monthly Savings Transfer",
-                    note="High yield savings allocation"
-                )
+                if limit_day >= 15:
+                    conn.execute("""
+                        INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, essentiality, payment_method)
+                        VALUES (?, ?, 'TechCorp Global', 'income', 285000, ?, '09:00', 'Bi-weekly Salary', 'Direct Deposit', 'savings', 'Direct Deposit')
+                    """, (acc_everyday, cat_salary_id, f"{month_str}-15"))
 
-            # 4. Rent on 2nd of each month
-            rent_cat_id = cat_map.get("Housing & Rent")
-            if rent_cat_id and limit_day >= 2:
-                conn.execute("""
-                    INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, essentiality, payment_method)
-                    VALUES (?, ?, 'City Property Lease', 'expense', 160000, ?, '08:00', 'Monthly Apartment Rent', 'Electronic payment', 'essential', 'Bank Transfer')
-                """, (acc_everyday, rent_cat_id, f"{month_str}-02"))
+                # 3. Monthly Savings Transfer on 3rd (Double-entry transfer via TransferService)
+                if limit_day >= 3:
+                    TransferService.create_transfer_in_conn(
+                        conn=conn,
+                        from_account_id=acc_everyday,
+                        to_account_id=acc_savings,
+                        amount=500.0,
+                        transaction_date=f"{month_str}-03",
+                        note="Automatic monthly savings target",
+                        transaction_time="10:00"
+                    )
 
-            # 5. Recurring Subscriptions
-            sub_cat_id = cat_map.get("Entertainment & Subscriptions")
-            if sub_cat_id and limit_day >= 5:
-                conn.execute("""
-                    INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, is_recurring, essentiality, payment_method)
-                    VALUES (?, ?, 'Netflix', 'expense', 1999, ?, '10:00', 'Standard HD Subscription', 'Automatic billing', 1, 'discretionary', 'Card')
-                """, (acc_credit, sub_cat_id, f"{month_str}-05"))
+                # 4. Monthly Rent on 1st from checking
+                cat_rent_id = cat_map.get("Housing & Rent")
+                if cat_rent_id:
+                    conn.execute("""
+                        INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, is_recurring, essentiality, payment_method)
+                        VALUES (?, ?, 'City Property Lease', 'expense', 160000, ?, '08:00', 'Monthly Apartment Rent', 'Recurring Bank Transfer', 1, 'essential', 'Bank Transfer')
+                    """, (acc_everyday, cat_rent_id, f"{month_str}-01"))
 
-            if sub_cat_id and limit_day >= 12:
-                conn.execute("""
-                    INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, is_recurring, essentiality, payment_method)
-                    VALUES (?, ?, 'Spotify Premium', 'expense', 1299, ?, '10:00', 'Family Plan Subscription', 'Automatic billing', 1, 'discretionary', 'Card')
-                """, (acc_credit, sub_cat_id, f"{month_str}-12"))
+                # 5. Recurring Subscriptions on credit card (Netflix & Spotify)
+                sub_cat_id = cat_map.get("Entertainment & Subscriptions")
+                if sub_cat_id and limit_day >= 5:
+                    conn.execute("""
+                        INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, is_recurring, essentiality, payment_method)
+                        VALUES (?, ?, 'Netflix', 'expense', 1999, ?, '10:00', 'Standard HD Subscription', 'Automatic billing', 1, 'discretionary', 'Card')
+                    """, (acc_credit, sub_cat_id, f"{month_str}-05"))
 
-            # 6. Sample Expense + Linked Refund on 14th (Shopping item return)
-            if limit_day >= 14 and cat_shopping_id:
-                cur.execute("""
-                    INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, essentiality, payment_method)
-                    VALUES (?, ?, 'Uniqlo', 'expense', 9000, ?, '14:00', 'Uniqlo Clothing Store', '', 'discretionary', 'Card')
-                """, (acc_credit, cat_shopping_id, f"{month_str}-10"))
-                parent_tx_id = cur.lastrowid
-                cur.execute("""
-                    INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, essentiality, payment_method, refund_of_transaction_id)
-                    VALUES (?, ?, 'Uniqlo Return', 'refund', 4500, ?, '15:20', 'Clothing item exchange refund', 'Credited to card', 'discretionary', 'Card', ?)
-                """, (acc_credit, cat_shopping_id, f"{month_str}-14", parent_tx_id))
+                if sub_cat_id and limit_day >= 12:
+                    conn.execute("""
+                        INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, is_recurring, essentiality, payment_method)
+                        VALUES (?, ?, 'Spotify Premium', 'expense', 1299, ?, '10:00', 'Family Plan Subscription', 'Automatic billing', 1, 'discretionary', 'Card')
+                    """, (acc_credit, sub_cat_id, f"{month_str}-12"))
 
-            # 7. Random daily expenses
-            for day in range(1, limit_day + 1):
-                date_str = f"{month_str}-{day:02d}"
-                if random.random() < 0.70:
-                    num_tx = random.choice([1, 1, 2])
-                    for _ in range(num_tx):
-                        cat_choice = random.choice(["Groceries", "Dining & Coffee", "Transportation & Fuel", "Shopping & Tech", "Healthcare & Wellness"])
-                        cat_id = cat_map.get(cat_choice)
-                        if not cat_id or cat_choice not in SAMPLE_MERCHANTS:
-                            continue
+                # 6. Sample Expense + Linked Refund on 14th (Shopping item return)
+                if limit_day >= 14 and cat_shopping_id:
+                    cur.execute("""
+                        INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, essentiality, payment_method)
+                        VALUES (?, ?, 'Uniqlo', 'expense', 9000, ?, '14:00', 'Uniqlo Clothing Store', '', 'discretionary', 'Card')
+                    """, (acc_credit, cat_shopping_id, f"{month_str}-10"))
+                    parent_tx_id = cur.lastrowid
+                    cur.execute("""
+                        INSERT INTO transactions (account_id, category_id, merchant_name, transaction_type, amount_minor, transaction_date, transaction_time, description, note, essentiality, payment_method, refund_of_transaction_id)
+                        VALUES (?, ?, 'Uniqlo Return', 'refund', 4500, ?, '15:20', 'Clothing item exchange refund', 'Credited to card', 'discretionary', 'Card', ?)
+                    """, (acc_credit, cat_shopping_id, f"{month_str}-14", parent_tx_id))
 
-                        merchant_info = random.choice(SAMPLE_MERCHANTS[cat_choice])
-                        m_name, min_amt, max_amt = merchant_info
-                        amt_minor = int(round(random.uniform(min_amt, max_amt) * 100))
-                        account_chosen = acc_credit if random.random() < 0.6 else acc_everyday
-                        is_ess = "essential" if cat_choice in ["Groceries", "Transportation & Fuel", "Healthcare & Wellness"] else "discretionary"
+                # 7. Random daily expenses
+                for day in range(1, limit_day + 1):
+                    date_str = f"{month_str}-{day:02d}"
+                    if random.random() < 0.70:
+                        num_tx = random.choice([1, 1, 2])
+                        for _ in range(num_tx):
+                            cat_choice = random.choice(["Groceries", "Dining & Coffee", "Transportation & Fuel", "Shopping & Tech", "Healthcare & Wellness"])
+                            cat_id = cat_map.get(cat_choice)
+                            if not cat_id or cat_choice not in SAMPLE_MERCHANTS:
+                                continue
 
-                        hour = random.randint(8, 21)
-                        minute = random.choice([0, 15, 30, 45])
-                        t_time = f"{hour:02d}:{minute:02d}"
+                            merchant_info = random.choice(SAMPLE_MERCHANTS[cat_choice])
+                            m_name, min_amt, max_amt = merchant_info
+                            amt_minor = int(round(random.uniform(min_amt, max_amt) * 100))
+                            account_chosen = acc_credit if random.random() < 0.6 else acc_everyday
+                            is_ess = "essential" if cat_choice in ["Groceries", "Transportation & Fuel", "Healthcare & Wellness"] else "discretionary"
 
-                        conn.execute("""
-                            INSERT INTO transactions (
-                                account_id, category_id, merchant_name, transaction_type,
-                                amount_minor, transaction_date, transaction_time, description,
-                                note, essentiality, payment_method
-                            ) VALUES (?, ?, ?, 'expense', ?, ?, ?, ?, '', ?, 'Card')
-                        """, (account_chosen, cat_id, m_name, amt_minor, date_str, t_time, f"{cat_choice} at {m_name}", is_ess))
+                            hour = random.randint(8, 21)
+                            minute = random.choice([0, 15, 30, 45])
+                            t_time = f"{hour:02d}:{minute:02d}"
 
-        conn.commit()
+                            conn.execute("""
+                                INSERT INTO transactions (
+                                    account_id, category_id, merchant_name, transaction_type,
+                                    amount_minor, transaction_date, transaction_time, description,
+                                    note, essentiality, payment_method
+                                ) VALUES (?, ?, ?, 'expense', ?, ?, ?, ?, '', ?, 'Card')
+                            """, (account_chosen, cat_id, m_name, amt_minor, date_str, t_time, f"{cat_choice} at {m_name}", is_ess))
+
+            conn.commit()
 
     # Invariant Verification: Ensure all transfer groups are valid
     validation = TransferService.validate_all_transfer_groups()

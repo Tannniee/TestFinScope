@@ -21,11 +21,37 @@ from app.backend.analytics.forecast_strategies.series import generate_calendar_m
 from app.backend.analytics.forecast_strategies.selector import IneligibleForecastStrategyError
 from app.backend.analytics.forecast_strategies.request import ForecastRequest
 
+from collections import OrderedDict
+
 REPLAY_CACHE_VERSION = "1.1.1"
 
-# Cache structure: (version, revision, account_id, cutoff) -> replay_results
-_REPLAY_CACHE: Dict[Tuple[str, int, Optional[int], str], Dict[str, Any]] = {}
-_RESIDUALS_BY_BUCKET_CACHE: Dict[Tuple[str, int, Optional[int], str], Dict[int, List[int]]] = {}
+class LRUCache(OrderedDict):
+    """Bounded LRU cache for replay and residual buckets (FSC-M16)."""
+    def __init__(self, maxsize: int = 32, *args, **kwargs):
+        self.maxsize = maxsize
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        if len(self) > self.maxsize:
+            self.popitem(last=False)
+
+    def get(self, key, default=None):
+        if key in self:
+            self.move_to_end(key)
+            return self[key]
+        return default
+
+# Cache structure: (version, revision, account_id, cutoff) -> replay_results (bounded LRU maxsize=32)
+_REPLAY_CACHE: LRUCache = LRUCache(maxsize=32)
+_RESIDUALS_BY_BUCKET_CACHE: LRUCache = LRUCache(maxsize=32)
 
 
 def get_progress_bucket(progress: float) -> int:

@@ -130,13 +130,13 @@ class SpendingFingerprintEngine:
             tx_count = len(tx_rows)
             sufficiency = check_data_sufficiency("fingerprint", tx_count, len(recent_months))
 
-            if tx_count == 0:
+            if not sufficiency.available:
                 return {
                     "available": False,
                     "data_sufficiency": sufficiency.to_dict(),
                     "period_label": f"{start_month} to {end_month}",
                     "sample_months": len(recent_months),
-                    "transaction_count": 0
+                    "transaction_count": tx_count
                 }
 
             amounts = sorted([row["amount_minor"] for row in tx_rows])
@@ -192,7 +192,11 @@ class SpendingFingerprintEngine:
             ey, em = map(int, end_month.split("-"))
             end_days = calendar.monthrange(ey, em)[1]
             cal_start = date(sy, sm, 1)
-            cal_end = date(ey, em, end_days)
+            today = date.today()
+            if end_month == today.strftime("%Y-%m"):
+                cal_end = min(today, date(ey, em, end_days))
+            else:
+                cal_end = date(ey, em, end_days)
             wday_cal_occurrences = count_weekday_occurrences_in_range(cal_start, cal_end)
 
             weekday_breakdown = []

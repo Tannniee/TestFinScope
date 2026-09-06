@@ -35,7 +35,9 @@ def generate_occurrences(
         return []
 
     def advance_date(d: date, step_idx: int) -> date:
-        if freq in ("weekly", "week"):
+        if freq in ("daily", "day"):
+            return d + timedelta(days=step_idx)
+        elif freq in ("weekly", "week"):
             return d + timedelta(days=7 * step_idx)
         elif freq in ("fortnightly", "biweekly", "bi-weekly"):
             return d + timedelta(days=14 * step_idx)

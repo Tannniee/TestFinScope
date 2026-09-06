@@ -38,6 +38,51 @@ def normalize_merchant_name(raw: str) -> str:
 
 class MerchantService:
     @staticmethod
+    def get_or_create_merchant_in_conn(
+        conn,
+        raw_name: str,
+        category_id: Optional[int] = None,
+        account_id: Optional[int] = None,
+        essentiality: Optional[str] = None
+    ) -> int:
+        """Finds or creates a canonical merchant on an existing DB connection (FSC-M15)."""
+        canonical_name = normalize_merchant_name(raw_name)
+        if not canonical_name:
+            return 0
+
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO merchants (name, default_category_id, preferred_account_id, default_essentiality)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(name) DO NOTHING
+            """,
+            (canonical_name, category_id, account_id, essentiality or "discretionary")
+        )
+        cur.execute("SELECT id, default_category_id, preferred_account_id, default_essentiality FROM merchants WHERE name = ?", (canonical_name,))
+        row = cur.fetchone()
+        if not row:
+            return 0
+        m_id = row["id"]
+
+        updates = []
+        params = []
+        if category_id and not row["default_category_id"]:
+            updates.append("default_category_id = ?")
+            params.append(category_id)
+        if account_id and not row["preferred_account_id"]:
+            updates.append("preferred_account_id = ?")
+            params.append(account_id)
+        if essentiality and row["default_essentiality"] == "discretionary" and essentiality == "essential":
+            updates.append("default_essentiality = ?")
+            params.append(essentiality)
+
+        if updates:
+            params.append(m_id)
+            cur.execute(f"UPDATE merchants SET {', '.join(updates)} WHERE id = ?", params)
+        return m_id
+
+    @staticmethod
     def get_or_create_merchant(
         raw_name: str,
         category_id: Optional[int] = None,
@@ -45,45 +90,62 @@ class MerchantService:
         essentiality: Optional[str] = None
     ) -> int:
         """Finds or creates a canonical merchant and updates its smart defaults."""
-        canonical_name = normalize_merchant_name(raw_name)
-        if not canonical_name:
-            return 0
+        with get_db_connection() as conn:
+            m_id = MerchantService.get_or_create_merchant_in_conn(
+                conn, raw_name, category_id, account_id, essentiality
+            )
+            conn.commit()
+            return m_id
 
+    @staticmethod
+    def learn_defaults(
+        merchant_name_or_id: Any,
+        category_id: Optional[int] = None,
+        account_id: Optional[int] = None,
+        essentiality: Optional[str] = None,
+        overwrite: bool = True
+    ) -> bool:
+        """
+        Learns or updates defaults for a merchant (FSC-M14).
+        If overwrite is True (e.g. user manually confirmed/updated in review queue),
+        authoritatively sets the specified defaults.
+        """
         with get_db_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id, default_category_id, preferred_account_id, default_essentiality FROM merchants WHERE name = ?", (canonical_name,))
-            row = cur.fetchone()
-
-            if row:
-                m_id = row["id"]
-                # Update defaults if provided
-                updates = []
-                params = []
-                if category_id and not row["default_category_id"]:
-                    updates.append("default_category_id = ?")
-                    params.append(category_id)
-                if account_id and not row["preferred_account_id"]:
-                    updates.append("preferred_account_id = ?")
-                    params.append(account_id)
-                if essentiality and row["default_essentiality"] == "discretionary" and essentiality == "essential":
-                    updates.append("default_essentiality = ?")
-                    params.append(essentiality)
-
-                if updates:
-                    params.append(m_id)
-                    conn.execute(f"UPDATE merchants SET {', '.join(updates)} WHERE id = ?", params)
-                    conn.commit()
-                return m_id
+            if isinstance(merchant_name_or_id, int):
+                cur.execute("SELECT id, default_category_id, preferred_account_id, default_essentiality FROM merchants WHERE id = ?", (merchant_name_or_id,))
             else:
-                cur.execute(
-                    """
-                    INSERT INTO merchants (name, default_category_id, preferred_account_id, default_essentiality)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (canonical_name, category_id, account_id, essentiality or "discretionary")
-                )
+                cname = normalize_merchant_name(str(merchant_name_or_id))
+                if not cname:
+                    return False
+                cur.execute("SELECT id, default_category_id, preferred_account_id, default_essentiality FROM merchants WHERE name = ?", (cname,))
+            row = cur.fetchone()
+            if not row:
+                if isinstance(merchant_name_or_id, str):
+                    m_id = MerchantService.get_or_create_merchant_in_conn(conn, merchant_name_or_id, category_id, account_id, essentiality)
+                    conn.commit()
+                    return m_id > 0
+                return False
+
+            m_id = row["id"]
+            updates = []
+            params = []
+            if category_id is not None and (overwrite or not row["default_category_id"]):
+                updates.append("default_category_id = ?")
+                params.append(category_id)
+            if account_id is not None and (overwrite or not row["preferred_account_id"]):
+                updates.append("preferred_account_id = ?")
+                params.append(account_id)
+            if essentiality is not None and (overwrite or not row["default_essentiality"]):
+                updates.append("default_essentiality = ?")
+                params.append(essentiality)
+
+            if updates:
+                params.append(m_id)
+                cur.execute(f"UPDATE merchants SET {', '.join(updates)} WHERE id = ?", params)
                 conn.commit()
-                return cur.lastrowid
+                return cur.rowcount > 0
+            return True
 
     @staticmethod
     def suggest_merchants(query: str, limit: int = 6) -> List[Dict[str, Any]]:
@@ -94,13 +156,14 @@ class MerchantService:
         if not query or len(query.strip()) < 1:
             return []
 
-        clean_q = query.strip()
+        clean_q = query.strip()[:100]
         like_pattern = f"%{clean_q}%"
 
         with get_db_connection() as conn:
             cur = conn.cursor()
 
             # 1. Search in merchants table
+            safe_limit = max(1, min(limit or 10, 50))
             cur.execute("""
                 SELECT 
                     m.id,
@@ -120,7 +183,7 @@ class MerchantService:
                     CASE WHEN m.name LIKE ? THEN 0 ELSE 1 END,
                     m.name ASC
                 LIMIT ?
-            """, (like_pattern, f"{clean_q}%", limit))
+            """, (like_pattern, f"{clean_q}%", safe_limit))
 
             rows = cur.fetchall()
             results = []
@@ -172,6 +235,7 @@ class MerchantService:
                     "name": r["name"],
                     "merchant_name": r["name"],
                     "category_id": cat_id,
+                    "default_category_id": cat_id,
                     "category_name": cat_name,
                     "category_color": cat_color,
                     "category_icon": cat_icon,
@@ -179,6 +243,7 @@ class MerchantService:
                     "preferred_account_id": r["preferred_account_id"],
                     "account_name": r["account_name"],
                     "essentiality": r["default_essentiality"] or "discretionary",
+                    "default_essentiality": r["default_essentiality"] or "discretionary",
                     "confidence": confidence,
                     "transaction_count": total_hist
                 })
@@ -190,6 +255,7 @@ class MerchantService:
         """Returns recently used distinct payees for quick one-click capture."""
         with get_db_connection() as conn:
             cur = conn.cursor()
+            safe_limit = max(1, min(limit or 5, 50))
             cur.execute("""
                 WITH ranked AS (
                     SELECT 
@@ -229,7 +295,7 @@ class MerchantService:
                 WHERE r.rn = 1
                 ORDER BY r.last_used DESC, r.id DESC
                 LIMIT ?
-            """, (limit,))
+            """, (safe_limit,))
 
             items = []
             for r in cur.fetchall():
@@ -239,12 +305,14 @@ class MerchantService:
                     "name": r["merchant_name"],
                     "merchant_name": r["merchant_name"],
                     "category_id": r["category_id"],
+                    "default_category_id": r["category_id"],
                     "category_name": r["category_name"],
                     "category_color": r["category_color"],
                     "category_icon": r["category_icon"],
                     "account_id": r["account_id"],
                     "preferred_account_id": r["account_id"],
                     "essentiality": r["essentiality"],
+                    "default_essentiality": r["essentiality"],
                     "confidence": "high",
                     "transaction_count": r["transaction_count"],
                     "amount": round(r["amount_minor"] / 100.0, 2)

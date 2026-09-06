@@ -52,11 +52,11 @@ FinScope goes beyond basic expense recording into a lightweight personal finance
 - **Print / PDF** statement export.
 
 ### 7. Data & Storage Management
-- 100% offline SQLite database (`data/finance.db`).
+- 100% offline SQLite database stored in `%LOCALAPPDATA%\FinScope\finance.db` (or local `data/` directory).
 - **Backup Now**: Creates portable `.financebackup` archive.
 - **Restore Backup**: Restores previous backups with an automatic safety snapshot.
-- **Privacy Mode**: Eye icon toggle in topbar masks currency values with blur when in public.
-- **Demo Data Seeder**: Instant 4-month realistic dataset for exploration.
+- **Privacy Mode**: Eye icon toggle in topbar provides visual screen masking (blurring / bullet masks against shoulder surfing in public places; note that local database storage is offline and unencrypted).
+- **Demo Data Seeder**: Instant realistic dataset for exploration.
 
 ---
 

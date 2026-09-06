@@ -180,18 +180,15 @@ export const modals = {
       try {
         if (!query) {
           const recent = await api.getRecentPayees(6);
-          this.currentSuggestions = (recent || []).map(p => ({
-            name: p.name,
-            default_category_id: p.default_category_id,
-            category_name: p.category_name,
-            preferred_account_id: p.preferred_account_id,
-            default_essentiality: p.default_essentiality,
+          this.currentSuggestions = (recent || []).map(p => this.normalizeSuggestion({
+            ...p,
             confidence: 'recent',
             tx_count: p.transaction_count
           }));
         } else {
           const res = await api.getMerchantSuggestions(query, 6);
-          this.currentSuggestions = res?.suggestions || [];
+          const raw = res?.suggestions || [];
+          this.currentSuggestions = raw.map(s => this.normalizeSuggestion(s));
         }
         this.renderAutocompleteDropdown();
       } catch (err) {
@@ -300,7 +297,29 @@ export const modals = {
     });
   },
 
-  applyPayeeSuggestion(suggestion) {
+  normalizeSuggestion(p) {
+    if (!p) return null;
+    const name = p.name || p.merchant_name || '';
+    const categoryId = p.default_category_id != null ? p.default_category_id : p.category_id;
+    const accountId = p.preferred_account_id != null ? p.preferred_account_id : p.account_id;
+    const essentiality = p.default_essentiality || p.essentiality || 'discretionary';
+    return {
+      ...p,
+      name,
+      merchant_name: name,
+      default_category_id: categoryId,
+      category_id: categoryId,
+      preferred_account_id: accountId,
+      account_id: accountId,
+      default_essentiality: essentiality,
+      essentiality
+    };
+  },
+
+  applyPayeeSuggestion(rawSuggestion) {
+    const suggestion = this.normalizeSuggestion(rawSuggestion);
+    if (!suggestion) return;
+
     const payeeInput = document.getElementById('tx-merchant');
     if (payeeInput) payeeInput.value = suggestion.name;
 
@@ -416,8 +435,6 @@ export const modals = {
       } else if (type === 'refund') {
         const refundTxIdVal = document.getElementById('tx-refund-id').value;
         const refundTxId = refundTxIdVal ? parseInt(refundTxIdVal) : null;
-        const categoryId = document.getElementById('tx-category').value ? parseInt(document.getElementById('tx-category').value) : null;
-        const merchant = document.getElementById('tx-merchant').value.trim();
 
         if (this.activeTxId) {
           await api.updateRefund({
@@ -440,19 +457,8 @@ export const modals = {
           });
           showToast('Linked refund recorded successfully', 'success');
         } else {
-          await api.createTransaction({
-            account_id: accountId,
-            category_id: categoryId,
-            merchant_name: merchant,
-            transaction_type: 'refund',
-            amount: amount,
-            transaction_date: date,
-            transaction_time: time,
-            description: description || merchant || 'Refund',
-            note: note,
-            essentiality: 'discretionary'
-          });
-          showToast('Refund recorded successfully', 'success');
+          showToast('Original Transaction ID is required for refunds', 'error');
+          return;
         }
       } else {
         // Expense or Income

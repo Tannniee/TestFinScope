@@ -229,6 +229,44 @@ class TransferService:
         )
 
     @staticmethod
+    def _load_transfer_pair(cur, transfer_group_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Loads and strictly validates a transfer pair from SQLite (FSC-M08).
+        Requires:
+        - Exactly 2 rows
+        - Both transaction_type == 'transfer'
+        - Same transfer_group_id
+        - Roles == {'source', 'destination'}
+        - Cross-linked IDs (leg1.linked_id == leg2.id and vice versa)
+        - Same deletion state (is_deleted must match)
+        Returns (source_leg, destination_leg).
+        Raises ValueError if corrupted or invalid.
+        """
+        cur.execute("SELECT * FROM transactions WHERE transfer_group_id = ?", (transfer_group_id,))
+        legs = [dict(r) for r in cur.fetchall()]
+        if len(legs) != 2:
+            raise ValueError(f"Invalid transfer group '{transfer_group_id}': expected exactly 2 legs, found {len(legs)}.")
+
+        for leg in legs:
+            if leg["transaction_type"] != "transfer":
+                raise ValueError(f"Corrupted transfer leg {leg['id']}: type is '{leg['transaction_type']}', expected 'transfer'.")
+
+        leg_roles = {leg["transfer_role"] for leg in legs}
+        if leg_roles != {"source", "destination"}:
+            raise ValueError(f"Invalid transfer roles for group '{transfer_group_id}': expected {{'source', 'destination'}}, got {leg_roles}.")
+
+        source_leg = next(l for l in legs if l["transfer_role"] == "source")
+        dest_leg = next(l for l in legs if l["transfer_role"] == "destination")
+
+        if source_leg.get("linked_transaction_id") != dest_leg["id"] or dest_leg.get("linked_transaction_id") != source_leg["id"]:
+            raise ValueError(f"Corrupted transfer pair '{transfer_group_id}': transfer legs are not properly cross-linked.")
+
+        if source_leg["is_deleted"] != dest_leg["is_deleted"]:
+            raise ValueError(f"Inconsistent deletion state in transfer group '{transfer_group_id}': source is_deleted={source_leg['is_deleted']}, dest is_deleted={dest_leg['is_deleted']}.")
+
+        return source_leg, dest_leg
+
+    @staticmethod
     def update_transfer(
         transfer_group_id: Optional[str] = None,
         tx_id: Optional[int] = None,
@@ -254,13 +292,7 @@ class TransferService:
             if not transfer_group_id:
                 raise ValueError("Either transfer_group_id or tx_id must be provided.")
 
-            cur.execute("SELECT * FROM transactions WHERE transfer_group_id = ?", (transfer_group_id,))
-            legs = [dict(r) for r in cur.fetchall()]
-            if len(legs) != 2:
-                raise ValueError(f"Invalid transfer group: expected 2 legs, found {len(legs)}")
-
-            source_leg = next((l for l in legs if l["transfer_role"] == "source"), legs[0])
-            dest_leg = next((l for l in legs if l["transfer_role"] == "destination"), legs[1])
+            source_leg, dest_leg = TransferService._load_transfer_pair(cur, transfer_group_id)
 
             # Resolve accounts
             new_from_acc = from_account_id if from_account_id is not None else source_leg["account_id"]
@@ -482,6 +514,9 @@ class TransferService:
 
             if leg1.get("linked_transaction_id") != leg2["id"] or leg2.get("linked_transaction_id") != leg1["id"]:
                 return {"valid": False, "reason": "Transfers must be cross-linked via linked_transaction_id"}
+
+            if leg1["is_deleted"] != leg2["is_deleted"]:
+                return {"valid": False, "reason": f"Inconsistent deletion state: {leg1['is_deleted']} vs {leg2['is_deleted']}"}
 
             return {
                 "valid": True,

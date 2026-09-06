@@ -453,9 +453,10 @@ def test_aud_005_recurring_match_strictly_enforces_account_and_type(isolated_db)
     })
 
     # Case 1: An income on Everyday account with merchant "Netflix"
+    cat_inc = CategoryRepository.create("Refunds/Income", "income")
     TransactionRepository.create({
         "account_id": acc_everyday,
-        "category_id": cat_sub,
+        "category_id": cat_inc,
         "amount": 19.99,
         "transaction_type": "income",
         "merchant_name": "Netflix",

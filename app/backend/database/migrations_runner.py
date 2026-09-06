@@ -224,75 +224,99 @@ def migration_005_enforce_table_constraints(conn: sqlite3.Connection):
     """
     Rebuilds transactions table with explicit CHECK constraints on transfer_role and source,
     aligning the runtime database with schema.sql.
+    Executes atomically with row-count and foreign-key integrity validation.
     """
-    conn.executescript("""
-        PRAGMA foreign_keys = OFF;
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
 
-        CREATE TABLE IF NOT EXISTS transactions_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-            category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
-            merchant_id INTEGER REFERENCES merchants(id) ON DELETE SET NULL,
-            merchant_name TEXT NOT NULL DEFAULT '',
-            transaction_type TEXT NOT NULL CHECK (transaction_type IN ('income', 'expense', 'transfer', 'refund', 'adjustment')),
-            amount_minor INTEGER NOT NULL,
-            transaction_date TEXT NOT NULL,
-            transaction_time TEXT DEFAULT '12:00',
-            description TEXT DEFAULT '',
-            note TEXT DEFAULT '',
-            is_recurring INTEGER NOT NULL DEFAULT 0,
-            recurring_rule_id INTEGER,
-            payment_method TEXT DEFAULT 'Card',
-            essentiality TEXT NOT NULL DEFAULT 'discretionary' CHECK (essentiality IN ('essential', 'discretionary', 'savings')),
-            transfer_group_id TEXT DEFAULT NULL,
-            transfer_role TEXT CHECK (transfer_role IS NULL OR transfer_role IN ('source', 'destination')),
-            linked_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
-            refund_of_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
-            source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'csv_import', 'recurring_generated', 'adjustment')),
-            needs_review INTEGER NOT NULL DEFAULT 0,
-            is_deleted INTEGER NOT NULL DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
+    try:
+        conn.execute("BEGIN IMMEDIATE")
 
-        INSERT INTO transactions_new (
-            id, account_id, category_id, merchant_id, merchant_name, transaction_type,
-            amount_minor, transaction_date, transaction_time, description, note,
-            is_recurring, recurring_rule_id, payment_method, essentiality,
-            transfer_group_id, transfer_role, linked_transaction_id,
-            refund_of_transaction_id, source, needs_review, is_deleted,
-            created_at, updated_at
-        )
-        SELECT
-            id, account_id, category_id, merchant_id, merchant_name, transaction_type,
-            amount_minor, transaction_date, transaction_time, description, note,
-            is_recurring, recurring_rule_id, payment_method, essentiality,
-            transfer_group_id, transfer_role, linked_transaction_id,
-            refund_of_transaction_id, source, needs_review, is_deleted,
-            created_at, updated_at
-        FROM transactions;
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS transactions_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+                category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+                merchant_id INTEGER REFERENCES merchants(id) ON DELETE SET NULL,
+                merchant_name TEXT NOT NULL DEFAULT '',
+                transaction_type TEXT NOT NULL CHECK (transaction_type IN ('income', 'expense', 'transfer', 'refund', 'adjustment')),
+                amount_minor INTEGER NOT NULL,
+                transaction_date TEXT NOT NULL,
+                transaction_time TEXT DEFAULT '12:00',
+                description TEXT DEFAULT '',
+                note TEXT DEFAULT '',
+                is_recurring INTEGER NOT NULL DEFAULT 0,
+                recurring_rule_id INTEGER,
+                payment_method TEXT DEFAULT 'Card',
+                essentiality TEXT NOT NULL DEFAULT 'discretionary' CHECK (essentiality IN ('essential', 'discretionary', 'savings')),
+                transfer_group_id TEXT DEFAULT NULL,
+                transfer_role TEXT CHECK (transfer_role IS NULL OR transfer_role IN ('source', 'destination')),
+                linked_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
+                refund_of_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
+                source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'csv_import', 'recurring_generated', 'adjustment')),
+                needs_review INTEGER NOT NULL DEFAULT 0,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
 
-        DROP VIEW IF EXISTS active_transactions;
-        DROP TABLE transactions;
-        ALTER TABLE transactions_new RENAME TO transactions;
+        conn.execute("""
+            INSERT INTO transactions_new (
+                id, account_id, category_id, merchant_id, merchant_name, transaction_type,
+                amount_minor, transaction_date, transaction_time, description, note,
+                is_recurring, recurring_rule_id, payment_method, essentiality,
+                transfer_group_id, transfer_role, linked_transaction_id,
+                refund_of_transaction_id, source, needs_review, is_deleted,
+                created_at, updated_at
+            )
+            SELECT
+                id, account_id, category_id, merchant_id, merchant_name, transaction_type,
+                amount_minor, transaction_date, transaction_time, description, note,
+                is_recurring, recurring_rule_id, payment_method, essentiality,
+                transfer_group_id, transfer_role, linked_transaction_id,
+                refund_of_transaction_id, source, needs_review, is_deleted,
+                created_at, updated_at
+            FROM transactions;
+        """)
 
-        PRAGMA foreign_keys = ON;
+        old_count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+        new_count = conn.execute("SELECT COUNT(*) FROM transactions_new").fetchone()[0]
 
-        CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(transaction_date);
-        CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(category_id);
-        CREATE INDEX IF NOT EXISTS idx_tx_account ON transactions(account_id);
-        CREATE INDEX IF NOT EXISTS idx_tx_type ON transactions(transaction_type);
-        CREATE INDEX IF NOT EXISTS idx_tx_essentiality ON transactions(essentiality);
-        CREATE INDEX IF NOT EXISTS idx_tx_transfer_group ON transactions(transfer_group_id);
-        CREATE INDEX IF NOT EXISTS idx_tx_review ON transactions(needs_review);
-        CREATE INDEX IF NOT EXISTS idx_tx_refund_of ON transactions(refund_of_transaction_id);
-        CREATE INDEX IF NOT EXISTS idx_tx_is_deleted ON transactions(is_deleted);
+        if old_count != new_count:
+            raise RuntimeError(f"Migration row-count mismatch: {old_count} != {new_count}")
 
-        CREATE VIEW IF NOT EXISTS active_transactions AS
-        SELECT *
-        FROM transactions
-        WHERE is_deleted = 0;
-    """)
+        conn.execute("DROP VIEW IF EXISTS active_transactions")
+        conn.execute("DROP TABLE transactions")
+        conn.execute("ALTER TABLE transactions_new RENAME TO transactions")
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(transaction_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(category_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_account ON transactions(account_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_type ON transactions(transaction_type)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_essentiality ON transactions(essentiality)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_transfer_group ON transactions(transfer_group_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_review ON transactions(needs_review)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_refund_of ON transactions(refund_of_transaction_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_is_deleted ON transactions(is_deleted)")
+
+        conn.execute("""
+            CREATE VIEW IF NOT EXISTS active_transactions AS
+            SELECT *
+            FROM transactions
+            WHERE is_deleted = 0
+        """)
+
+        fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if fk_issues:
+            raise RuntimeError(f"Foreign-key violations after migration: {fk_issues}")
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 @migration(6, "recurring_rule_point_in_time_versioning")
 def migration_006_recurring_rule_versioning(conn: sqlite3.Connection):

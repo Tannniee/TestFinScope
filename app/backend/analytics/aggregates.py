@@ -153,7 +153,12 @@ class AggregateQueries:
                     c.name,
                     c.color,
                     c.icon,
-                    COALESCE(MAX(t.essentiality), 'discretionary') as essentiality,
+                    CASE 
+                        WHEN SUM(CASE WHEN t.essentiality = 'essential' AND t.transaction_type = 'expense' THEN {amt_t_expr} ELSE 0 END) >=
+                             SUM(CASE WHEN t.essentiality = 'discretionary' AND t.transaction_type = 'expense' THEN {amt_t_expr} ELSE 0 END)
+                        THEN 'essential'
+                        ELSE 'discretionary'
+                    END as essentiality,
                     SUM(
                         CASE 
                             WHEN t.transaction_type = 'expense' THEN {amt_t_expr}

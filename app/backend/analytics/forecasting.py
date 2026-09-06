@@ -122,6 +122,10 @@ class ForecastingEngine:
             cur_dt = context.end_date
             elapsed_day = min(num_days, max(1, cur_dt.day))
             as_of_cutoff = f"{context.as_of_month}-{elapsed_day:02d}"
+        elif getattr(context, "period_state", None) == "future":
+            elapsed_day = 0
+            cur_dt = date(year, m_int, 1) - timedelta(days=1)
+            as_of_cutoff = f"{context.as_of_month}-01"
         else:
             # F110-10: Historical completed month without explicit as_of_date defaults to month-end
             elapsed_day = num_days
@@ -553,11 +557,18 @@ class ForecastingEngine:
                 total_minor=projected_total_minor
             )
 
-            # 5. Category Forecasts & Exact Reconciliation (F108-14, F108-28)
+            # 5. Category Forecasts & Exact Reconciliation (F108-14, F108-28, FSC-H10)
             cur.execute("""
-                SELECT id, name, color, type FROM categories WHERE type = 'expense' AND is_archived = 0
+                SELECT id, name, color, type, is_archived FROM categories WHERE type = 'expense'
             """)
-            all_expense_cats = [dict(r) for r in cur.fetchall()]
+            raw_cats = [dict(r) for r in cur.fetchall()]
+            all_expense_cats = [
+                c for c in raw_cats
+                if not c["is_archived"]
+                or c["id"] in actual_cat_spends_net
+                or c["id"] in upcoming_by_cat
+                or c["id"] in cat_hist_totals
+            ]
 
             cur.execute("""
                 SELECT category_id, amount_minor FROM budgets WHERE start_date = ?

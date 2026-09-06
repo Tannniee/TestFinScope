@@ -609,13 +609,13 @@ function renderBackupsTable(backups) {
       <tr>
         <td style="font-weight: 600;">
           <i data-lucide="file-archive" style="width: 14px; height: 14px; margin-right: 6px; color: var(--accent-blue);"></i>
-          ${b.filename}
-          <span style="font-size: 11px; color: var(--text-muted); font-weight: normal; margin-left: 6px;">${countInfo}</span>
+          ${escapeHtml(b.filename)}
+          <span style="font-size: 11px; color: var(--text-muted); font-weight: normal; margin-left: 6px;">${escapeHtml(countInfo)}</span>
         </td>
-        <td style="color: var(--text-secondary); font-size: 12.5px;">${dateFormatted}</td>
-        <td style="color: var(--text-muted); font-size: 12px;">${sizeKB} KB</td>
+        <td style="color: var(--text-secondary); font-size: 12.5px;">${escapeHtml(dateFormatted)}</td>
+        <td style="color: var(--text-muted); font-size: 12px;">${escapeHtml(sizeKB)} KB</td>
         <td style="text-align: right;">
-          <button class="btn btn-secondary btn-sm btn-restore-backup" data-path="${b.filepath}">
+          <button class="btn btn-secondary btn-sm btn-restore-backup" data-path="${escapeHtml(b.filepath)}">
             <i data-lucide="rotate-ccw"></i> Restore
           </button>
         </td>

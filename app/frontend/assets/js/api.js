@@ -125,8 +125,8 @@ export const api = {
   getRecentPayees(limit = 5) {
     return this.call('get_recent_payees', { limit });
   },
-  getReviewQueue(limit = 50, offset = 0) {
-    return this.call('get_review_queue', { limit, offset });
+  getReviewQueue(limit = 50, offset = 0, account_id = null) {
+    return this.call('get_review_queue', { limit, offset, account_id });
   },
   resolveReview(txId, categoryId, merchantName = null) {
     return this.call('resolve_review', { tx_id: txId, category_id: categoryId, merchant_name: merchantName });

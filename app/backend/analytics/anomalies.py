@@ -122,6 +122,18 @@ class AnomalyDetectionEngine:
                         "lower": low, "upper": up, "n": len(history)
                     }
 
+            # Precalculate overall baseline (FSC-M07)
+            overall_baseline = None
+            if len(overall_history) >= 20:  # Minimum overall sample guard
+                med = calculate_median(overall_history)
+                mad = calculate_mad(overall_history)
+                mad_scaled = calculate_scaled_mad(overall_history)
+                low, up = compute_normal_range(med, mad_scaled, k_range)
+                overall_baseline = {
+                    "median": med, "mad": mad, "mad_scaled": mad_scaled,
+                    "lower": low, "upper": up, "n": len(overall_history)
+                }
+
             # 2. Inspect Current Transactions
             cur.execute(f"""
                 SELECT 
@@ -155,7 +167,7 @@ class AnomalyDetectionEngine:
                 if InsightHistoryTracker.is_dismissed(anomaly_key):
                     continue
 
-                # Hierarchical Baseline: Merchant -> Category -> Overall
+                # Hierarchical Baseline: Merchant -> Category -> Overall (FSC-M07)
                 baseline = None
                 baseline_level = None
 
@@ -165,6 +177,9 @@ class AnomalyDetectionEngine:
                 elif cid in category_baselines:
                     baseline = category_baselines[cid]
                     baseline_level = "category"
+                elif overall_baseline:
+                    baseline = overall_baseline
+                    baseline_level = "overall"
 
                 if baseline:
                     score = calculate_robust_z_score(amt, baseline["median"], baseline["mad"])
@@ -176,12 +191,18 @@ class AnomalyDetectionEngine:
                                 f"compared to your usual merchant range (${round(baseline['lower'] / 100.0, 2):.2f}–${round(baseline['upper'] / 100.0, 2):.2f})."
                             )
                             title = f"Unusually large payment to {m_name}"
-                        else:
+                        elif baseline_level == "category":
                             explanation = (
                                 f"Purchase of ${round(amt / 100.0, 2):.2f} at '{m_name}' is unusually large "
                                 f"for {cname} (typical range ${round(baseline['lower'] / 100.0, 2):.2f}–${round(baseline['upper'] / 100.0, 2):.2f})."
                             )
                             title = f"Unusually large {cname} purchase"
+                        else:
+                            explanation = (
+                                f"Purchase of ${round(amt / 100.0, 2):.2f} at '{m_name}' is unusually large "
+                                f"compared to your overall typical spending (typical range ${round(baseline['lower'] / 100.0, 2):.2f}–${round(baseline['upper'] / 100.0, 2):.2f})."
+                            )
+                            title = f"Unusually large purchase"
 
                         anomalies.append(AnomalyResult(
                             anomaly_id=anomaly_key,
@@ -264,7 +285,25 @@ class AnomalyDetectionEngine:
                             drilldown_filter={"transaction_id": rec_id, "category_id": rec["category_id"]}
                         ))
 
-            # 4. Category Monthly Total Anomalies
+            # 4. Category Monthly Total Anomalies (Dense zero months & matched comparison, FSC-M07)
+            y, m_val = map(int, context.as_of_month.split("-"))
+            hist_months = []
+            cy, cm = y, m_val
+            for _ in range(6):
+                if cm == 1:
+                    cy -= 1
+                    cm = 12
+                else:
+                    cm -= 1
+                hist_months.append(f"{cy:04d}-{cm:02d}")
+            hist_months.reverse()
+
+            matched_day_clause = ""
+            matched_params = []
+            if context.is_current_month and context.max_day > 0:
+                matched_day_clause = " AND CAST(strftime('%d', t.transaction_date) AS INTEGER) <= ?"
+                matched_params = [context.max_day]
+
             cur.execute(f"""
                 SELECT 
                     c.id,
@@ -281,16 +320,21 @@ class AnomalyDetectionEngine:
                 JOIN active_transactions t ON t.category_id = c.id
                 WHERE t.transaction_type IN ('expense', 'refund')
                   AND t.transaction_date < ?
-                  AND t.transaction_date >= date(?, '-6 months') {acc_clause}
+                  AND t.transaction_date >= ? || '-01' {matched_day_clause} {acc_clause}
                 GROUP BY c.id, m
-            """, [curr_start, curr_start] + acc_params)
+            """, [curr_start, hist_months[0]] + matched_params + acc_params)
 
-            monthly_cat_history: Dict[int, List[int]] = {}
+            sparse_cat_history: Dict[int, Dict[str, int]] = {}
             for row in cur.fetchall():
                 cid = row["id"]
-                if cid not in monthly_cat_history:
-                    monthly_cat_history[cid] = []
-                monthly_cat_history[cid].append(max(0, row["monthly_net"]))
+                if cid not in sparse_cat_history:
+                    sparse_cat_history[cid] = {}
+                sparse_cat_history[cid][row["m"]] = max(0, row["monthly_net"])
+
+            # Dense 6-month history for each category
+            monthly_cat_history: Dict[int, List[int]] = {}
+            for cid, m_map in sparse_cat_history.items():
+                monthly_cat_history[cid] = [m_map.get(hm, 0) for hm in hist_months]
 
             # Current period category totals
             cur.execute(f"""

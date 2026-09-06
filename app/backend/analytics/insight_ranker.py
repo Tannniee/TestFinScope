@@ -80,11 +80,12 @@ class InsightRanker:
 
         result_dicts = [item.to_dict() for item in deduped]
 
-        # 4. Record displayed insights into persistent memory
+        # 4. Record displayed insights into persistent memory (FSC-L09)
         if persist and month and result_dicts:
             try:
                 InsightHistoryTracker.record_insights_shown(result_dicts, month)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Failed to record displayed insights to history tracker: %s", e)
 
         return result_dicts

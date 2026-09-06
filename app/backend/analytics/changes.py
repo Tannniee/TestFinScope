@@ -88,7 +88,9 @@ class WhatChangedEngine:
         if context is None:
             context = resolve_analytics_context(
                 month=current_month,
-                account_id=account_id
+                comparison_month=comparison_month,
+                account_id=account_id,
+                max_day=max_day
             )
 
         curr_start, curr_end = context.sql_date_range()
@@ -103,7 +105,7 @@ class WhatChangedEngine:
             acc_clause = " AND t.account_id = ?" if context.account_id else ""
             acc_params = [context.account_id] if context.account_id else []
 
-            # 1. Fetch categories for current period
+            # 1. Fetch categories for current period (including archived categories with spend in either period)
             cur.execute(f"""
                 SELECT 
                     c.id,
@@ -117,9 +119,17 @@ class WhatChangedEngine:
                 LEFT JOIN active_transactions t ON t.category_id = c.id
                     AND t.transaction_type IN ('expense', 'refund')
                     AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
-                WHERE c.type = 'expense' AND c.is_archived = 0
+                WHERE c.type = 'expense' AND (
+                    c.is_archived = 0 
+                    OR t.id IS NOT NULL 
+                    OR c.id IN (
+                        SELECT DISTINCT category_id FROM active_transactions 
+                        WHERE (transaction_date >= ? AND transaction_date <= ?)
+                           OR (transaction_date >= ? AND transaction_date <= ?)
+                    )
+                )
                 GROUP BY c.id
-            """, [curr_start, curr_end] + acc_params)
+            """, [curr_start, curr_end] + acc_params + [curr_start, curr_end, comp_start, comp_end])
             
             curr_cats = {}
             for row in cur.fetchall():
@@ -140,6 +150,9 @@ class WhatChangedEngine:
             cur.execute(f"""
                 SELECT 
                     c.id,
+                    c.name,
+                    c.color,
+                    c.icon,
                     COALESCE(SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount_minor ELSE 0 END), 0) as gross_minor,
                     COALESCE(SUM(CASE WHEN t.transaction_type = 'refund' THEN t.amount_minor ELSE 0 END), 0) as refund_minor,
                     SUM(CASE WHEN t.transaction_type = 'expense' THEN 1 ELSE 0 END) as tx_count
@@ -147,9 +160,17 @@ class WhatChangedEngine:
                 LEFT JOIN active_transactions t ON t.category_id = c.id
                     AND t.transaction_type IN ('expense', 'refund')
                     AND t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
-                WHERE c.type = 'expense' AND c.is_archived = 0
+                WHERE c.type = 'expense' AND (
+                    c.is_archived = 0 
+                    OR t.id IS NOT NULL 
+                    OR c.id IN (
+                        SELECT DISTINCT category_id FROM active_transactions 
+                        WHERE (transaction_date >= ? AND transaction_date <= ?)
+                           OR (transaction_date >= ? AND transaction_date <= ?)
+                    )
+                )
                 GROUP BY c.id
-            """, [comp_start, comp_end] + acc_params)
+            """, [comp_start, comp_end] + acc_params + [curr_start, curr_end, comp_start, comp_end])
 
             prev_cats = {}
             for row in cur.fetchall():
@@ -157,6 +178,9 @@ class WhatChangedEngine:
                 ref = row["refund_minor"]
                 net = max(0, gross - ref)
                 prev_cats[row["id"]] = {
+                    "name": row["name"],
+                    "color": row["color"],
+                    "icon": row["icon"],
                     "gross_minor": gross,
                     "refund_minor": ref,
                     "net_minor": net,

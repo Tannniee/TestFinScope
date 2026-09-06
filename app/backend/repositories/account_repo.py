@@ -147,6 +147,9 @@ class AccountRepository:
     def delete(account_id: int) -> bool:
         with get_db_connection() as conn:
             cur = conn.cursor()
+            cur.execute("SELECT id FROM accounts WHERE id = ?", (account_id,))
+            if not cur.fetchone():
+                return False
             cur.execute("SELECT COUNT(*) FROM transactions WHERE account_id = ?", (account_id,))
             if cur.fetchone()[0] > 0:
                 cur.execute("UPDATE accounts SET is_archived = 1 WHERE id = ?", (account_id,))

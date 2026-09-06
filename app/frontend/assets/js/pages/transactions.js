@@ -130,7 +130,7 @@ export async function renderTransactionsPage(container) {
 
 async function updateReviewQueueBadge() {
   try {
-    const queue = await api.getReviewQueue();
+    const queue = await api.getReviewQueue(50, 0, state.accountId);
     reviewQueueCount = queue?.total ?? (Array.isArray(queue) ? queue.length : queue?.items?.length || 0);
     const badge = document.getElementById('review-queue-badge');
     if (badge) {
@@ -238,7 +238,7 @@ function setupEventListeners() {
 
 async function loadReviewQueueItems() {
   try {
-    const res = await api.getReviewQueue();
+    const res = await api.getReviewQueue(50, 0, state.accountId);
     const items = res?.items || (Array.isArray(res) ? res : []);
     const total = res?.total ?? items.length;
     const tbody = document.getElementById('transactions-full-body');
@@ -351,8 +351,10 @@ function renderTableRows(items, isReviewQueueView = false) {
     const isIncome = tx.transaction_type === 'income';
     const isRefund = tx.transaction_type === 'refund';
     const isTransfer = tx.transaction_type === 'transfer';
-    const sign = isIncome || isRefund ? '+' : '-';
-    const amtClass = isIncome || isRefund ? 'income' : 'expense';
+    const isDestTransfer = isTransfer && tx.transfer_role === 'destination';
+    const isPositive = isIncome || isRefund || isDestTransfer;
+    const sign = isPositive ? '+' : '-';
+    const amtClass = isPositive ? 'income' : 'expense';
     const catColor = tx.category_color || '#5B8CFF';
     const needsReview = Boolean(tx.needs_review);
     const merchantName = tx.merchant_name || tx.description || 'Transaction';

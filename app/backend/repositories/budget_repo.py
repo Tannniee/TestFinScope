@@ -11,6 +11,8 @@ class BudgetRepository:
         Returns all budgets for a given month (YYYY-MM), joined with actual net expense spend
         (expenses minus refunds), normalized to reporting base currency or account currency.
         """
+        from app.backend.domain.validators import validate_month
+        validate_month(month)
         base_currency = SettingsService.get_setting("currency", "USD") or "USD"
         filter_currency = base_currency
         if account_id:
@@ -80,12 +82,14 @@ class BudgetRepository:
 
     @staticmethod
     def set_budget(category_id: int, month: str, amount: float, currency: Optional[str] = None) -> int:
-        from app.backend.domain.validators import validate_budget_amount
+        from app.backend.domain.validators import validate_budget_amount, validate_month, validate_budget_category
+        validate_month(month)
         base_currency = SettingsService.get_setting("currency", "USD") or "USD"
         eff_currency = currency or base_currency
         amount_minor = validate_budget_amount(amount, currency=eff_currency)
 
         with get_db_connection() as conn:
+            validate_budget_category(conn, category_id)
             cur = conn.cursor()
             cur.execute("""
                 INSERT INTO budgets (category_id, start_date, amount_minor, period_type, currency)

@@ -178,9 +178,9 @@
 
         <!-- Refund Link Reference (for refund type) -->
         <div class="form-group" id="group-refund-ref" style="display: none;">
-          <label class="form-label" for="tx-refund-id">Original Transaction ID (Optional)</label>
-          <input type="number" id="tx-refund-id" class="form-input" placeholder="e.g. 104" />
-          <span style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">Linking this refund will associate it with the original purchase record</span>
+          <label class="form-label" for="tx-refund-id">Original Transaction ID (Required)</label>
+          <input type="number" id="tx-refund-id" class="form-input" placeholder="e.g. 104" required />
+          <span style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">Refunds must reference an original transaction</span>
         </div>
 
         <!-- Quick Date Picker & More Details Button -->
@@ -304,11 +304,14 @@
       // 3. Load Accounts & Categories Metadata
       await state.loadInitialData();
 
-      // Populate Topbar Account dropdown
+      // Populate Topbar Account dropdown safely (FSC-H13)
       const accSelect = document.getElementById('header-account-select');
       if (accSelect) {
-        accSelect.innerHTML = '<option value="">All Accounts</option>' +
-          state.accounts.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+        accSelect.replaceChildren();
+        accSelect.add(new Option('All Accounts', ''));
+        state.accounts.forEach(a => {
+          accSelect.add(new Option(a.name, a.id));
+        });
         accSelect.addEventListener('change', (e) => {
           state.setAccountId(e.target.value);
         });
