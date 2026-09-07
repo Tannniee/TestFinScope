@@ -18,6 +18,7 @@ export const state = {
   accounts: [],
   categories: [],
   settings: {},
+  currencyCatalog: new Map(),
   listeners: new Set(),
 
   subscribe(fn) {
@@ -75,19 +76,44 @@ export const state = {
     this.notify({ type: 'privacy_toggled', privacyMode: this.privacyMode });
   },
 
+  getMinorUnit(currency = null) {
+    const code = ((typeof currency === 'string' && currency) ? currency : (this.currency || 'USD')).toUpperCase();
+    const info = this.currencyCatalog.get(code);
+    if (info && typeof info.minor_unit === 'number') {
+      return info.minor_unit;
+    }
+    if (code === 'VND' || code === 'JPY' || code === 'KRW' || code === 'CLP') return 0;
+    if (code === 'BHD' || code === 'KWD' || code === 'OMR') return 3;
+    return 2;
+  },
+
+  getAmountStep(currency = null) {
+    const unit = this.getMinorUnit(currency);
+    if (unit === 0) return '1';
+    if (unit === 3) return '0.001';
+    return '0.01';
+  },
+
   async reloadMetadata({ notify = true, retries = 2 } = {}) {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const [accs, cats, settings] = await Promise.all([
+        const [accs, cats, settings, catalog] = await Promise.all([
           api.getAccounts(),
           api.getCategories(),
-          api.getSettings()
+          api.getSettings(),
+          api.getCurrencyCatalog().catch(() => [])
         ]);
         this.accounts = accs;
         this.categories = cats;
         this.settings = settings || {};
         if (this.settings.currency) {
           this.currency = this.settings.currency;
+        }
+        if (Array.isArray(catalog)) {
+          this.currencyCatalog.clear();
+          catalog.forEach(c => {
+            if (c && c.code) this.currencyCatalog.set(c.code.toUpperCase(), c);
+          });
         }
         if (notify) {
           this.notify({ type: 'meta_loaded' });
@@ -117,11 +143,11 @@ export const state = {
       return '••••••';
     }
     const val = Number(amount || 0);
-    const curr = (typeof currency === 'string' && currency) ? currency : (this.currency || 'USD');
+    const curr = (typeof currency === 'string' && currency) ? currency.toUpperCase() : (this.currency || 'USD').toUpperCase();
 
     try {
       const locale = curr === 'VND' ? 'vi-VN' : 'en-US';
-      const fractionDigits = (curr === 'VND' || curr === 'JPY' || curr === 'KRW') ? 0 : (curr === 'KWD' || curr === 'BHD' ? 3 : 2);
+      const fractionDigits = this.getMinorUnit(curr);
 
       return new Intl.NumberFormat(locale, {
         style: 'currency',
@@ -130,7 +156,8 @@ export const state = {
         maximumFractionDigits: fractionDigits
       }).format(val);
     } catch (err) {
-      return `${curr} ${val.toFixed(2)}`;
+      const decimals = this.getMinorUnit(curr);
+      return `${curr} ${val.toFixed(decimals)}`;
     }
   },
 

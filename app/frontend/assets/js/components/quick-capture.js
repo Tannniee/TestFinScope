@@ -6,7 +6,7 @@
 
 import { api } from '../api.js';
 import { state } from '../state.js';
-import { toast } from './toast.js';
+import { showToast } from './toast.js';
 import { modals } from './modals.js';
 
 export const quickCapture = {
@@ -126,7 +126,7 @@ export const quickCapture = {
 
   async fetchPreview(text) {
     try {
-      const activeAcctId = state.selectedAccountId ? parseInt(state.selectedAccountId, 10) : null;
+      const activeAcctId = state.accountId ? parseInt(state.accountId, 10) : null;
       const resp = await api.previewQuickCapture(text, activeAcctId);
       this.currentPreview = resp;
       this.renderPreview(resp);
@@ -155,7 +155,7 @@ export const quickCapture = {
     if (amtEl) {
       if (parse.amount !== null && parse.amount !== undefined) {
         const curr = parse.currency || enrich.account_currency || 'USD';
-        amtEl.textContent = state.formatMoney(parse.amount, curr);
+        amtEl.textContent = state.formatCurrency(parse.amount, curr);
       } else {
         amtEl.textContent = '—';
       }
@@ -214,7 +214,7 @@ export const quickCapture = {
 
     if (!this.currentPreview || !this.currentPreview.can_commit) {
       const msg = (this.currentPreview && this.currentPreview.validation_messages && this.currentPreview.validation_messages[0]) || 'Cannot record: check amount or account.';
-      toast.show(msg, 'error');
+      showToast(msg, 'error');
       return;
     }
 
@@ -233,17 +233,17 @@ export const quickCapture = {
       const res = await api.commitQuickCapture(payload);
       if (res && res.success) {
         const tx = res.transaction || {};
-        const displayAmt = state.formatMoney(tx.amount || payload.amount, tx.currency || 'USD');
-        toast.show(`Recorded ${tx.merchant_name || 'Expense'}: ${displayAmt}`, 'success');
+        const displayAmt = state.formatCurrency(tx.amount || payload.amount, tx.currency || 'USD');
+        showToast(`Recorded ${tx.merchant_name || 'Expense'}: ${displayAmt}`, 'success');
 
         this.close();
 
         // Refresh global data
-        state.notifyTransactionsChanged();
+        state.notify({ type: 'data_changed' });
         state.loadInitialData();
       }
     } catch (err) {
-      toast.show(err.message || 'Failed to record transaction', 'error');
+      showToast(err.message || 'Failed to record transaction', 'error');
     }
   },
 

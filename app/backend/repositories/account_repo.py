@@ -67,11 +67,41 @@ class AccountRepository:
 
     @staticmethod
     def get_by_id(account_id: int) -> Optional[Dict[str, Any]]:
-        accounts = AccountRepository.get_all(include_archived=True)
-        for acc in accounts:
-            if acc["id"] == account_id:
-                return acc
-        return None
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT 
+                    a.id, a.name, a.account_type, a.institution, 
+                    a.opening_balance_minor, a.currency, a.is_archived, a.created_at,
+                    (
+                        a.opening_balance_minor +
+                        COALESCE((
+                            SELECT SUM(
+                                CASE 
+                                    WHEN t.transaction_type = 'income' THEN t.amount_minor
+                                    WHEN t.transaction_type = 'expense' THEN -t.amount_minor
+                                    WHEN t.transaction_type = 'refund' THEN t.amount_minor
+                                    WHEN t.transaction_type = 'transfer' AND (t.transfer_role = 'destination' OR t.description LIKE '%(Received)%') THEN t.amount_minor
+                                    WHEN t.transaction_type = 'transfer' THEN -t.amount_minor
+                                    WHEN t.transaction_type = 'adjustment' THEN t.amount_minor
+                                    ELSE 0
+                                END
+                            )
+                            FROM active_transactions t
+                            WHERE t.account_id = a.id
+                        ), 0)
+                    ) as current_balance_minor
+                FROM accounts a
+                WHERE a.id = ?
+            """, (account_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            acc = dict(row)
+            curr = acc["currency"]
+            acc["opening_balance"] = float(minor_to_major(acc["opening_balance_minor"], curr))
+            acc["current_balance"] = float(minor_to_major(acc["current_balance_minor"], curr))
+            return acc
 
     @staticmethod
     def get_balance(account_id: int) -> float:

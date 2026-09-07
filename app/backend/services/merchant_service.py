@@ -45,7 +45,7 @@ class MerchantService:
         account_id: Optional[int] = None,
         essentiality: Optional[str] = None
     ) -> int:
-        """Finds or creates a canonical merchant on an existing DB connection (FSC-M15)."""
+        """Finds or creates a canonical merchant record on an existing DB connection (FSC-M15)."""
         canonical_name = normalize_merchant_name(raw_name)
         if not canonical_name:
             return 0
@@ -59,28 +59,9 @@ class MerchantService:
             """,
             (canonical_name, category_id, account_id, essentiality or "discretionary")
         )
-        cur.execute("SELECT id, default_category_id, preferred_account_id, default_essentiality FROM merchants WHERE name = ?", (canonical_name,))
+        cur.execute("SELECT id FROM merchants WHERE name = ?", (canonical_name,))
         row = cur.fetchone()
-        if not row:
-            return 0
-        m_id = row["id"]
-
-        updates = []
-        params = []
-        if category_id and not row["default_category_id"]:
-            updates.append("default_category_id = ?")
-            params.append(category_id)
-        if account_id and not row["preferred_account_id"]:
-            updates.append("preferred_account_id = ?")
-            params.append(account_id)
-        if essentiality and row["default_essentiality"] == "discretionary" and essentiality == "essential":
-            updates.append("default_essentiality = ?")
-            params.append(essentiality)
-
-        if updates:
-            params.append(m_id)
-            cur.execute(f"UPDATE merchants SET {', '.join(updates)} WHERE id = ?", params)
-        return m_id
+        return row["id"] if row else 0
 
     @staticmethod
     def get_or_create_merchant(
@@ -89,7 +70,7 @@ class MerchantService:
         account_id: Optional[int] = None,
         essentiality: Optional[str] = None
     ) -> int:
-        """Finds or creates a canonical merchant and updates its smart defaults."""
+        """Finds or creates a canonical merchant record."""
         with get_db_connection() as conn:
             m_id = MerchantService.get_or_create_merchant_in_conn(
                 conn, raw_name, category_id, account_id, essentiality
@@ -210,12 +191,12 @@ class MerchantService:
                 cur.execute("""
                     SELECT category_id, COUNT(*) as cnt
                     FROM active_transactions
-                    WHERE merchant_name = ? 
+                    WHERE (merchant_id = ? OR (merchant_id IS NULL AND merchant_name = ?))
                       AND category_id IS NOT NULL
                       AND transaction_type = 'expense'
                     GROUP BY category_id
                     ORDER BY cnt DESC
-                """, (r["name"],))
+                """, (m_id, r["name"]))
                 hist_rows = cur.fetchall()
 
                 cat_id = r["default_category_id"]
@@ -269,38 +250,45 @@ class MerchantService:
     @staticmethod
     def get_recent_payees(limit: int = 5) -> List[Dict[str, Any]]:
         """Returns recently used distinct payees for quick one-click capture."""
+        from app.backend.domain.money import minor_to_major
+
         with get_db_connection() as conn:
             cur = conn.cursor()
             safe_limit = max(1, min(limit or 5, 50))
             cur.execute("""
                 WITH ranked AS (
                     SELECT 
+                        t.merchant_id,
                         t.merchant_name,
                         t.category_id,
                         t.account_id,
                         t.essentiality,
                         t.amount_minor,
+                        a.currency as account_currency,
                         t.transaction_date as last_used,
                         t.id,
-                        COUNT(*) OVER (PARTITION BY t.merchant_name) as transaction_count,
+                        COUNT(*) OVER (PARTITION BY COALESCE(t.merchant_id, t.merchant_name)) as transaction_count,
                         ROW_NUMBER() OVER (
-                            PARTITION BY t.merchant_name
+                            PARTITION BY COALESCE(t.merchant_id, t.merchant_name)
                             ORDER BY
                                 t.transaction_date DESC,
                                 t.transaction_time DESC,
                                 t.id DESC
                         ) AS rn
                     FROM active_transactions t
+                    LEFT JOIN accounts a ON t.account_id = a.id
                     WHERE t.transaction_type = 'expense'
                       AND t.merchant_name IS NOT NULL
                       AND TRIM(t.merchant_name) != ''
                 )
                 SELECT 
+                    r.merchant_id,
                     r.merchant_name,
                     r.category_id,
                     r.account_id,
                     r.essentiality,
                     r.amount_minor,
+                    r.account_currency,
                     r.last_used,
                     r.transaction_count,
                     c.name as category_name,
@@ -315,9 +303,10 @@ class MerchantService:
 
             items = []
             for r in cur.fetchall():
+                curr = r["account_currency"] or "USD"
                 items.append({
-                    "merchant_id": None,
-                    "id": None,
+                    "merchant_id": r["merchant_id"],
+                    "id": r["merchant_id"],
                     "name": r["merchant_name"],
                     "merchant_name": r["merchant_name"],
                     "category_id": r["category_id"],
@@ -327,11 +316,12 @@ class MerchantService:
                     "category_icon": r["category_icon"],
                     "account_id": r["account_id"],
                     "preferred_account_id": r["account_id"],
+                    "currency": curr,
                     "essentiality": r["essentiality"],
                     "default_essentiality": r["essentiality"],
                     "confidence": "high",
                     "transaction_count": r["transaction_count"],
-                    "amount": round(r["amount_minor"] / 100.0, 2)
+                    "amount": minor_to_major(r["amount_minor"], curr) if r["amount_minor"] is not None else 0.0
                 })
             return items
 

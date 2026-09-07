@@ -266,14 +266,15 @@ class TransactionRepository:
                 fx_rate_source = "identity"
             else:
                 # Foreign account ledger (e.g. USD account when base is VND)
-                try:
-                    conv = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                # Local cached conversion only (zero network calls)
+                conv = FxService.try_convert_cached_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                if conv:
                     base_amount_minor = conv.target.minor
                     fx_status = "market_estimate"
                     fx_rate_to_base = str(conv.rate)
                     fx_rate_date = conv.rate_date
                     fx_rate_source = conv.provider
-                except Exception:
+                else:
                     base_amount_minor = None
                     fx_status = "pending"
                     fx_rate_to_base = None
@@ -288,18 +289,22 @@ class TransactionRepository:
             if data.get("settlement_amount") is not None:
                 amount_minor = validate_positive_amount(data["settlement_amount"], "Settlement amount", currency=account_currency)
                 fx_status = "user_settlement"
-            elif data.get("amount") is not None and data.get("original_amount") is not None:
+            elif data.get("amount") is not None and data.get("original_amount") is not None and data.get("amount") != data.get("original_amount"):
                 amount_minor = validate_positive_amount(data["amount"], "Settlement amount", currency=account_currency)
                 fx_status = "user_settlement"
             else:
-                try:
-                    conv_acct = FxService.convert_minor(original_amount_minor, original_currency, account_currency, on_date=clean_date)
+                conv_acct = FxService.try_convert_cached_minor(original_amount_minor, original_currency, account_currency, on_date=clean_date)
+                if conv_acct is not None:
                     amount_minor = conv_acct.target.minor
                     fx_status = "market_estimate"
-                except Exception:
-                    # Fallback to direct amount if conversion unavailable
-                    amount_minor = major_to_minor(data.get("amount") or orig_val, account_currency)
-                    fx_status = "pending"
+                else:
+                    if data.get("settlement_amount") is None and ("amount" not in data or data.get("amount") == orig_val):
+                        raise ValueError(
+                            f"Cross-currency transaction ({original_currency} on {account_currency} account) "
+                            f"requires a settlement amount or an existing cached exchange rate."
+                        )
+                    amount_minor = validate_positive_amount(data["amount"], "Settlement amount", currency=account_currency)
+                    fx_status = "user_settlement"
 
             if account_currency == base_currency:
                 base_amount_minor = amount_minor
@@ -314,13 +319,15 @@ class TransactionRepository:
                     fx_rate_date = clean_date
                     fx_rate_source = "user_settlement"
             else:
-                try:
-                    conv_base = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                conv_base = FxService.try_convert_cached_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                if conv_base:
                     base_amount_minor = conv_base.target.minor
                     fx_rate_to_base = str(conv_base.rate)
                     fx_rate_date = conv_base.rate_date
                     fx_rate_source = conv_base.provider
-                except Exception:
+                    if fx_status != "user_settlement":
+                        fx_status = "market_estimate"
+                else:
                     base_amount_minor = None
                     fx_status = "pending"
                     fx_rate_to_base = None
@@ -335,8 +342,15 @@ class TransactionRepository:
         capture_method = data.get("capture_method", "modal")
         category_source = data.get("category_source", "user")
         category_confidence = data.get("category_confidence")
-        essentiality_source = data.get("essentiality_source", "user")
-        essentiality_confidence = data.get("essentiality_confidence")
+        raw_ess = data.get("essentiality")
+        if not raw_ess:
+            essentiality = "unknown"
+            essentiality_source = data.get("essentiality_source", "fallback")
+            essentiality_confidence = data.get("essentiality_confidence", 0.0)
+        else:
+            essentiality = raw_ess
+            essentiality_source = data.get("essentiality_source", "user")
+            essentiality_confidence = data.get("essentiality_confidence", 1.0 if essentiality_source == "user" else 0.0)
         parser_version = data.get("parser_version")
 
         with get_db_connection() as conn:
@@ -405,7 +419,7 @@ class TransactionRepository:
                     data.get("note", ""),
                     1 if data.get("is_recurring") else 0,
                     data.get("payment_method", "Card"),
-                    data.get("essentiality", "discretionary"),
+                    essentiality,
                     data.get("transfer_group_id"),
                     data.get("transfer_role"),
                     data.get("linked_transaction_id"),
@@ -518,7 +532,9 @@ class TransactionRepository:
         if target_acc_curr == orig_purchase_curr:
             target_amount_minor = refund_original_minor
         else:
-            conv_target = FxService.convert_minor(refund_original_minor, orig_purchase_curr, target_acc_curr, on_date=clean_date)
+            conv_target = FxService.try_convert_cached_minor(refund_original_minor, orig_purchase_curr, target_acc_curr, on_date=clean_date)
+            if not conv_target:
+                raise ValueError(f"Exchange rate from {orig_purchase_curr} to {target_acc_curr} is not cached.")
             target_amount_minor = conv_target.target.minor
 
         if target_acc_curr == base_currency:
@@ -528,12 +544,19 @@ class TransactionRepository:
             fx_rate_source = "identity"
             fx_status = "not_required"
         else:
-            conv_base = FxService.convert_minor(target_amount_minor, target_acc_curr, base_currency, on_date=clean_date)
-            base_amount_minor = conv_base.target.minor
-            fx_rate_to_base = str(conv_base.rate)
-            fx_rate_date = conv_base.rate_date
-            fx_rate_source = conv_base.provider
-            fx_status = "market_estimate"
+            conv_base = FxService.try_convert_cached_minor(target_amount_minor, target_acc_curr, base_currency, on_date=clean_date)
+            if conv_base:
+                base_amount_minor = conv_base.target.minor
+                fx_rate_to_base = str(conv_base.rate)
+                fx_rate_date = conv_base.rate_date
+                fx_rate_source = conv_base.provider
+                fx_status = "market_estimate"
+            else:
+                base_amount_minor = None
+                fx_rate_to_base = None
+                fx_rate_date = None
+                fx_rate_source = None
+                fx_status = "pending"
 
         merchant_name = orig["merchant_name"] or ""
         desc = f"Refund: {orig['description'] or merchant_name}"
@@ -657,7 +680,9 @@ class TransactionRepository:
         if target_acc_curr == parent_orig_curr:
             target_amount_minor = new_original_minor
         else:
-            conv_target = FxService.convert_minor(new_original_minor, parent_orig_curr, target_acc_curr, on_date=clean_date)
+            conv_target = FxService.try_convert_cached_minor(new_original_minor, parent_orig_curr, target_acc_curr, on_date=clean_date)
+            if not conv_target:
+                raise ValueError(f"Exchange rate from {parent_orig_curr} to {target_acc_curr} is not cached.")
             target_amount_minor = conv_target.target.minor
 
         if target_acc_curr == base_currency:
@@ -667,12 +692,19 @@ class TransactionRepository:
             fx_rate_source = "identity"
             fx_status = "not_required"
         else:
-            conv_base = FxService.convert_minor(target_amount_minor, target_acc_curr, base_currency, on_date=clean_date)
-            base_amount_minor = conv_base.target.minor
-            fx_rate_to_base = str(conv_base.rate)
-            fx_rate_date = conv_base.rate_date
-            fx_rate_source = conv_base.provider
-            fx_status = "market_estimate"
+            conv_base = FxService.try_convert_cached_minor(target_amount_minor, target_acc_curr, base_currency, on_date=clean_date)
+            if conv_base:
+                base_amount_minor = conv_base.target.minor
+                fx_rate_to_base = str(conv_base.rate)
+                fx_rate_date = conv_base.rate_date
+                fx_rate_source = conv_base.provider
+                fx_status = "market_estimate"
+            else:
+                base_amount_minor = None
+                fx_rate_to_base = None
+                fx_rate_date = None
+                fx_rate_source = None
+                fx_status = "pending"
 
         # 3. Atomically check bounds and update
         with get_db_connection() as conn:
@@ -902,12 +934,19 @@ class TransactionRepository:
                     fx_rate_date = clean_date
                     fx_rate_source = "identity"
                 else:
-                    conv = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
-                    base_amount_minor = conv.target.minor
-                    fx_status = "market_estimate"
-                    fx_rate_to_base = str(conv.rate)
-                    fx_rate_date = conv.rate_date
-                    fx_rate_source = conv.provider
+                    conv = FxService.try_convert_cached_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                    if conv:
+                        base_amount_minor = conv.target.minor
+                        fx_status = "market_estimate"
+                        fx_rate_to_base = str(conv.rate)
+                        fx_rate_date = conv.rate_date
+                        fx_rate_source = conv.provider
+                    else:
+                        base_amount_minor = None
+                        fx_status = "pending"
+                        fx_rate_to_base = None
+                        fx_rate_date = None
+                        fx_rate_source = None
             else:
                 if "original_amount" in data_copy:
                     original_amount_minor = validate_positive_amount(data_copy["original_amount"], "Original amount", currency=original_currency)
@@ -925,16 +964,25 @@ class TransactionRepository:
                 if data_copy.get("settlement_amount") is not None:
                     amount_minor = validate_positive_amount(data_copy["settlement_amount"], "Settlement amount", currency=account_currency)
                     fx_status = "user_settlement"
-                elif "amount" in data_copy and "original_amount" in data_copy:
+                elif "amount" in data_copy and "original_amount" in data_copy and data_copy.get("amount") != data_copy.get("original_amount"):
                     amount_minor = validate_positive_amount(data_copy["amount"], "Settlement amount", currency=account_currency)
                     fx_status = "user_settlement"
                 elif "amount_minor" in data_copy and "original_amount_minor" in data_copy:
                     amount_minor = int(data_copy["amount_minor"])
                     fx_status = "user_settlement"
                 else:
-                    conv_acct = FxService.convert_minor(original_amount_minor, original_currency, account_currency, on_date=clean_date)
-                    amount_minor = conv_acct.target.minor
-                    fx_status = "market_estimate"
+                    conv_acct = FxService.try_convert_cached_minor(original_amount_minor, original_currency, account_currency, on_date=clean_date)
+                    if conv_acct is not None:
+                        amount_minor = conv_acct.target.minor
+                        fx_status = "market_estimate"
+                    else:
+                        if data_copy.get("settlement_amount") is None and ("amount" not in data_copy or data_copy.get("amount") == data_copy.get("original_amount")):
+                            raise ValueError(
+                                f"Cross-currency transaction ({original_currency} on {account_currency} account) "
+                                f"requires a settlement amount or an existing cached exchange rate."
+                            )
+                        amount_minor = validate_positive_amount(data_copy["amount"], "Settlement amount", currency=account_currency)
+                        fx_status = "user_settlement"
 
                 if account_currency == base_currency:
                     base_amount_minor = amount_minor
@@ -949,11 +997,20 @@ class TransactionRepository:
                         fx_rate_date = clean_date
                         fx_rate_source = "user_settlement"
                 else:
-                    conv_base = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
-                    base_amount_minor = conv_base.target.minor
-                    fx_rate_to_base = str(conv_base.rate)
-                    fx_rate_date = conv_base.rate_date
-                    fx_rate_source = conv_base.provider
+                    conv_base = FxService.try_convert_cached_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                    if conv_base:
+                        base_amount_minor = conv_base.target.minor
+                        fx_rate_to_base = str(conv_base.rate)
+                        fx_rate_date = conv_base.rate_date
+                        fx_rate_source = conv_base.provider
+                        if fx_status != "user_settlement":
+                            fx_status = "market_estimate"
+                    else:
+                        base_amount_minor = None
+                        fx_status = "pending"
+                        fx_rate_to_base = None
+                        fx_rate_date = None
+                        fx_rate_source = None
 
             data_copy["amount_minor"] = amount_minor
             data_copy["original_currency"] = original_currency
@@ -1069,32 +1126,53 @@ class TransactionRepository:
             }
 
     @staticmethod
-    def resolve_review(tx_id: int, category_id: int, merchant_name: Optional[str] = None) -> bool:
+    def resolve_review(
+        tx_id: int,
+        category_id: int,
+        merchant_name: Optional[str] = None,
+        essentiality: Optional[str] = None
+    ) -> bool:
         """Sets category, clears review flag, and authoritatively re-learns merchant defaults atomically (P0-04, P0-05)."""
+        # Handle positional ambiguity where 3rd param is essentiality ("essential", "discretionary", "savings")
+        if merchant_name in ("essential", "discretionary", "savings", "unknown") and essentiality is None:
+            essentiality = merchant_name
+            merchant_name = None
+
         with get_db_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT id, account_id, merchant_name FROM transactions WHERE id = ? AND is_deleted = 0", (tx_id,))
+                cur.execute("SELECT id, account_id, merchant_name, essentiality FROM transactions WHERE id = ? AND is_deleted = 0", (tx_id,))
                 tx = cur.fetchone()
                 if not tx:
                     return False
 
                 effective_merchant = normalize_merchant_name(merchant_name or tx["merchant_name"] or "")
+                target_essentiality = essentiality or tx["essentiality"] or "discretionary"
+
                 if effective_merchant:
                     MerchantService.learn_defaults_in_conn(
                         conn,
                         effective_merchant,
                         category_id=category_id,
                         account_id=tx["account_id"],
+                        essentiality=target_essentiality,
                         overwrite=True
                     )
 
                 cur.execute("""
                     UPDATE transactions 
-                    SET category_id = ?, needs_review = 0, merchant_name = ?
+                    SET category_id = ?, 
+                        needs_review = 0, 
+                        review_reason = NULL,
+                        category_source = 'review_confirmed',
+                        category_confidence = 1.0,
+                        essentiality = ?,
+                        essentiality_source = 'review_confirmed',
+                        essentiality_confidence = 1.0,
+                        merchant_name = ?
                     WHERE id = ?
-                """, (category_id, effective_merchant or tx["merchant_name"] or "", tx_id))
+                """, (category_id, target_essentiality, effective_merchant or tx["merchant_name"] or "", tx_id))
                 updated = cur.rowcount > 0
                 conn.commit()
                 return updated

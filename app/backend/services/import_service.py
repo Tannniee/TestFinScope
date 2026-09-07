@@ -1,6 +1,8 @@
 import io
 import csv
 import re
+import json
+import hashlib
 import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -245,6 +247,264 @@ class ImportService:
         return mapping
 
     @staticmethod
+    def compute_header_signature(headers: List[str]) -> str:
+        """Computes a canonical signature for a CSV header layout."""
+        clean = [h.strip().lower() for h in headers if h and h.strip()]
+        return hashlib.sha256(",".join(clean).encode("utf-8")).hexdigest()[:32]
+
+    @classmethod
+    def find_profile_by_headers(cls, headers: List[str]) -> Optional[Dict[str, Any]]:
+        """Looks up a saved import profile matching the CSV header signature."""
+        sig = cls.compute_header_signature(headers)
+        if not sig:
+            return None
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, name, header_signature, delimiter, date_format, column_mapping_json
+                FROM import_profiles
+                WHERE header_signature = ?
+                LIMIT 1
+            """, (sig,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            try:
+                mapping = json.loads(row["column_mapping_json"])
+            except Exception:
+                mapping = {}
+            return {
+                "id": row["id"],
+                "name": row["name"],
+                "header_signature": row["header_signature"],
+                "delimiter": row["delimiter"],
+                "date_format": row["date_format"],
+                "mapping": mapping
+            }
+
+    @classmethod
+    def save_import_profile(
+        cls,
+        name: str,
+        headers: List[str],
+        mapping: Dict[str, str],
+        date_format: Optional[str] = None,
+        delimiter: str = ","
+    ) -> int:
+        """Saves or updates an import profile by header signature."""
+        sig = cls.compute_header_signature(headers)
+        if not sig:
+            raise ValueError("Headers cannot be empty.")
+        clean_name = (name or "Default Profile").strip()
+        mapping_json = json.dumps(mapping)
+
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO import_profiles (name, header_signature, delimiter, date_format, column_mapping_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(header_signature) DO UPDATE SET
+                    name = excluded.name,
+                    delimiter = excluded.delimiter,
+                    date_format = excluded.date_format,
+                    column_mapping_json = excluded.column_mapping_json,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (clean_name, sig, delimiter, date_format or "auto", mapping_json))
+            conn.commit()
+            cur.execute("SELECT id FROM import_profiles WHERE header_signature = ?", (sig,))
+            row = cur.fetchone()
+            return row["id"] if row else 0
+
+    @classmethod
+    def predict_category_and_essentiality(
+        cls,
+        conn,
+        raw_payee: str,
+        raw_desc: str,
+        raw_category: Optional[str],
+        tx_type: str
+    ) -> Dict[str, Any]:
+        """
+        Infers category, essentiality, confidence, and provenance for an import row.
+        Priority:
+        1. Explicit valid mapped CSV category column
+        2. Rule match in merchant_rules table
+        3. Merchant memory (merchants table default_category_id)
+        4. Transaction history statistical frequency
+        5. Fallback: Uncategorized (expense) or Other Income (income) with needs_review = 1
+        """
+        cur = conn.cursor()
+        clean_merchant = normalize_merchant_name(raw_payee or raw_desc)
+        expected_type = "expense" if tx_type == "refund" else tx_type
+
+        # 1. Check mapped CSV category column if present
+        if raw_category and raw_category.strip():
+            c_text = raw_category.strip()
+            c_id = int(c_text) if c_text.isdigit() else -1
+            cur.execute("SELECT id, name, type, color, icon, is_archived FROM categories WHERE (name = ? COLLATE NOCASE OR id = ?) AND is_archived = 0", (c_text, c_id))
+            c_found = cur.fetchone()
+            if c_found and c_found["type"] == expected_type:
+                return {
+                    "category_id": c_found["id"],
+                    "category_name": c_found["name"],
+                    "category_color": c_found["color"] or "#5B8CFF",
+                    "category_icon": c_found["icon"] or "tag",
+                    "category_source": "csv_column",
+                    "category_confidence": 1.0,
+                    "essentiality": "unknown",
+                    "essentiality_source": "fallback",
+                    "essentiality_confidence": 0.0,
+                    "needs_review": 0,
+                    "review_reason": None,
+                    "clean_merchant": clean_merchant
+                }
+
+        # 2. Check merchant rules table if rules exist
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='merchant_rules'")
+        if cur.fetchone():
+            cur.execute("PRAGMA table_info(merchant_rules)")
+            rule_cols = {col["name"] for col in cur.fetchall()}
+            order_clause = "ORDER BY mr.priority ASC, mr.id ASC" if "priority" in rule_cols else "ORDER BY mr.id ASC"
+            active_filter = "AND (mr.is_active = 1 OR mr.is_active IS NULL)" if "is_active" in rule_cols else ""
+            rule_type_col = "mr.rule_type" if "rule_type" in rule_cols else "'exact' as rule_type"
+
+            cur.execute(f"""
+                SELECT mr.category_id, mr.merchant_id, c.name as category_name, c.color, c.icon,
+                       m.default_essentiality,
+                       {rule_type_col}, mr.pattern
+                FROM merchant_rules mr
+                JOIN categories c ON mr.category_id = c.id
+                LEFT JOIN merchants m ON mr.merchant_id = m.id
+                WHERE 1=1 {active_filter}
+                  AND c.is_archived = 0
+                  AND c.type = ?
+                {order_clause}
+            """, (expected_type,))
+            rules = cur.fetchall()
+            combined_text = f"{raw_payee} {raw_desc}".lower()
+            for r in rules:
+                pat = (r["pattern"] or "").strip().lower()
+                matched = False
+                if not pat:
+                    continue
+                rtype = (r["rule_type"] or "exact").lower()
+                if rtype == "exact" and (raw_payee.lower() == pat or clean_merchant.lower() == pat):
+                    matched = True
+                elif rtype in ("contains", "substring", "partial") and pat in combined_text:
+                    matched = True
+                elif rtype == "regex":
+                    try:
+                        if re.search(pat, combined_text, re.IGNORECASE):
+                            matched = True
+                    except Exception:
+                        pass
+                elif pat in combined_text:
+                    matched = True
+
+                if matched:
+                    return {
+                        "category_id": r["category_id"],
+                        "category_name": r["category_name"],
+                        "category_color": r["color"] or "#5B8CFF",
+                        "category_icon": r["icon"] or "tag",
+                        "category_source": "rule",
+                        "category_confidence": 0.95,
+                        "essentiality": r["default_essentiality"] or "discretionary",
+                        "essentiality_source": "rule",
+                        "essentiality_confidence": 0.95,
+                        "needs_review": 0,
+                        "review_reason": None,
+                        "clean_merchant": clean_merchant,
+                        "merchant_id": r["merchant_id"]
+                    }
+
+        # 3. Check merchant memory (merchants table)
+        if clean_merchant:
+            cur.execute("""
+                SELECT m.id, m.name, m.default_category_id, m.default_essentiality,
+                       c.name as category_name, c.color, c.icon, c.type
+                FROM merchants m
+                LEFT JOIN categories c ON m.default_category_id = c.id
+                WHERE m.name = ? COLLATE NOCASE
+            """, (clean_merchant,))
+            m_row = cur.fetchone()
+            if m_row and m_row["default_category_id"] and m_row["type"] == expected_type:
+                return {
+                    "category_id": m_row["default_category_id"],
+                    "category_name": m_row["category_name"],
+                    "category_color": m_row["color"] or "#5B8CFF",
+                    "category_icon": m_row["icon"] or "tag",
+                    "category_source": "merchant_memory",
+                    "category_confidence": 0.9,
+                    "essentiality": m_row["default_essentiality"] or "discretionary",
+                    "essentiality_source": "merchant_memory",
+                    "essentiality_confidence": 0.9,
+                    "needs_review": 0,
+                    "review_reason": None,
+                    "clean_merchant": clean_merchant,
+                    "merchant_id": m_row["id"]
+                }
+
+        # 4. Check historical transaction frequency
+        if clean_merchant:
+            cur.execute("""
+                SELECT t.category_id, c.name as category_name, c.color, c.icon, COUNT(*) as cnt
+                FROM active_transactions t
+                JOIN categories c ON t.category_id = c.id
+                WHERE t.merchant_name = ? COLLATE NOCASE
+                  AND t.transaction_type = ?
+                  AND c.is_archived = 0
+                GROUP BY t.category_id
+                ORDER BY cnt DESC
+                LIMIT 1
+            """, (clean_merchant, expected_type))
+            h_row = cur.fetchone()
+            if h_row and h_row["cnt"] >= 2:
+                return {
+                    "category_id": h_row["category_id"],
+                    "category_name": h_row["category_name"],
+                    "category_color": h_row["color"] or "#5B8CFF",
+                    "category_icon": h_row["icon"] or "tag",
+                    "category_source": "merchant_history",
+                    "category_confidence": 0.75,
+                    "essentiality": "unknown",
+                    "essentiality_source": "fallback",
+                    "essentiality_confidence": 0.0,
+                    "needs_review": 0,
+                    "review_reason": None,
+                    "clean_merchant": clean_merchant
+                }
+
+        # 5. Fallback: Uncategorized or Other Income
+        if expected_type == "income":
+            cur.execute("SELECT id, name, color, icon FROM categories WHERE name = 'Other Income' AND type = 'income' AND is_archived = 0 LIMIT 1")
+            fb = cur.fetchone()
+            if not fb:
+                cur.execute("SELECT id, name, color, icon FROM categories WHERE type = 'income' AND is_archived = 0 ORDER BY id ASC LIMIT 1")
+                fb = cur.fetchone()
+        else:
+            cur.execute("SELECT id, name, color, icon FROM categories WHERE name = 'Uncategorized' AND type = 'expense' AND is_archived = 0 LIMIT 1")
+            fb = cur.fetchone()
+            if not fb:
+                cur.execute("SELECT id, name, color, icon FROM categories WHERE type = 'expense' AND is_archived = 0 ORDER BY id ASC LIMIT 1")
+                fb = cur.fetchone()
+
+        return {
+            "category_id": fb["id"] if fb else 1,
+            "category_name": fb["name"] if fb else "Uncategorized",
+            "category_color": fb["color"] if fb else "#64748B",
+            "category_icon": fb["icon"] if fb else "help-circle",
+            "category_source": "fallback",
+            "category_confidence": 0.0,
+            "essentiality": "unknown",
+            "essentiality_source": "fallback",
+            "essentiality_confidence": 0.0,
+            "needs_review": 1,
+            "review_reason": "uncategorized",
+            "clean_merchant": clean_merchant
+        }
+
+    @staticmethod
     def _build_fingerprint(
         account_id: Optional[int],
         date_str: Optional[str],
@@ -358,7 +618,7 @@ class ImportService:
     ) -> Dict[str, Any]:
         """
         Parses CSV, suggests column mapping if missing, normalizes fields,
-        and identifies duplicate transactions against the target account.
+        predicts categories with confidence scores, and identifies duplicate transactions.
         Uses working_fingerprints to detect in-file duplicates during preview (AUD-004A).
         """
         if not csv_content or not csv_content.strip():
@@ -374,39 +634,20 @@ class ImportService:
         headers = [h.strip() for h in raw_rows[0]]
         data_rows = raw_rows[1:]
 
-        active_mapping = mapping if mapping and any(mapping.values()) else cls.auto_detect_mapping(headers)
+        active_mapping = mapping if mapping and any(mapping.values()) else None
+        detected_profile_name = None
+        if not active_mapping:
+            matched_profile = cls.find_profile_by_headers(headers)
+            if matched_profile:
+                active_mapping = matched_profile["mapping"]
+                detected_profile_name = matched_profile["name"]
+                if not date_format or date_format == "auto":
+                    date_format = matched_profile.get("date_format") or "auto"
+            else:
+                active_mapping = cls.auto_detect_mapping(headers)
 
-        # Build existing transaction fingerprints for duplicate detection and lookup account currency
         existing_fingerprints = set()
         account_currency = "USD"
-        if account_id:
-            with get_db_connection() as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT currency FROM accounts WHERE id = ?", (account_id,))
-                a_row = cur.fetchone()
-                if a_row and a_row["currency"]:
-                    account_currency = a_row["currency"]
-
-                cur.execute(
-                    """
-                    SELECT transaction_date, amount_minor, transaction_type, merchant_name, description
-                    FROM active_transactions WHERE account_id = ?
-                    """,
-                    (account_id,)
-                )
-                for r in cur.fetchall():
-                    fp = cls._build_fingerprint(
-                        account_id,
-                        r["transaction_date"],
-                        r["amount_minor"],
-                        r["transaction_type"],
-                        r["merchant_name"] or "",
-                        r["description"] or ""
-                    )
-                    existing_fingerprints.add(fp)
-
-        # Working set for in-file duplicate detection (AUD-004A)
-        working_fingerprints = set(existing_fingerprints)
 
         def get_col_idx(col_name: Optional[str]) -> Optional[int]:
             if not col_name:
@@ -431,31 +672,76 @@ class ImportService:
         valid_count = 0
         invalid_count = 0
 
-        for row_idx, row in enumerate(data_rows):
-            parsed = cls._parse_csv_row(row, headers, indices, working_fingerprints, account_id, date_format=date_format, account_currency=account_currency)
-            if not parsed["is_valid"]:
-                invalid_count += 1
-            elif parsed["is_duplicate"]:
-                duplicate_count += 1
-            else:
-                valid_count += 1
-                if parsed["fingerprint"]:
-                    working_fingerprints.add(parsed["fingerprint"])
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            if account_id:
+                cur.execute("SELECT currency FROM accounts WHERE id = ?", (account_id,))
+                a_row = cur.fetchone()
+                if a_row and a_row["currency"]:
+                    account_currency = a_row["currency"]
 
-            preview_rows.append({
-                "row_index": row_idx,
-                "date": parsed["date"],
-                "raw_date": parsed["raw_date"],
-                "amount": parsed["amount"],
-                "amount_minor": parsed["amount_minor"],
-                "transaction_type": parsed["transaction_type"],
-                "payee": parsed["payee"],
-                "description": parsed["description"],
-                "category_suggestion": None,
-                "is_duplicate": parsed["is_duplicate"],
-                "is_valid": parsed["is_valid"],
-                "errors": parsed["errors"]
-            })
+                cur.execute(
+                    """
+                    SELECT transaction_date, amount_minor, transaction_type, merchant_name, description
+                    FROM active_transactions WHERE account_id = ?
+                    """,
+                    (account_id,)
+                )
+                for r in cur.fetchall():
+                    fp = cls._build_fingerprint(
+                        account_id,
+                        r["transaction_date"],
+                        r["amount_minor"],
+                        r["transaction_type"],
+                        r["merchant_name"] or "",
+                        r["description"] or ""
+                    )
+                    existing_fingerprints.add(fp)
+
+            working_fingerprints = set(existing_fingerprints)
+
+            for row_idx, row in enumerate(data_rows):
+                parsed = cls._parse_csv_row(row, headers, indices, working_fingerprints, account_id, date_format=date_format, account_currency=account_currency)
+                if not parsed["is_valid"]:
+                    invalid_count += 1
+                elif parsed["is_duplicate"]:
+                    duplicate_count += 1
+                else:
+                    valid_count += 1
+                    if parsed["fingerprint"]:
+                        working_fingerprints.add(parsed["fingerprint"])
+
+                idx_cat = indices.get("category")
+                raw_cat = row[idx_cat].strip() if idx_cat is not None and idx_cat < len(row) else None
+                pred = cls.predict_category_and_essentiality(
+                    conn,
+                    parsed["payee"],
+                    parsed["description"],
+                    raw_cat,
+                    parsed["transaction_type"]
+                )
+
+                preview_rows.append({
+                    "row_index": row_idx,
+                    "date": parsed["date"],
+                    "raw_date": parsed["raw_date"],
+                    "amount": parsed["amount"],
+                    "amount_minor": parsed["amount_minor"],
+                    "transaction_type": parsed["transaction_type"],
+                    "payee": parsed["payee"],
+                    "description": parsed["description"],
+                    "category_suggestion": {
+                        "id": pred["category_id"],
+                        "name": pred["category_name"],
+                        "color": pred["category_color"],
+                        "icon": pred["category_icon"],
+                        "confidence": pred["category_confidence"],
+                        "source": pred["category_source"]
+                    },
+                    "is_duplicate": parsed["is_duplicate"],
+                    "is_valid": parsed["is_valid"],
+                    "errors": parsed["errors"]
+                })
 
         return {
             "headers": headers,
@@ -465,7 +751,9 @@ class ImportService:
             "duplicate_count": duplicate_count,
             "valid_count": valid_count,
             "invalid_count": invalid_count,
-            "date_format": date_format or "auto"
+            "date_format": date_format or "auto",
+            "account_currency": account_currency,
+            "detected_profile": detected_profile_name
         }
 
     @classmethod
@@ -475,11 +763,13 @@ class ImportService:
         mapping: Dict[str, str],
         account_id: int,
         deduplicate: bool = True,
-        date_format: Optional[str] = None
+        date_format: Optional[str] = None,
+        save_profile_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Parses and inserts transactions atomically using unified _parse_csv_row logic.
-        Auto-categorizes known payees via MerchantService and tags uncertain ones with needs_review = 1.
+        Auto-categorizes known payees via rules and merchant memory, tagging uncertain ones with needs_review = 1.
+        Stores canonical merchant identification and audit provenance fields.
         """
         delimiter = cls._detect_delimiter(csv_content)
         reader = csv.reader(io.StringIO(csv_content.strip()), delimiter=delimiter)
@@ -490,6 +780,15 @@ class ImportService:
 
         headers = [h.strip() for h in raw_rows[0]]
         data_rows = raw_rows[1:]
+
+        if save_profile_name:
+            cls.save_import_profile(
+                name=save_profile_name,
+                headers=headers,
+                mapping=mapping,
+                date_format=date_format,
+                delimiter=delimiter
+            )
 
         def get_col_idx(col_name: Optional[str]) -> Optional[int]:
             if not col_name:
@@ -536,21 +835,6 @@ class ImportService:
             account_currency = a_row["currency"] if a_row and a_row["currency"] else "USD"
             base_currency = SettingsService.get_setting("currency", "USD") or "USD"
 
-            # Load default categories for unassigned (FSC-H03)
-            cur.execute("SELECT id FROM categories WHERE name = 'Uncategorized' AND type = 'expense' AND is_archived = 0 LIMIT 1")
-            uncat_row = cur.fetchone()
-            if not uncat_row:
-                cur.execute("SELECT id FROM categories WHERE type = 'expense' AND is_archived = 0 ORDER BY id ASC LIMIT 1")
-                uncat_row = cur.fetchone()
-            fallback_expense_id = uncat_row["id"] if uncat_row else 1
-
-            cur.execute("SELECT id FROM categories WHERE name = 'Other Income' AND type = 'income' AND is_archived = 0 LIMIT 1")
-            inc_row = cur.fetchone()
-            if not inc_row:
-                cur.execute("SELECT id FROM categories WHERE type = 'income' AND is_archived = 0 ORDER BY id ASC LIMIT 1")
-                inc_row = cur.fetchone()
-            fallback_income_id = inc_row["id"] if inc_row else None
-
             now_str = datetime.now().isoformat()
             imported_count = 0
             skipped_count = 0
@@ -573,57 +857,28 @@ class ImportService:
                 amount_minor = parsed["amount_minor"]
                 tx_type = parsed["transaction_type"]
 
-                # Merchant memory & persistence (FSC-H04 & FSC-M15)
-                merchant_id = None
-                m_row = None
-                if payee:
-                    clean_merchant = normalize_merchant_name(payee)
-                    if clean_merchant:
-                        merchant_id = MerchantService.get_or_create_merchant_in_conn(
-                            conn=conn,
-                            raw_name=clean_merchant,
-                            account_id=account_id
-                        )
-                    cur.execute("SELECT default_category_id, default_essentiality FROM merchants WHERE name = ? COLLATE NOCASE", (payee,))
-                    m_row = cur.fetchone()
-
-                # Semantic category resolution (FSC-H03)
-                assigned_cat_id = None
-
-                # 1. Check mapped CSV category column first if present
+                # Category, essentiality, and provenance prediction
                 idx_cat = indices.get("category")
-                if idx_cat is not None and idx_cat < len(row) and row[idx_cat].strip():
-                    raw_cat = row[idx_cat].strip()
-                    cat_id_cand = int(raw_cat) if raw_cat.isdigit() else -1
-                    cur.execute("SELECT id, type, is_archived FROM categories WHERE name = ? COLLATE NOCASE OR id = ?", (raw_cat, cat_id_cand))
-                    c_found = cur.fetchone()
-                    if c_found and not c_found["is_archived"]:
-                        expected_cat_type = "expense" if tx_type == "refund" else tx_type
-                        if c_found["type"] == expected_cat_type:
-                            assigned_cat_id = c_found["id"]
+                raw_cat = row[idx_cat].strip() if idx_cat is not None and idx_cat < len(row) else None
+                pred = cls.predict_category_and_essentiality(conn, payee, desc, raw_cat, tx_type)
 
-                # 2. Fall back to merchant memory if not assigned
-                if not assigned_cat_id and m_row and m_row["default_category_id"]:
-                    cand_id = m_row["default_category_id"]
-                    cur.execute("SELECT type, is_archived FROM categories WHERE id = ?", (cand_id,))
-                    c_cand = cur.fetchone()
-                    if c_cand and not c_cand["is_archived"]:
-                        expected_cat_type = "expense" if tx_type == "refund" else tx_type
-                        if c_cand["type"] == expected_cat_type:
-                            assigned_cat_id = cand_id
+                clean_merchant = pred.get("clean_merchant") or normalize_merchant_name(payee)
+                merchant_id = None
+                if clean_merchant or payee:
+                    merchant_id = MerchantService.get_or_create_merchant_in_conn(
+                        conn=conn,
+                        raw_name=clean_merchant or payee,
+                        account_id=account_id
+                    )
 
-                # 3. Fall back to Uncategorized / Other Income
-                if not assigned_cat_id:
-                    if tx_type == "income":
-                        category_id = fallback_income_id
-                    else:
-                        category_id = fallback_expense_id
-                    needs_review = 1
-                else:
-                    category_id = assigned_cat_id
-                    needs_review = 0
-
-                essentiality = m_row["default_essentiality"] if m_row and m_row["default_essentiality"] else "discretionary"
+                category_id = pred["category_id"]
+                essentiality = pred["essentiality"]
+                category_source = pred["category_source"]
+                category_confidence = pred["category_confidence"]
+                essentiality_source = pred["essentiality_source"]
+                essentiality_confidence = pred["essentiality_confidence"]
+                needs_review = pred["needs_review"]
+                review_reason = pred["review_reason"]
 
                 if account_currency == base_currency:
                     base_amount_minor = amount_minor
@@ -632,27 +887,36 @@ class ImportService:
                     fx_rate_source = "identity"
                     fx_status = "not_required"
                 else:
-                    conv = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=parsed_date)
-                    base_amount_minor = conv.target.minor
-                    fx_rate_to_base = str(conv.rate)
-                    fx_rate_date = conv.rate_date
-                    fx_rate_source = conv.provider
-                    fx_status = "market_estimate"
+                    conv = FxService.try_convert_cached_minor(amount_minor, account_currency, base_currency, on_date=parsed_date)
+                    if conv:
+                        base_amount_minor = conv.target.minor
+                        fx_rate_to_base = str(conv.rate)
+                        fx_rate_date = conv.rate_date
+                        fx_rate_source = conv.provider
+                        fx_status = "market_estimate"
+                    else:
+                        base_amount_minor = None
+                        fx_rate_to_base = None
+                        fx_rate_date = None
+                        fx_rate_source = None
+                        fx_status = "pending"
 
                 cur.execute("""
                     INSERT INTO transactions (
-                        account_id, category_id, merchant_id, merchant_name, transaction_type,
-                        amount_minor, transaction_date, transaction_time, description,
-                        note, essentiality, payment_method, source, needs_review,
-                        is_deleted, created_at, updated_at,
+                        account_id, category_id, merchant_id, merchant_name, raw_merchant_name,
+                        transaction_type, amount_minor, transaction_date, transaction_time,
+                        description, note, essentiality, payment_method, source, capture_method,
+                        category_source, category_confidence, essentiality_source, essentiality_confidence,
+                        needs_review, review_reason, parser_version, is_deleted, created_at, updated_at,
                         original_currency, original_amount_minor,
                         base_currency, base_amount_minor,
                         fx_rate_to_base, fx_rate_date, fx_rate_source, fx_status
                     ) VALUES (
                         ?, ?, ?, ?, ?,
-                        ?, ?, '12:00', ?,
-                        '', ?, 'Bank Import', 'csv_import', ?,
-                        0, ?, ?,
+                        ?, ?, ?, '12:00',
+                        ?, '', ?, 'Bank Import', 'csv_import', 'csv_import',
+                        ?, ?, ?, ?,
+                        ?, ?, 'import_v2', 0, ?, ?,
                         ?, ?,
                         ?, ?,
                         ?, ?, ?, ?
@@ -661,13 +925,19 @@ class ImportService:
                     account_id,
                     category_id,
                     merchant_id,
+                    clean_merchant or payee,
                     payee,
                     tx_type,
                     amount_minor,
                     parsed_date,
                     desc,
                     essentiality,
+                    category_source,
+                    category_confidence,
+                    essentiality_source,
+                    essentiality_confidence,
                     needs_review,
+                    review_reason,
                     now_str,
                     now_str,
                     account_currency,

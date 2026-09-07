@@ -8,7 +8,7 @@ Ensures every analytics module operates on explicit, consistent currency domains
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from app.backend.database.connection import get_db_connection
 from app.backend.services.settings_service import SettingsService
 from app.backend.domain.currencies import get_currency_meta

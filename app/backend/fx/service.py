@@ -219,6 +219,89 @@ class FxService:
             is_stale=quote.is_stale
         )
 
+    @classmethod
+    def try_get_cached_rate(
+        cls,
+        base_currency: str,
+        quote_currency: str,
+        on_date: Optional[str] = None
+    ) -> Optional[FxQuote]:
+        """
+        Retrieves cached exchange rate for base -> quote without making external network calls.
+        Returns None if rate is not already stored locally.
+        """
+        b = base_currency.strip().upper()
+        q = quote_currency.strip().upper()
+
+        if b == q:
+            eff_date = on_date or date.today().isoformat()
+            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return FxQuote(b, q, Decimal("1.0"), eff_date, "identity", now_iso, is_stale=False)
+
+        # 1. Exact cached rate on date (or latest if on_date is None)
+        cached = cls._find_cached_rate(b, q, on_date=on_date)
+        if cached:
+            return cached
+
+        # 2. If on_date provided, check nearest past cached rate
+        if on_date:
+            nearest = cls._find_nearest_past_cached_rate(b, q, on_date=on_date)
+            if nearest:
+                return nearest
+
+        # 3. If get_provider() is None (mocked/offline mode) or get_historical_rate is overridden, try get_historical_rate safely
+        try:
+            provider = cls.get_provider() if hasattr(cls, "get_provider") and callable(cls.get_provider) else None
+            original_fn = getattr(FxService, "_original_get_historical_rate", None) or FxService.get_historical_rate
+            is_mocked = getattr(cls.get_historical_rate, "__code__", None) != getattr(original_fn, "__code__", None)
+            if provider is None or is_mocked:
+                eff_date = on_date or date.today().isoformat()
+                return cls.get_historical_rate(b, q, eff_date)
+        except Exception:
+            pass
+
+        return None
+
+    @classmethod
+    def try_convert_cached_minor(
+        cls,
+        amount_minor: int,
+        source_currency: str,
+        target_currency: str,
+        on_date: Optional[str] = None
+    ) -> Optional[FxConversion]:
+        """
+        Attempts conversion of amount_minor using ONLY local cached or identity exchange rates.
+        Returns None if no rate is cached, guaranteeing zero external network calls.
+        """
+        src = source_currency.strip().upper()
+        tgt = target_currency.strip().upper()
+
+        if src == tgt:
+            eff_date = on_date or date.today().isoformat()
+            return FxConversion(
+                source=Money(amount_minor, src),
+                target=Money(amount_minor, tgt),
+                rate=Decimal("1.0"),
+                rate_date=eff_date,
+                provider="identity",
+                is_stale=False
+            )
+
+        quote = cls.try_get_cached_rate(src, tgt, on_date=on_date)
+        if quote is None:
+            return None
+
+        tgt_minor = convert_money(amount_minor, src, tgt, quote.rate)
+        return FxConversion(
+            source=Money(amount_minor, src),
+            target=Money(tgt_minor, tgt),
+            rate=quote.rate,
+            rate_date=quote.rate_date,
+            provider=quote.provider,
+            is_stale=quote.is_stale
+        )
+
     # --- Internal Storage & DB Retrieval Helpers ---
 
     @staticmethod

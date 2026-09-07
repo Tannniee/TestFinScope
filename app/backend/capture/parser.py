@@ -9,6 +9,7 @@ Parses expressions like:
 
 import re
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Optional, Tuple, List
 from app.backend.capture.models import QuickCaptureParseResult
 
@@ -134,7 +135,7 @@ def parse_quick_capture(text: str, reference_date: Optional[str] = None) -> Quic
             if i + 1 < len(tokens):
                 next_tok = tokens[i+1].lower()
                 if next_tok in MAGNITUDES:
-                    parsed_amt = round(parsed_amt * MAGNITUDES[next_tok], 4)
+                    parsed_amt = float((Decimal(str(parsed_amt)) * Decimal(str(MAGNITUDES[next_tok]))).quantize(Decimal("0.0001")))
                     i += 1
 
             amount = parsed_amt
@@ -256,11 +257,11 @@ def _try_parse_amount_token(tok: str) -> Tuple[Optional[float], Optional[str], O
         return None, None, None
 
     try:
-        val = float(clean_num) * multiplier
+        val = Decimal(clean_num) * Decimal(str(multiplier))
         if val < 0:
             return None, None, None
-        return round(val, 4), detected_currency, explicit_type
-    except (ValueError, OverflowError):
+        return float(val.quantize(Decimal("0.0001"))), detected_currency, explicit_type
+    except Exception:
         return None, None, None
 
 

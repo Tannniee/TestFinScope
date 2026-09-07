@@ -23,6 +23,9 @@ class CaptureEnrichment:
     account_id: Optional[int] = None
     account_name: Optional[str] = None
     account_currency: Optional[str] = None
+    input_currency: Optional[str] = None
+    settlement_amount_minor: Optional[int] = None
+    requires_settlement_resolution: bool = False
     category_id: Optional[int] = None
     category_name: Optional[str] = None
     category_source: str = "user"  # explicit, rule, merchant_history, fallback

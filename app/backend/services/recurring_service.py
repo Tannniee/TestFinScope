@@ -113,6 +113,18 @@ class RecurringService:
         freq = validate_recurring_frequency(frequency)
         clean_date = validate_iso_date(next_due_date, "Next due date") if next_due_date else None
 
+        if category_id is not None:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT id, name, type, is_archived FROM categories WHERE id = ?", (category_id,))
+                cat_row = cur.fetchone()
+                if not cat_row:
+                    raise ValueError(f"Category with id {category_id} does not exist.")
+                if cat_row["is_archived"]:
+                    raise ValueError(f"Category '{cat_row['name']}' is archived and cannot be used for recurring rules.")
+                if cat_row["type"] != tx_type:
+                    raise ValueError(f"Category '{cat_row['name']}' (type: {cat_row['type']}) does not match recurring rule transaction type '{tx_type}'.")
+
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
@@ -151,7 +163,13 @@ class RecurringService:
             if not existing:
                 return False
 
-        r_curr = updates.get("currency") or (existing["currency"] if "currency" in existing.keys() and existing["currency"] else "USD")
+        old_curr = existing["currency"] if "currency" in existing.keys() and existing["currency"] else "USD"
+        if "currency" in updates:
+            updates["currency"] = validate_currency_code(updates["currency"])
+            if updates["currency"] != old_curr and "amount" not in fields:
+                raise ValueError("Cannot change recurring rule currency without providing an explicit new amount.")
+
+        r_curr = updates.get("currency") or old_curr
 
         if "name" in updates:
             if not updates["name"] or not str(updates["name"]).strip():
@@ -172,6 +190,21 @@ class RecurringService:
 
         if "next_due_date" in updates and updates["next_due_date"]:
             updates["next_due_date"] = validate_iso_date(updates["next_due_date"], "Next due date")
+
+        target_tx_type = updates.get("transaction_type", existing["transaction_type"])
+        target_cat_id = updates.get("category_id", existing["category_id"] if "category_id" in existing.keys() else None)
+
+        if ("category_id" in updates or "transaction_type" in updates) and target_cat_id is not None:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT id, name, type, is_archived FROM categories WHERE id = ?", (target_cat_id,))
+                cat_row = cur.fetchone()
+                if not cat_row:
+                    raise ValueError(f"Category with id {target_cat_id} does not exist.")
+                if cat_row["is_archived"]:
+                    raise ValueError(f"Category '{cat_row['name']}' is archived and cannot be used for recurring rules.")
+                if cat_row["type"] != target_tx_type:
+                    raise ValueError(f"Category '{cat_row['name']}' (type: {cat_row['type']}) does not match recurring rule transaction type '{target_tx_type}'.")
 
         if not updates:
             return False

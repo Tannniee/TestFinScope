@@ -19,6 +19,7 @@ class FxReconciliationService:
         reconciled_count = 0
         failed_count = 0
 
+        # Step 1: Read pending rows and immediately release connection/lock (P1-24)
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
@@ -36,53 +37,67 @@ class FxReconciliationService:
                 ORDER BY t.transaction_date DESC, t.id DESC
                 LIMIT ?
             """, (limit,))
-            pending_rows = cur.fetchall()
+            pending_rows = [dict(r) for r in cur.fetchall()]
 
-            for row in pending_rows:
-                tx_id = row["id"]
-                acct_curr = row["account_currency"]
-                base_curr = row["base_currency"] or SettingsService.get_setting("currency", "USD") or "USD"
-                amt_minor = row["amount_minor"]
-                tx_date = row["transaction_date"]
+        # Step 2: Compute valuations outside of database lock
+        updates = []
+        default_base = SettingsService.get_setting("currency", "USD") or "USD"
+        now_iso = datetime.now().isoformat()
 
-                if acct_curr == base_curr:
-                    cur.execute("""
-                        UPDATE transactions
-                        SET base_amount_minor = ?,
-                            fx_status = 'not_required',
-                            fx_rate_to_base = '1.0',
-                            fx_rate_date = ?,
-                            fx_rate_source = 'identity',
-                            updated_at = ?
-                        WHERE id = ?
-                    """, (amt_minor, tx_date, datetime.now().isoformat(), tx_id))
-                    reconciled_count += 1
-                    continue
+        for row in pending_rows:
+            tx_id = row["id"]
+            acct_curr = row["account_currency"]
+            base_curr = row["base_currency"] or default_base
+            amt_minor = row["amount_minor"]
+            tx_date = row["transaction_date"]
 
-                try:
-                    conv = FxService.convert_minor(amt_minor, acct_curr, base_curr, on_date=tx_date)
-                    cur.execute("""
-                        UPDATE transactions
-                        SET base_amount_minor = ?,
-                            fx_status = 'market_estimate',
-                            fx_rate_to_base = ?,
-                            fx_rate_date = ?,
-                            fx_rate_source = ?,
-                            updated_at = ?
-                        WHERE id = ?
-                    """, (
-                        conv.target.minor,
-                        str(conv.rate),
-                        conv.rate_date,
-                        conv.provider,
-                        datetime.now().isoformat(),
-                        tx_id
-                    ))
-                    reconciled_count += 1
-                except Exception:
-                    failed_count += 1
+            if acct_curr == base_curr:
+                updates.append({
+                    "id": tx_id,
+                    "base_amount_minor": amt_minor,
+                    "fx_status": "not_required",
+                    "fx_rate_to_base": "1.0",
+                    "fx_rate_date": tx_date,
+                    "fx_rate_source": "identity",
+                    "updated_at": now_iso
+                })
+                reconciled_count += 1
+                continue
 
-            # Check remaining
+            try:
+                conv = FxService.convert_minor(amt_minor, acct_curr, base_curr, on_date=tx_date)
+                updates.append({
+                    "id": tx_id,
+                    "base_amount_minor": conv.target.minor,
+                    "fx_status": "market_estimate",
+                    "fx_rate_to_base": str(conv.rate),
+                    "fx_rate_date": conv.rate_date,
+                    "fx_rate_source": conv.provider,
+                    "updated_at": now_iso
+                })
+                reconciled_count += 1
+            except Exception:
+                failed_count += 1
+
+        # Step 3: Fast atomic write transaction
+        if updates:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.executemany("""
+                    UPDATE transactions
+                    SET base_amount_minor = :base_amount_minor,
+                        fx_status = :fx_status,
+                        fx_rate_to_base = :fx_rate_to_base,
+                        fx_rate_date = :fx_rate_date,
+                        fx_rate_source = :fx_rate_source,
+                        updated_at = :updated_at
+                    WHERE id = :id
+                """, updates)
+                conn.commit()
+
+        # Step 4: Check remaining count
+        with get_db_connection() as conn:
+            cur = conn.cursor()
             cur.execute("""
                 SELECT COUNT(*) FROM transactions t
                 JOIN accounts a ON t.account_id = a.id
@@ -93,7 +108,6 @@ class FxReconciliationService:
                   )
             """)
             remaining_pending = cur.fetchone()[0]
-            conn.commit()
 
         return {
             "reconciled": reconciled_count,

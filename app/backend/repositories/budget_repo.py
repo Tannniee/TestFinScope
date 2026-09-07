@@ -27,7 +27,9 @@ class BudgetRepository:
 
             # Category budgets are denominated in Reporting/Base Currency.
             # Spend (whether portfolio or account-scoped) must be evaluated in that same currency to allow valid comparison.
-            amt_col = "COALESCE(t.base_amount_minor, t.amount_minor)"
+            from app.backend.analytics.money_context import resolve_analytics_money_context
+            ctx = resolve_analytics_money_context(account_id=None)
+            amt_col = ctx.tx_amount_expr
 
             cur.execute(f"""
                 SELECT 

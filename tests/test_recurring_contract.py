@@ -97,3 +97,55 @@ def test_empty_description_paid_match_prevented(isolated_db):
     # The rule must NOT be marked as paid
     assert bills[0]["is_paid"] is False
     assert bills[0]["status"] == "upcoming"
+
+
+def test_recurring_category_compatibility_and_currency_immutability(isolated_db):
+    acc_id = AccountRepository.create(name="Checking", account_type="checking", currency="USD")
+    exp_cat = CategoryRepository.create(name="Rent", cat_type="expense")
+    inc_cat = CategoryRepository.create(name="Salary", cat_type="income")
+
+    # Mismatched category type rejected on create
+    with pytest.raises(ValueError, match="does not match recurring rule transaction type"):
+        RecurringService.create_rule(
+            name="Invalid Rent",
+            amount=1200.0,
+            transaction_type="income",
+            category_id=exp_cat,
+            account_id=acc_id
+        )
+
+    # Archived category rejected on create
+    archived_cat = CategoryRepository.create(name="Old Bills", cat_type="expense")
+    CategoryRepository.update(archived_cat, is_archived=1)
+    with pytest.raises(ValueError, match="is archived and cannot be used"):
+        RecurringService.create_rule(
+            name="Old Bill",
+            amount=50.0,
+            transaction_type="expense",
+            category_id=archived_cat,
+            account_id=acc_id
+        )
+
+    # Valid rule creation
+    rule_id = RecurringService.create_rule(
+        name="Apartment Rent",
+        amount=1500.0,
+        transaction_type="expense",
+        category_id=exp_cat,
+        account_id=acc_id,
+        currency="USD"
+    )
+    assert rule_id > 0
+
+    # Updating category to incompatible type rejected
+    with pytest.raises(ValueError, match="does not match recurring rule transaction type"):
+        RecurringService.update_rule(rule_id, category_id=inc_cat)
+
+    # Updating currency without providing new amount rejected
+    with pytest.raises(ValueError, match="Cannot change recurring rule currency without providing an explicit new amount"):
+        RecurringService.update_rule(rule_id, currency="EUR")
+
+    # Updating currency WITH explicit amount succeeds
+    success = RecurringService.update_rule(rule_id, currency="EUR", amount=1400.0)
+    assert success is True
+

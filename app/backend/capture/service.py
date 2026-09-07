@@ -29,6 +29,10 @@ class QuickCaptureService:
             can_commit = False
             val_msgs.append("No active account available to assign transaction.")
 
+        if enrichment.requires_settlement_resolution:
+            can_commit = False
+            val_msgs.append(f"Requires settlement amount in {enrichment.account_currency} for {enrichment.input_currency} purchase.")
+
         return QuickCapturePreviewResponse(
             parse=parse_res,
             enrichment=enrichment,
@@ -39,8 +43,10 @@ class QuickCaptureService:
     @staticmethod
     def commit(payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Persists a quick capture transaction into the ledger with full provenance.
+        Persists a quick capture transaction into the ledger with full provenance and hash guard.
         """
+        import hmac
+
         raw_text = payload.get("raw_text", "").strip()
         default_account_id = payload.get("account_id")
 
@@ -48,6 +54,22 @@ class QuickCaptureService:
         preview_res = QuickCaptureService.preview(raw_text, default_account_id=default_account_id)
         parse_res = preview_res.parse
         enrichment = preview_res.enrichment
+
+        # If preview could not commit without explicit settlement
+        has_explicit_settlement = payload.get("settlement_amount") is not None
+        if not preview_res.can_commit:
+            if enrichment.requires_settlement_resolution and has_explicit_settlement:
+                # Allowed: client provided manual settlement resolution
+                pass
+            else:
+                msg = preview_res.validation_messages[0] if preview_res.validation_messages else "Quick capture validation failed."
+                raise ValueError(msg)
+
+        # Enforce preview hash check using hmac.compare_digest if provided
+        client_hash = payload.get("preview_hash")
+        if client_hash:
+            if not hmac.compare_digest(str(client_hash), str(enrichment.preview_hash)):
+                raise ValueError("Preview hash mismatch. Transaction context has changed.")
 
         # Allow user overrides from client payload
         final_amount = payload.get("amount") if payload.get("amount") is not None else parse_res.amount
@@ -64,6 +86,10 @@ class QuickCaptureService:
         final_type = payload.get("transaction_type") or parse_res.transaction_type
         final_essentiality = payload.get("essentiality") or enrichment.essentiality
 
+        # Multi-currency handling
+        orig_currency = payload.get("original_currency") or enrichment.input_currency or parse_res.currency or enrichment.account_currency
+        settlement_amt = payload.get("settlement_amount")
+
         # Determine if category was overridden by user
         category_source = "user" if payload.get("category_id") else enrichment.category_source
         category_confidence = 1.0 if category_source == "user" else enrichment.category_confidence
@@ -75,10 +101,11 @@ class QuickCaptureService:
             needs_review = enrichment.needs_review
         review_reason = payload.get("review_reason") or enrichment.review_reason
 
-        tx_id = TransactionRepository.create({
+        tx_dict = {
             "account_id": final_account_id,
             "category_id": final_category_id,
             "amount": final_amount,
+            "original_currency": orig_currency,
             "merchant_name": final_merchant,
             "raw_merchant_name": parse_res.merchant_raw or final_merchant,
             "transaction_type": final_type,
@@ -93,7 +120,11 @@ class QuickCaptureService:
             "needs_review": needs_review,
             "review_reason": review_reason,
             "note": payload.get("note", "")
-        })
+        }
+        if settlement_amt is not None:
+            tx_dict["settlement_amount"] = settlement_amt
+
+        tx_id = TransactionRepository.create(tx_dict)
 
         created_tx = TransactionRepository.get_by_id(tx_id)
         return {

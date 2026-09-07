@@ -222,6 +222,12 @@ function renderStep2Html() {
         <div class="card-title-wrap">
           <h3>Step 2: Map CSV Columns</h3>
           <p>FinScope has auto-detected your bank columns. Verify or adjust the mappings below.</p>
+          ${previewData?.detected_profile ? `
+            <div style="font-size: 12px; color: var(--accent-blue); margin-top: 4px; display: inline-flex; align-items: center; gap: 4px;">
+              <i data-lucide="check-circle" style="width: 14px; height: 14px;"></i>
+              <span>Auto-matched profile: <b>${escapeHtml(previewData.detected_profile)}</b></span>
+            </div>
+          ` : ''}
         </div>
       </div>
 
@@ -268,6 +274,16 @@ function renderStep2Html() {
           </select>
         </div>
 
+        <div style="grid-column: 1 / -1;">
+          <label class="form-label">Category Column (Optional)</label>
+          <select id="map-category" class="form-select" style="width: 100%;">
+            ${headerOptions(currentMapping.category)}
+          </select>
+          <span style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px; display: block;">
+            Select if your bank export already includes a Category column.
+          </span>
+        </div>
+
         <div style="grid-column: 1 / -1; background: var(--bg-card-subtle); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-subtle);">
           <label class="form-label" style="font-weight: 600; margin-bottom: 6px; display: block;">Date Format Interpretation (AUD-004B)</label>
           <div style="display: flex; gap: 16px; align-items: center;">
@@ -304,7 +320,8 @@ function attachStep2Listeners() {
       debit: document.getElementById('map-debit')?.value || '',
       credit: document.getElementById('map-credit')?.value || '',
       payee: document.getElementById('map-payee')?.value || '',
-      description: document.getElementById('map-desc')?.value || ''
+      description: document.getElementById('map-desc')?.value || '',
+      category: document.getElementById('map-category')?.value || ''
     };
     selectedDateFormat = document.getElementById('map-date-format')?.value || 'auto';
 
@@ -333,6 +350,7 @@ function renderStep3Html() {
   const valids = previewData?.valid_count || 0;
   const invalids = previewData?.invalid_count || 0;
   const total = previewData?.total_rows || 0;
+  const curr = previewData?.account_currency || state.accounts.find(a => a.id === selectedAccountId)?.currency || 'USD';
 
   return `
     <div class="fin-card">
@@ -358,10 +376,14 @@ function renderStep3Html() {
         </div>
       </div>
 
-      <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+      <div style="margin-bottom: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 20px;">
         <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
           <input type="checkbox" id="chk-skip-dupes" checked style="accent-color: var(--accent-blue); width: 16px; height: 16px;" />
           <b>Skip suspected duplicate transactions automatically</b>
+        </label>
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+          <input type="checkbox" id="chk-save-profile" checked style="accent-color: var(--accent-blue); width: 16px; height: 16px;" />
+          <span>Save column layout profile for this bank</span>
         </label>
       </div>
 
@@ -373,6 +395,7 @@ function renderStep3Html() {
               <th>Date</th>
               <th>Type</th>
               <th>Payee / Description</th>
+              <th>Category Suggestion</th>
               <th style="text-align: right;">Amount</th>
             </tr>
           </thead>
@@ -404,8 +427,22 @@ function renderStep3Html() {
                   ${r.description && r.description !== r.payee ? `<div style="font-size: 11px; color: var(--text-muted);">${escapeHtml(r.description)}</div>` : ''}
                   ${r.errors && r.errors.length > 0 ? `<div style="font-size: 10.5px; color: #FF6B8A; margin-top: 2px;">⚠ ${escapeHtml(r.errors.join('; '))}</div>` : ''}
                 </td>
+                <td>
+                  ${r.category_suggestion && r.category_suggestion.name ? `
+                    <div style="display: flex; flex-direction: column; gap: 2px;">
+                      <span class="tag-pill" style="background: ${escapeHtml(r.category_suggestion.color || '#5B8CFF')}22; color: ${escapeHtml(r.category_suggestion.color || '#5B8CFF')}; font-size: 11px; font-weight: 600;">
+                        ${escapeHtml(r.category_suggestion.name)}
+                      </span>
+                      <span style="font-size: 10px; color: var(--text-muted);">
+                        ${Math.round((r.category_suggestion.confidence || 0) * 100)}% (${escapeHtml(r.category_suggestion.source || 'inferred')})
+                      </span>
+                    </div>
+                  ` : `
+                    <span style="font-size: 11px; color: var(--text-muted);">Uncategorized</span>
+                  `}
+                </td>
                 <td style="text-align: right; font-weight: 700; font-family: monospace;">
-                  ${state.formatCurrency(r.amount)}
+                  ${state.formatCurrency(r.amount, curr)}
                 </td>
               </tr>
             `).join('')}
@@ -430,6 +467,10 @@ function attachStep3Listeners() {
 
   document.getElementById('btn-commit-import')?.addEventListener('click', async () => {
     const deduplicate = document.getElementById('chk-skip-dupes')?.checked ?? true;
+    const shouldSaveProfile = document.getElementById('chk-save-profile')?.checked ?? false;
+    const targetAccount = state.accounts.find(a => a.id === selectedAccountId);
+    const saveProfileName = shouldSaveProfile ? ((targetAccount?.name || 'Bank') + ' Profile') : null;
+
     const btn = document.getElementById('btn-commit-import');
     if (btn) {
       btn.disabled = true;
@@ -437,7 +478,14 @@ function attachStep3Listeners() {
     }
 
     try {
-      const res = await api.commitCsvImport(rawCsvText, currentMapping, selectedAccountId, deduplicate, selectedDateFormat);
+      const res = await api.commitCsvImport(
+        rawCsvText,
+        currentMapping,
+        selectedAccountId,
+        deduplicate,
+        selectedDateFormat,
+        { save_profile_name: saveProfileName }
+      );
       goToStep(4, res);
       state.notify({ type: 'data_changed' });
     } catch (err) {

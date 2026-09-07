@@ -136,3 +136,52 @@ def test_create_transaction_with_provenance(isolated_db):
     assert tx["essentiality_source"] == "rule"
     assert tx["parser_version"] == "qc_v1"
 
+
+def test_resolve_review_updates_provenance(isolated_db):
+    acc_id = AccountRepository.create("Checking Prov", "checking", currency="USD")
+    cat_init = CategoryRepository.create("Uncategorized Prov", "expense")
+    cat_target = CategoryRepository.create("Groceries Confirmed", "expense")
+
+    tx_id = TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_init,
+        "amount": 55.0,
+        "merchant_name": "Target Superstore",
+        "transaction_date": "2026-04-01",
+        "transaction_type": "expense",
+        "needs_review": 1,
+        "review_reason": "uncategorized",
+        "category_source": "fallback"
+    })
+
+    # Resolve review
+    ok = TransactionRepository.resolve_review(tx_id, cat_target, merchant_name="Target")
+    assert ok is True
+
+    resolved = TransactionRepository.get_by_id(tx_id)
+    assert resolved["needs_review"] == 0
+    assert resolved["category_id"] == cat_target
+    assert resolved["review_reason"] is None
+    assert resolved["category_source"] == "review_confirmed"
+    assert resolved["category_confidence"] == 1.0
+
+
+def test_unclassified_essentiality_defaults_to_unknown(isolated_db):
+    acc_id = AccountRepository.create("Cash Prov", "cash", currency="USD")
+    cat_id = CategoryRepository.create("Misc Item", "expense")
+
+    # Transaction created without essentiality specified
+    tx_id = TransactionRepository.create({
+        "account_id": acc_id,
+        "category_id": cat_id,
+        "amount": 15.0,
+        "transaction_date": "2026-04-02",
+        "transaction_type": "expense"
+    })
+
+    tx = TransactionRepository.get_by_id(tx_id)
+    assert tx["essentiality"] == "unknown"
+    assert tx["essentiality_source"] == "fallback"
+    assert tx["essentiality_confidence"] == 0.0
+
+

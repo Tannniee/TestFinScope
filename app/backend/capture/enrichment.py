@@ -122,7 +122,7 @@ def enrich_capture(
                             category_name = rule["category_name"]
                             category_source = "rule"
                             category_confidence = 0.95
-                        if rule.get("default_essentiality"):
+                        if "default_essentiality" in rule.keys() and rule["default_essentiality"]:
                             essentiality = rule["default_essentiality"]
                             essentiality_source = "rule"
                             essentiality_confidence = 0.95
@@ -147,7 +147,7 @@ def enrich_capture(
                     category_name = m_row["category_name"]
                     category_source = "merchant_history"
                     category_confidence = 0.85
-                if m_row.get("default_essentiality"):
+                if "default_essentiality" in m_row.keys() and m_row["default_essentiality"]:
                     essentiality = m_row["default_essentiality"]
                     essentiality_source = "merchant_history"
                     essentiality_confidence = 0.85
@@ -177,15 +177,52 @@ def enrich_capture(
             needs_review = True
             review_reason = "low_confidence_suggestion"
 
-    # 3. Compute Preview Hash Guard
-    hash_material = f"{parse_result.raw_text}|{parse_result.amount}|{account_id}|{category_id}|{parse_result.date_str}|{parse_result.transaction_type}"
-    preview_hash = hashlib.sha256(hash_material.encode("utf-8")).hexdigest()
+    # 3. Multi-Currency Settlement Resolution
+    from app.backend.domain.money import major_to_minor
+    from app.backend.fx.service import FxService
+
+    input_currency = (parse_result.currency or account_currency or "USD").upper()
+    settlement_amount_minor = None
+    requires_settlement_resolution = False
+
+    if parse_result.amount is not None and account_currency:
+        try:
+            input_minor = major_to_minor(parse_result.amount, input_currency)
+            if input_currency == account_currency:
+                settlement_amount_minor = input_minor
+                requires_settlement_resolution = False
+            else:
+                conv = FxService.try_convert_cached_minor(input_minor, input_currency, account_currency, on_date=parse_result.date_str)
+                if conv:
+                    settlement_amount_minor = conv.target.minor
+                    requires_settlement_resolution = False
+                else:
+                    settlement_amount_minor = None
+                    requires_settlement_resolution = True
+        except Exception:
+            settlement_amount_minor = None
+            requires_settlement_resolution = True
+
+    # 4. Compute Canonical JSON Preview Hash Guard
+    preview_hash = compute_preview_hash(
+        raw_text=parse_result.raw_text,
+        amount=parse_result.amount,
+        currency=input_currency,
+        account_id=account_id,
+        category_id=category_id,
+        date_str=parse_result.date_str,
+        transaction_type=parse_result.transaction_type,
+        settlement_amount_minor=settlement_amount_minor
+    )
 
     return CaptureEnrichment(
         canonical_merchant=clean_merchant or raw_merchant,
         account_id=account_id,
         account_name=account_name,
         account_currency=account_currency,
+        input_currency=input_currency,
+        settlement_amount_minor=settlement_amount_minor,
+        requires_settlement_resolution=requires_settlement_resolution,
         category_id=category_id,
         category_name=category_name,
         category_source=category_source,
@@ -197,3 +234,30 @@ def enrich_capture(
         review_reason=review_reason,
         preview_hash=preview_hash
     )
+
+
+def compute_preview_hash(
+    raw_text: str,
+    amount: Optional[float],
+    currency: Optional[str],
+    account_id: Optional[int],
+    category_id: Optional[int],
+    date_str: Optional[str],
+    transaction_type: str,
+    settlement_amount_minor: Optional[int]
+) -> str:
+    """Computes a canonical JSON SHA256 hash guard over capture preview parameters."""
+    import json
+    payload = {
+        "raw_text": (raw_text or "").strip(),
+        "amount": amount,
+        "currency": (currency or "").upper(),
+        "account_id": account_id,
+        "category_id": category_id,
+        "date_str": date_str,
+        "transaction_type": transaction_type,
+        "settlement_amount_minor": settlement_amount_minor
+    }
+    canonical_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+

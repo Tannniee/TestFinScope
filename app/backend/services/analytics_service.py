@@ -14,6 +14,7 @@ from app.backend.analytics.forecasting import ForecastingEngine
 from app.backend.analytics.backtesting import BacktestingEngine
 from app.backend.analytics.insight_rules import InsightRulesGenerator
 from app.backend.analytics.insight_ranker import InsightRanker
+from app.backend.analytics.money_context import resolve_analytics_money_context
 
 class AnalyticsService:
     @staticmethod
@@ -41,9 +42,10 @@ class AnalyticsService:
         - Calculations performed in exact integer minor units.
         """
         prev_month = AnalyticsService._get_previous_month(month)
-        curr = AnalyticsService._resolve_analytics_currency(account_id)
-        amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
-        amt_t_expr = "t.amount_minor" if account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
+        ctx = resolve_analytics_money_context(account_id)
+        curr = ctx.currency
+        amt_expr = ctx.amount_expr
+        amt_t_expr = ctx.tx_amount_expr
 
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -234,8 +236,9 @@ class AnalyticsService:
     @staticmethod
     def get_calendar_data(month: str, account_id: Optional[int] = None) -> Dict[str, Any]:
         """Returns daily sums of income, expense (net of refunds), and net flow."""
-        curr = AnalyticsService._resolve_analytics_currency(account_id)
-        amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
+        ctx = resolve_analytics_money_context(account_id)
+        curr = ctx.currency
+        amt_expr = ctx.amount_expr
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
@@ -290,9 +293,10 @@ class AnalyticsService:
     def get_analytics_deep_dive(month: str, account_id: Optional[int] = None) -> Dict[str, Any]:
         """Provides 'What Changed?' variance, weekday distributions, cumulative pacing, and top merchants."""
         prev_month = AnalyticsService._get_previous_month(month)
-        curr = AnalyticsService._resolve_analytics_currency(account_id)
-        amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
-        amt_t_expr = "t.amount_minor" if account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
+        ctx = resolve_analytics_money_context(account_id)
+        curr = ctx.currency
+        amt_expr = ctx.amount_expr
+        amt_t_expr = ctx.tx_amount_expr
 
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -543,8 +547,9 @@ class AnalyticsService:
         """
         from app.backend.analytics.period_series import calendar_month_series, check_data_sufficiency
 
-        curr = AnalyticsService._resolve_analytics_currency(account_id)
-        amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
+        ctx = resolve_analytics_money_context(account_id)
+        curr = ctx.currency
+        amt_expr = ctx.amount_expr
 
         with get_db_connection() as conn:
             cur = conn.cursor()

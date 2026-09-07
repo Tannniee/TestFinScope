@@ -179,7 +179,7 @@ function setupEventListeners() {
     const title = document.getElementById('tx-table-title');
 
     if (isReviewQueueActive) {
-      if (pagination) pagination.style.display = 'none';
+      if (pagination) pagination.style.display = 'flex';
       if (title) title.textContent = 'Review Queue (Unconfirmed / Needs Attention)';
       loadReviewQueueItems();
     } else {
@@ -253,26 +253,39 @@ function setupEventListeners() {
   document.getElementById('btn-prev-page')?.addEventListener('click', () => {
     if (currentOffset >= PAGE_SIZE) {
       currentOffset -= PAGE_SIZE;
-      loadTransactions();
+      if (isReviewQueueActive) loadReviewQueueItems();
+      else loadTransactions();
     }
   });
 
   document.getElementById('btn-next-page')?.addEventListener('click', () => {
     currentOffset += PAGE_SIZE;
-    loadTransactions();
+    if (isReviewQueueActive) loadReviewQueueItems();
+    else loadTransactions();
   });
 }
 
 async function loadReviewQueueItems() {
   try {
-    const res = await api.getReviewQueue(50, 0, state.accountId);
+    const res = await api.getReviewQueue(PAGE_SIZE, currentOffset, state.accountId);
     const items = res?.items || (Array.isArray(res) ? res : []);
     const total = res?.total ?? items.length;
     const tbody = document.getElementById('transactions-full-body');
     const countLabel = document.getElementById('tx-results-count');
+    const pageIndicator = document.getElementById('page-indicator');
+    const prevBtn = document.getElementById('btn-prev-page');
+    const nextBtn = document.getElementById('btn-next-page');
     if (!tbody) return;
 
-    countLabel.textContent = `${total} transactions needing categorization review`;
+    const startIdx = total === 0 ? 0 : currentOffset + 1;
+    const endIdx = Math.min(currentOffset + PAGE_SIZE, total);
+    countLabel.textContent = `Showing ${startIdx}–${endIdx} of ${total} transactions needing categorization review`;
+
+    const currentPage = Math.floor(currentOffset / PAGE_SIZE) + 1;
+    const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
+    if (pageIndicator) pageIndicator.textContent = `Page ${currentPage} of ${totalPages}`;
+    if (prevBtn) prevBtn.disabled = currentOffset <= 0;
+    if (nextBtn) nextBtn.disabled = currentOffset + PAGE_SIZE >= total;
 
     if (!items || items.length === 0) {
       tbody.innerHTML = `
@@ -471,7 +484,7 @@ function renderTableRows(items, isReviewQueueView = false) {
           </span>
           ${tx.original_currency && tx.original_currency !== (tx.currency || state.currency) ? `
             <div style="font-size: 11px; color: var(--text-muted); font-family: monospace;">
-              ${escapeHtml(tx.original_currency)} ${Number(tx.original_amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              ${state.formatCurrency(tx.original_amount, tx.original_currency)}
             </div>
           ` : ''}
         </td>
