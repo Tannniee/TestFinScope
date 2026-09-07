@@ -1,8 +1,9 @@
 """
 Canonical Money Context for FinScope Analytics V2.
 Ensures every analytics module operates on explicit, consistent currency domains:
-- Portfolio Scope (account_id is None): All calculations use COALESCE(base_amount_minor, amount_minor)
-  and values are denominated in the configured Base / Reporting Currency.
+- Portfolio Scope (account_id is None): All calculations use canonical base valuations,
+  strictly avoiding interpreting unvalued foreign transactions as base currency (zero-fill for pending foreign FX).
+  Values are denominated in the configured Base / Reporting Currency.
 - Account Scope (account_id is not None): Calculations use native amount_minor and the account's currency.
 """
 

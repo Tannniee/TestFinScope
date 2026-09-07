@@ -50,18 +50,21 @@ class AccountRepository:
                 acc["opening_balance"] = float(minor_to_major(acc["opening_balance_minor"], curr))
                 acc["current_balance"] = float(minor_to_major(acc["current_balance_minor"], curr))
 
-                # Base currency valuation
+                # Base currency valuation (cached-only, offline-first) (P1-06)
                 if curr == base_currency:
                     acc["current_balance_base_minor"] = acc["current_balance_minor"]
                     acc["current_balance_base"] = acc["current_balance"]
+                    acc["base_valuation_status"] = "exact"
                 else:
-                    try:
-                        conv = FxService.convert_minor(acc["current_balance_minor"], curr, base_currency)
+                    conv = FxService.try_convert_cached_minor(acc["current_balance_minor"], curr, base_currency)
+                    if conv:
                         acc["current_balance_base_minor"] = conv.target.minor
                         acc["current_balance_base"] = float(conv.target.to_decimal())
-                    except Exception:
+                        acc["base_valuation_status"] = "cached"
+                    else:
                         acc["current_balance_base_minor"] = None
                         acc["current_balance_base"] = None
+                        acc["base_valuation_status"] = "pending"
                 results.append(acc)
             return results
 

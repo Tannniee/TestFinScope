@@ -7,7 +7,7 @@ from app.backend.config import DB_PATH
 logger = logging.getLogger(__name__)
 
 MIGRATIONS: List[tuple[int, str, Callable[[sqlite3.Connection], None]]] = []
-MAX_SUPPORTED_SCHEMA_VERSION = 11
+MAX_SUPPORTED_SCHEMA_VERSION = 12
 
 def migration(version: int, name: str):
     def decorator(fn: Callable[[sqlite3.Connection], None]):
@@ -868,6 +868,23 @@ def migration_011_import_profiles(conn: sqlite3.Connection):
     _add_column_if_not_exists(conn, "merchant_rules", "rule_type TEXT NOT NULL DEFAULT 'exact'")
     _add_column_if_not_exists(conn, "merchant_rules", "priority INTEGER NOT NULL DEFAULT 100")
     _add_column_if_not_exists(conn, "merchant_rules", "is_active INTEGER NOT NULL DEFAULT 1")
+
+
+@migration(12, "confidence_normalization")
+def migration_012_confidence_normalization(conn: sqlite3.Connection):
+    """
+    Normalizes confidence scores in transactions table from legacy 0-100 scale to canonical 0.0-1.0 scale (P1-05).
+    """
+    conn.execute("""
+        UPDATE transactions
+        SET category_confidence = category_confidence / 100.0
+        WHERE category_confidence > 1.0 AND category_confidence <= 100.0;
+    """)
+    conn.execute("""
+        UPDATE transactions
+        SET essentiality_confidence = essentiality_confidence / 100.0
+        WHERE essentiality_confidence > 1.0 AND essentiality_confidence <= 100.0;
+    """)
 
 
 def run_migrations(conn: sqlite3.Connection):

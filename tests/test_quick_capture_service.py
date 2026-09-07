@@ -20,7 +20,8 @@ def test_quick_capture_preview_and_commit(isolated_db):
     # 2. Commit
     res = QuickCaptureService.commit({
         "raw_text": "85k grab #Food @Wallet",
-        "account_id": acc_id
+        "account_id": acc_id,
+        "preview_hash": preview.enrichment.preview_hash
     })
     assert res["success"] is True
     tx_id = res["transaction_id"]
@@ -45,7 +46,8 @@ def test_quick_capture_fallback_uncategorized(isolated_db):
     # Commit and verify needs_review
     res = QuickCaptureService.commit({
         "raw_text": "50.50 obscure_shop_99",
-        "account_id": acc_id
+        "account_id": acc_id,
+        "preview_hash": preview.enrichment.preview_hash
     })
     tx = TransactionRepository.get_by_id(res["transaction_id"])
     assert tx["needs_review"] == 1
@@ -56,6 +58,13 @@ def test_quick_capture_hash_guard_tamper_rejected(isolated_db):
     acc_id = AccountRepository.create("Wallet Cash", "cash", currency="USD")
     preview = QuickCaptureService.preview("25 book @Wallet", default_account_id=acc_id)
     assert preview.can_commit is True
+
+    # Missing preview_hash must be rejected
+    with pytest.raises(ValueError, match="preview_hash is required"):
+        QuickCaptureService.commit({
+            "raw_text": "25 book @Wallet",
+            "account_id": acc_id
+        })
 
     # Valid commit with correct hash
     res = QuickCaptureService.commit({
@@ -86,16 +95,18 @@ def test_quick_capture_cross_currency_resolution(isolated_db):
     assert preview.can_commit is False
 
     # Attempting to commit without settlement amount raises ValueError
-    with pytest.raises(ValueError, match="Requires settlement amount"):
+    with pytest.raises(ValueError, match="settlement amount"):
         QuickCaptureService.commit({
             "raw_text": "10 EUR digital product",
-            "account_id": acc_id
+            "account_id": acc_id,
+            "preview_hash": preview.enrichment.preview_hash
         })
 
     # Providing explicit settlement amount succeeds
     res = QuickCaptureService.commit({
         "raw_text": "10 EUR digital product",
         "account_id": acc_id,
+        "preview_hash": preview.enrichment.preview_hash,
         "settlement_amount": 11.20
     })
     assert res["success"] is True
@@ -105,4 +116,5 @@ def test_quick_capture_cross_currency_resolution(isolated_db):
     assert tx["currency"] == "USD"
     assert tx["amount"] == 11.20
     assert tx["fx_status"] == "user_settlement"
+
 

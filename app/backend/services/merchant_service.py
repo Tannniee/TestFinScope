@@ -36,7 +36,49 @@ def normalize_merchant_name(raw: str) -> str:
         text = "McDonald's"
     return text
 
+AUTHORITATIVE_CATEGORY_SOURCES = {
+    "manual", "explicit", "review_confirmed", "csv_column", "import_rule_confirmed"
+}
+
+def may_learn_category(source: Optional[str]) -> bool:
+    """Returns True only if the category provenance is authoritative (P0-05)."""
+    return bool(source and source in AUTHORITATIVE_CATEGORY_SOURCES)
+
+def may_learn_essentiality(source: Optional[str]) -> bool:
+    """Returns True only if essentiality was explicitly chosen or confirmed."""
+    return bool(source and source in {"manual", "explicit", "review_confirmed"})
+
+def may_learn_account(source: Optional[str]) -> bool:
+    """Returns True only if account was explicitly chosen."""
+    return bool(source and source in {"manual", "explicit"})
+
 class MerchantService:
+    may_learn_category = staticmethod(may_learn_category)
+    may_learn_essentiality = staticmethod(may_learn_essentiality)
+    may_learn_account = staticmethod(may_learn_account)
+
+    @staticmethod
+    def get_or_create_identity_in_conn(conn, raw_name: str) -> int:
+        """
+        Finds or creates a canonical merchant identity record WITHOUT training any defaults (P0-05).
+        """
+        canonical_name = normalize_merchant_name(raw_name)
+        if not canonical_name:
+            return 0
+
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO merchants (name, default_essentiality)
+            VALUES (?, 'unknown')
+            ON CONFLICT(name) DO NOTHING
+            """,
+            (canonical_name,)
+        )
+        cur.execute("SELECT id FROM merchants WHERE name = ?", (canonical_name,))
+        row = cur.fetchone()
+        return row["id"] if row else 0
+
     @staticmethod
     def get_or_create_merchant_in_conn(
         conn,
@@ -46,22 +88,12 @@ class MerchantService:
         essentiality: Optional[str] = None
     ) -> int:
         """Finds or creates a canonical merchant record on an existing DB connection (FSC-M15)."""
-        canonical_name = normalize_merchant_name(raw_name)
-        if not canonical_name:
-            return 0
-
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO merchants (name, default_category_id, preferred_account_id, default_essentiality)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(name) DO NOTHING
-            """,
-            (canonical_name, category_id, account_id, essentiality or "discretionary")
-        )
-        cur.execute("SELECT id FROM merchants WHERE name = ?", (canonical_name,))
-        row = cur.fetchone()
-        return row["id"] if row else 0
+        m_id = MerchantService.get_or_create_identity_in_conn(conn, raw_name)
+        if m_id and (category_id is not None or account_id is not None or (essentiality and essentiality != "unknown")):
+            MerchantService.learn_defaults_in_conn(
+                conn, m_id, category_id=category_id, account_id=account_id, essentiality=essentiality, overwrite=False
+            )
+        return m_id
 
     @staticmethod
     def get_or_create_merchant(
@@ -114,7 +146,7 @@ class MerchantService:
         if account_id is not None and (overwrite or not row["preferred_account_id"]):
             updates.append("preferred_account_id = ?")
             params.append(account_id)
-        if essentiality is not None and (overwrite or not row["default_essentiality"]):
+        if essentiality is not None and essentiality != "unknown" and (overwrite or not row["default_essentiality"] or row["default_essentiality"] == "unknown"):
             updates.append("default_essentiality = ?")
             params.append(essentiality)
 

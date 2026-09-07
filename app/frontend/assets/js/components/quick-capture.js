@@ -221,19 +221,14 @@ export const quickCapture = {
     try {
       const payload = {
         raw_text: this.input.value.trim(),
-        account_id: this.currentPreview.enrichment.account_id,
-        category_id: this.currentPreview.enrichment.category_id,
-        amount: this.currentPreview.parse.amount,
-        merchant_name: this.currentPreview.enrichment.canonical_merchant,
-        transaction_type: this.currentPreview.parse.transaction_type,
-        transaction_date: this.currentPreview.parse.date_str,
+        default_account_id: this.currentPreview.enrichment.account_id,
         preview_hash: this.currentPreview.enrichment.preview_hash
       };
 
       const res = await api.commitQuickCapture(payload);
       if (res && res.success) {
         const tx = res.transaction || {};
-        const displayAmt = state.formatCurrency(tx.amount || payload.amount, tx.currency || 'USD');
+        const displayAmt = state.formatCurrency(tx.amount || this.currentPreview.parse.amount, tx.currency || 'USD');
         showToast(`Recorded ${tx.merchant_name || 'Expense'}: ${displayAmt}`, 'success');
 
         this.close();
@@ -254,7 +249,21 @@ export const quickCapture = {
 
     const initialData = {};
     if (preview) {
-      if (preview.parse.amount) initialData.amount = preview.parse.amount;
+      const isCrossCurrency = preview.enrichment.input_currency &&
+                              preview.enrichment.account_currency &&
+                              preview.enrichment.input_currency !== preview.enrichment.account_currency;
+
+      if (isCrossCurrency) {
+        initialData.original_currency = preview.enrichment.input_currency;
+        initialData.original_amount = preview.parse.amount;
+        if (preview.enrichment.settlement_amount_minor != null && preview.enrichment.account_currency) {
+          const minorUnit = typeof state.getMinorUnit === 'function' ? state.getMinorUnit(preview.enrichment.account_currency) : 2;
+          initialData.amount = (preview.enrichment.settlement_amount_minor / Math.pow(10, minorUnit));
+        }
+      } else {
+        if (preview.parse.amount != null) initialData.amount = preview.parse.amount;
+      }
+
       if (preview.parse.transaction_type) initialData.transaction_type = preview.parse.transaction_type;
       if (preview.enrichment.canonical_merchant) initialData.merchant_name = preview.enrichment.canonical_merchant;
       if (preview.enrichment.account_id) initialData.account_id = preview.enrichment.account_id;
@@ -265,6 +274,6 @@ export const quickCapture = {
       initialData.description = text;
     }
 
-    modals.openTransactionModal(initialData);
+    modals.openTransactionModal(initialData, { mode: 'create', source: 'quick_capture' });
   }
 };

@@ -28,14 +28,15 @@ class CaptureEnrichment:
     requires_settlement_resolution: bool = False
     category_id: Optional[int] = None
     category_name: Optional[str] = None
-    category_source: str = "user"  # explicit, rule, merchant_history, fallback
-    category_confidence: float = 1.0
-    essentiality: str = "discretionary"  # essential, discretionary, unknown
-    essentiality_source: str = "user"  # explicit, rule, merchant_history, fallback
-    essentiality_confidence: float = 1.0
+    category_source: str = "fallback"  # explicit, rule, merchant_history, fallback
+    category_confidence: float = 0.0
+    essentiality: str = "unknown"  # essential, discretionary, unknown
+    essentiality_source: str = "fallback"  # explicit, rule, merchant_history, fallback
+    essentiality_confidence: float = 0.0
     needs_review: bool = False
     review_reason: Optional[str] = None
     preview_hash: str = ""
+    validation_errors: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

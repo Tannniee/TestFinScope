@@ -360,13 +360,20 @@ class TransactionRepository:
 
                 merchant_id = None
                 if clean_merchant:
-                    merchant_id = MerchantService.get_or_create_merchant_in_conn(
-                        conn,
-                        clean_merchant,
-                        category_id=category_id,
-                        account_id=account_id,
-                        essentiality=data.get("essentiality")
-                    )
+                    merchant_id = MerchantService.get_or_create_identity_in_conn(conn, clean_merchant)
+                    # Authoritative merchant learning (P0-05)
+                    learn_cat = category_id if MerchantService.may_learn_category(category_source) else None
+                    learn_ess = essentiality if (MerchantService.may_learn_essentiality(essentiality_source) and essentiality != "unknown") else None
+                    learn_acc = account_id if MerchantService.may_learn_account(data.get("source")) else None
+                    if learn_cat or learn_ess or learn_acc:
+                        MerchantService.learn_defaults_in_conn(
+                            conn,
+                            merchant_id,
+                            category_id=learn_cat,
+                            account_id=learn_acc,
+                            essentiality=learn_ess,
+                            overwrite=False
+                        )
 
                 # Handle Uncategorized for expense if category is missing
                 if tx_type == "expense" and not category_id:
@@ -1142,13 +1149,28 @@ class TransactionRepository:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT id, account_id, merchant_name, essentiality FROM transactions WHERE id = ? AND is_deleted = 0", (tx_id,))
+                cur.execute("SELECT id, account_id, merchant_name, transaction_type, essentiality, essentiality_source, essentiality_confidence FROM transactions WHERE id = ? AND is_deleted = 0", (tx_id,))
                 tx = cur.fetchone()
                 if not tx:
                     return False
 
+                # P1-02: Server-side category validation before updating
+                from app.backend.domain.validators import validate_category_for_transaction
+                category_id = validate_category_for_transaction(conn, category_id, tx["transaction_type"])
+
                 effective_merchant = normalize_merchant_name(merchant_name or tx["merchant_name"] or "")
-                target_essentiality = essentiality or tx["essentiality"] or "discretionary"
+
+                # P1-01: Confirm essentiality ONLY if explicitly provided
+                if essentiality is not None and essentiality != "":
+                    target_essentiality = essentiality
+                    target_ess_source = "review_confirmed"
+                    target_ess_conf = 1.0
+                    learn_ess = target_essentiality if target_essentiality != "unknown" else None
+                else:
+                    target_essentiality = tx["essentiality"] or "unknown"
+                    target_ess_source = tx["essentiality_source"] or "fallback"
+                    target_ess_conf = tx["essentiality_confidence"] if tx["essentiality_confidence"] is not None else 0.0
+                    learn_ess = None
 
                 if effective_merchant:
                     MerchantService.learn_defaults_in_conn(
@@ -1156,7 +1178,7 @@ class TransactionRepository:
                         effective_merchant,
                         category_id=category_id,
                         account_id=tx["account_id"],
-                        essentiality=target_essentiality,
+                        essentiality=learn_ess,
                         overwrite=True
                     )
 
@@ -1168,11 +1190,11 @@ class TransactionRepository:
                         category_source = 'review_confirmed',
                         category_confidence = 1.0,
                         essentiality = ?,
-                        essentiality_source = 'review_confirmed',
-                        essentiality_confidence = 1.0,
+                        essentiality_source = ?,
+                        essentiality_confidence = ?,
                         merchant_name = ?
                     WHERE id = ?
-                """, (category_id, target_essentiality, effective_merchant or tx["merchant_name"] or "", tx_id))
+                """, (category_id, target_essentiality, target_ess_source, target_ess_conf, effective_merchant or tx["merchant_name"] or "", tx_id))
                 updated = cur.rowcount > 0
                 conn.commit()
                 return updated

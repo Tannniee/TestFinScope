@@ -30,12 +30,13 @@ def enrich_capture(
     category_source: str = "fallback"
     category_confidence: float = 0.0
 
-    essentiality: str = "discretionary"
+    essentiality: str = "unknown"
     essentiality_source: str = "fallback"
     essentiality_confidence: float = 0.0
 
     needs_review: bool = False
     review_reason: Optional[str] = None
+    validation_errors: List[str] = []
 
     with get_db_connection() as conn:
         cur = conn.cursor()
@@ -46,13 +47,22 @@ def enrich_capture(
             cur.execute("""
                 SELECT id, name, currency FROM accounts 
                 WHERE is_archived = 0 AND name LIKE ? COLLATE NOCASE
-                ORDER BY (name = ? COLLATE NOCASE) DESC, id ASC LIMIT 1
-            """, (f"%{hint}%", hint))
-            acc = cur.fetchone()
-            if acc:
-                account_id = acc["id"]
-                account_name = acc["name"]
-                account_currency = acc["currency"]
+            """, (f"%{hint}%",))
+            accs = cur.fetchall()
+            exact_acc = [a for a in accs if a["name"].lower() == hint.lower()]
+            if exact_acc:
+                account_id = exact_acc[0]["id"]
+                account_name = exact_acc[0]["name"]
+                account_currency = exact_acc[0]["currency"]
+            elif len(accs) == 1:
+                account_id = accs[0]["id"]
+                account_name = accs[0]["name"]
+                account_currency = accs[0]["currency"]
+            elif len(accs) > 1:
+                names = ", ".join(a["name"] for a in accs[:3])
+                validation_errors.append(f"Ambiguous account hint '@{hint}'. Matches: {names}")
+            else:
+                validation_errors.append(f"Account '@{hint}' not found")
 
         if not account_id and default_account_id:
             cur.execute("SELECT id, name, currency FROM accounts WHERE id = ? AND is_archived = 0", (default_account_id,))
@@ -62,7 +72,7 @@ def enrich_capture(
                 account_name = acc["name"]
                 account_currency = acc["currency"]
 
-        if not account_id:
+        if not account_id and not parse_result.account_hint:
             cur.execute("SELECT id, name, currency FROM accounts WHERE is_archived = 0 ORDER BY id ASC LIMIT 1")
             acc = cur.fetchone()
             if acc:
@@ -74,17 +84,35 @@ def enrich_capture(
         # 2a. Explicit Category Hint
         if parse_result.category_hint:
             c_hint = parse_result.category_hint.strip()
+            expected_type = parse_result.transaction_type or "expense"
             cur.execute("""
-                SELECT id, name, type FROM categories 
+                SELECT id, name, type, is_archived FROM categories 
                 WHERE name LIKE ? COLLATE NOCASE
-                ORDER BY (name = ? COLLATE NOCASE) DESC, id ASC LIMIT 1
-            """, (f"%{c_hint}%", c_hint))
-            cat = cur.fetchone()
-            if cat:
-                category_id = cat["id"]
-                category_name = cat["name"]
+            """, (f"%{c_hint}%",))
+            cats = cur.fetchall()
+            valid_cats = [c for c in cats if not c["is_archived"] and c["type"] == expected_type]
+            exact_cats = [c for c in valid_cats if c["name"].lower() == c_hint.lower()]
+
+            if exact_cats:
+                category_id = exact_cats[0]["id"]
+                category_name = exact_cats[0]["name"]
                 category_source = "explicit"
                 category_confidence = 1.0
+            elif len(valid_cats) == 1:
+                category_id = valid_cats[0]["id"]
+                category_name = valid_cats[0]["name"]
+                category_source = "explicit"
+                category_confidence = 1.0
+            elif len(valid_cats) > 1:
+                names = ", ".join(c["name"] for c in valid_cats[:3])
+                validation_errors.append(f"Ambiguous category hint '#{c_hint}'. Matches: {names}")
+            else:
+                if any(c["is_archived"] for c in cats):
+                    validation_errors.append(f"Category '#{c_hint}' is archived")
+                elif any(c["type"] != expected_type for c in cats):
+                    validation_errors.append(f"Category '#{c_hint}' is not valid for {expected_type} transactions")
+                else:
+                    validation_errors.append(f"Category '#{c_hint}' not found")
 
         # 2b. Merchant Rules Match
         if not category_id and (clean_merchant or raw_merchant):
@@ -101,7 +129,8 @@ def enrich_capture(
                 rules = cur.fetchall()
                 for rule in rules:
                     pat = rule["pattern"]
-                    r_type = rule.get("rule_type", "exact")
+                    rule_keys = rule.keys()
+                    r_type = rule["rule_type"] if "rule_type" in rule_keys and rule["rule_type"] else "exact"
                     matched = False
                     if r_type == "exact":
                         if pat.lower() == clean_merchant.lower() or pat.lower() == raw_merchant.lower():
@@ -122,14 +151,14 @@ def enrich_capture(
                             category_name = rule["category_name"]
                             category_source = "rule"
                             category_confidence = 0.95
-                        if "default_essentiality" in rule.keys() and rule["default_essentiality"]:
+                        if "default_essentiality" in rule_keys and rule["default_essentiality"] and rule["default_essentiality"] != "unknown":
                             essentiality = rule["default_essentiality"]
                             essentiality_source = "rule"
                             essentiality_confidence = 0.95
                         break
-            except Exception:
-                # If table schema variation occurs during test setup
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger("finscope.capture").warning("Merchant rules matching encountered error: %s", e)
 
         # 2c. Merchant History
         if not category_id and clean_merchant:
@@ -147,7 +176,7 @@ def enrich_capture(
                     category_name = m_row["category_name"]
                     category_source = "merchant_history"
                     category_confidence = 0.85
-                if "default_essentiality" in m_row.keys() and m_row["default_essentiality"]:
+                if "default_essentiality" in m_row.keys() and m_row["default_essentiality"] and m_row["default_essentiality"] != "unknown":
                     essentiality = m_row["default_essentiality"]
                     essentiality_source = "merchant_history"
                     essentiality_confidence = 0.85
@@ -205,14 +234,22 @@ def enrich_capture(
 
     # 4. Compute Canonical JSON Preview Hash Guard
     preview_hash = compute_preview_hash(
+        parser_version=parse_result.parser_version,
         raw_text=parse_result.raw_text,
         amount=parse_result.amount,
-        currency=input_currency,
-        account_id=account_id,
-        category_id=category_id,
-        date_str=parse_result.date_str,
+        input_currency=input_currency,
         transaction_type=parse_result.transaction_type,
-        settlement_amount_minor=settlement_amount_minor
+        transaction_date=parse_result.date_str,
+        account_id=account_id,
+        account_currency=account_currency,
+        settlement_amount_minor=settlement_amount_minor,
+        canonical_merchant=clean_merchant or raw_merchant,
+        category_id=category_id,
+        category_source=category_source,
+        essentiality=essentiality,
+        essentiality_source=essentiality_source,
+        needs_review=needs_review,
+        review_reason=review_reason
     )
 
     return CaptureEnrichment(
@@ -232,31 +269,51 @@ def enrich_capture(
         essentiality_confidence=round(essentiality_confidence, 2),
         needs_review=needs_review,
         review_reason=review_reason,
-        preview_hash=preview_hash
+        preview_hash=preview_hash,
+        validation_errors=validation_errors
     )
 
 
 def compute_preview_hash(
+    parser_version: str,
     raw_text: str,
     amount: Optional[float],
-    currency: Optional[str],
-    account_id: Optional[int],
-    category_id: Optional[int],
-    date_str: Optional[str],
+    input_currency: Optional[str],
     transaction_type: str,
-    settlement_amount_minor: Optional[int]
+    transaction_date: Optional[str],
+    account_id: Optional[int],
+    account_currency: Optional[str],
+    settlement_amount_minor: Optional[int],
+    canonical_merchant: Optional[str],
+    category_id: Optional[int],
+    category_source: str,
+    essentiality: str,
+    essentiality_source: str,
+    needs_review: bool,
+    review_reason: Optional[str]
 ) -> str:
-    """Computes a canonical JSON SHA256 hash guard over capture preview parameters."""
+    """Computes a canonical JSON SHA256 hash guard covering all persisted semantic preview fields."""
     import json
+    from decimal import Decimal
+
+    amount_str = str(Decimal(str(amount)).normalize()) if amount is not None else ""
     payload = {
+        "parser_version": parser_version or "qc_v1",
         "raw_text": (raw_text or "").strip(),
-        "amount": amount,
-        "currency": (currency or "").upper(),
-        "account_id": account_id,
-        "category_id": category_id,
-        "date_str": date_str,
+        "amount": amount_str,
+        "input_currency": (input_currency or "").upper(),
         "transaction_type": transaction_type,
-        "settlement_amount_minor": settlement_amount_minor
+        "transaction_date": transaction_date,
+        "account_id": account_id,
+        "account_currency": (account_currency or "").upper(),
+        "settlement_amount_minor": settlement_amount_minor,
+        "canonical_merchant": canonical_merchant or "",
+        "category_id": category_id,
+        "category_source": category_source,
+        "essentiality": essentiality,
+        "essentiality_source": essentiality_source,
+        "needs_review": bool(needs_review),
+        "review_reason": review_reason
     }
     canonical_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()

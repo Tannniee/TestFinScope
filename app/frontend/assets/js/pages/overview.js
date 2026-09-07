@@ -56,6 +56,9 @@ export async function renderOverviewPage(container, context = {}) {
 
   container.innerHTML = `
     <div class="overview-view">
+      <!-- FX Completeness Notice (P0-06) -->
+      <div id="overview-fx-banner" style="margin-bottom: 20px; display: none;"></div>
+
       <!-- KPI Cards Row -->
       <div class="grid-5col" id="kpi-row" style="margin-bottom: 24px;">
         <div class="kpi-card stagger-in" id="kpi-income">
@@ -221,6 +224,7 @@ async function loadDashboardData() {
     }
 
     const summaryCurrency = summary.currency || state.currency || 'USD';
+    renderFxCompletenessNotice(summary.fx_completeness);
     renderKPIs(summary.kpis, accounts, summary.trend, summaryCurrency);
     renderRankedInsights(insightsData ? insightsData.insights : []);
     renderTrendChart(summary.trend, summaryCurrency);
@@ -230,6 +234,50 @@ async function loadDashboardData() {
   } catch (err) {
     console.error('Error loading dashboard data:', err);
     showToast('Failed to load dashboard data', 'error');
+  }
+}
+
+function renderFxCompletenessNotice(completeness) {
+  const banner = document.getElementById('overview-fx-banner');
+  if (!banner) return;
+
+  if (completeness && !completeness.is_complete && completeness.pending_valuations > 0) {
+    const count = completeness.pending_valuations;
+    banner.style.display = 'block';
+    banner.innerHTML = `
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 8px; background: rgba(255, 159, 67, 0.12); border: 1px solid rgba(255, 159, 67, 0.3); color: #ff9f43; font-size: 13.5px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <i data-lucide="alert-circle" style="width: 18px; height: 18px;"></i>
+          <span>Portfolio totals exclude <strong>${count}</strong> transaction${count > 1 ? 's' : ''} awaiting FX valuation.</span>
+        </div>
+        <button id="btn-reconcile-fx-overview" style="background: #ff9f43; color: #1e1e2d; border: none; border-radius: 6px; padding: 5px 12px; font-weight: 600; font-size: 12px; cursor: pointer;">Reconcile Now</button>
+      </div>
+    `;
+    if (window.lucide) window.lucide.createIcons();
+
+    document.getElementById('btn-reconcile-fx-overview')?.addEventListener('click', async () => {
+      const btn = document.getElementById('btn-reconcile-fx-overview');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Reconciling...';
+      }
+      try {
+        showToast('Reconciling pending FX valuations...', 'info');
+        const res = await api.call('reconcile_fx');
+        const recCount = res?.reconciled_count ?? 0;
+        showToast(`Reconciled ${recCount} transactions`, 'success');
+        await loadDashboardData();
+      } catch (err) {
+        showToast(`Reconciliation failed: ${err.message}`, 'error');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Reconcile Now';
+        }
+      }
+    });
+  } else {
+    banner.style.display = 'none';
+    banner.innerHTML = '';
   }
 }
 

@@ -59,8 +59,15 @@ def test_server_quick_capture_flow(ephemeral_server):
     assert p_data["parse"]["amount"] == 50000.0
     assert p_data["enrichment"]["account_id"] == acc_id
 
-    # Commit
-    status, c_resp = client.post("commit_quick_capture", {"raw_text": "50k cafe"})
+    # Commit without preview_hash returns 422
+    status_bad, _ = client.post("commit_quick_capture", {"raw_text": "50k cafe"})
+    assert status_bad == 422
+
+    # Commit with preview_hash succeeds
+    status, c_resp = client.post("commit_quick_capture", {
+        "raw_text": "50k cafe",
+        "preview_hash": p_data["enrichment"]["preview_hash"]
+    })
     assert status == 200
     assert c_resp.get("success") is True
     c_data = c_resp["data"]

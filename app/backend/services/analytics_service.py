@@ -206,7 +206,7 @@ class AnalyticsService:
             essential_total = float(minor_to_major(essential_minor, curr))
             discretionary_total = float(minor_to_major(discretionary_minor, curr))
 
-            return {
+            res = {
                 "month": month,
                 "currency": curr,
                 "previous_month": prev_month,
@@ -232,6 +232,10 @@ class AnalyticsService:
                     "discretionary_pct": round(discretionary_minor / net_expense_minor * 100.0, 1) if net_expense_minor > 0 else 0.0
                 }
             }
+            if not account_id:
+                from app.backend.analytics.money_context import get_portfolio_fx_completeness
+                res["fx_completeness"] = get_portfolio_fx_completeness(month)
+            return res
 
     @staticmethod
     def get_calendar_data(month: str, account_id: Optional[int] = None) -> Dict[str, Any]:
@@ -259,23 +263,23 @@ class AnalyticsService:
             days_data = {}
             for row in cur.fetchall():
                 d = row["transaction_date"]
-                if d not in days_data:
-                    days_data[d] = {"income_minor": 0, "expense_minor": 0, "count": 0}
-                t_type = row["transaction_type"]
+                t = row["transaction_type"]
                 amt = row["total_minor"]
-                if t_type == "income":
-                    days_data[d]["income_minor"] += amt
-                elif t_type == "expense":
-                    days_data[d]["expense_minor"] += amt
-                elif t_type == "refund":
-                    days_data[d]["expense_minor"] -= amt
+                if d not in days_data:
+                    days_data[d] = {"income": 0, "expense": 0, "count": 0}
+                if t == "income":
+                    days_data[d]["income"] += amt
+                elif t == "expense":
+                    days_data[d]["expense"] += amt
+                elif t == "refund":
+                    days_data[d]["expense"] -= amt
                 days_data[d]["count"] += row["count"]
 
             out = {}
             for d, val in days_data.items():
-                inc = float(minor_to_major(val["income_minor"], curr))
-                exp = float(minor_to_major(max(0, val["expense_minor"]), curr))
-                net = float(minor_to_major(val["income_minor"] - val["expense_minor"], curr))
+                inc = float(minor_to_major(val["income"], curr))
+                exp = float(minor_to_major(max(0, val["expense"]), curr))
+                net = float(minor_to_major(val["income"] - val["expense"], curr))
                 out[d] = {
                     "income": inc,
                     "expense": exp,
@@ -283,11 +287,15 @@ class AnalyticsService:
                     "count": val["count"]
                 }
 
-            return {
+            cal_res = {
                 "month": month,
                 "currency": curr,
                 "days": out
             }
+            if not account_id:
+                from app.backend.analytics.money_context import get_portfolio_fx_completeness
+                cal_res["fx_completeness"] = get_portfolio_fx_completeness(month)
+            return cal_res
 
     @staticmethod
     def get_analytics_deep_dive(month: str, account_id: Optional[int] = None) -> Dict[str, Any]:

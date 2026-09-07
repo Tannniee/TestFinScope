@@ -402,6 +402,8 @@ class ImportService:
                     matched = True
 
                 if matched:
+                    ess = r["default_essentiality"]
+                    has_known_ess = bool(ess and ess != "unknown")
                     return {
                         "category_id": r["category_id"],
                         "category_name": r["category_name"],
@@ -409,9 +411,9 @@ class ImportService:
                         "category_icon": r["icon"] or "tag",
                         "category_source": "rule",
                         "category_confidence": 0.95,
-                        "essentiality": r["default_essentiality"] or "discretionary",
-                        "essentiality_source": "rule",
-                        "essentiality_confidence": 0.95,
+                        "essentiality": ess if has_known_ess else "unknown",
+                        "essentiality_source": "rule" if has_known_ess else "fallback",
+                        "essentiality_confidence": 0.95 if has_known_ess else 0.0,
                         "needs_review": 0,
                         "review_reason": None,
                         "clean_merchant": clean_merchant,
@@ -429,6 +431,8 @@ class ImportService:
             """, (clean_merchant,))
             m_row = cur.fetchone()
             if m_row and m_row["default_category_id"] and m_row["type"] == expected_type:
+                m_ess = m_row["default_essentiality"]
+                has_known_m_ess = bool(m_ess and m_ess != "unknown")
                 return {
                     "category_id": m_row["default_category_id"],
                     "category_name": m_row["category_name"],
@@ -436,9 +440,9 @@ class ImportService:
                     "category_icon": m_row["icon"] or "tag",
                     "category_source": "merchant_memory",
                     "category_confidence": 0.9,
-                    "essentiality": m_row["default_essentiality"] or "discretionary",
-                    "essentiality_source": "merchant_memory",
-                    "essentiality_confidence": 0.9,
+                    "essentiality": m_ess if has_known_m_ess else "unknown",
+                    "essentiality_source": "merchant_memory" if has_known_m_ess else "fallback",
+                    "essentiality_confidence": 0.9 if has_known_m_ess else 0.0,
                     "needs_review": 0,
                     "review_reason": None,
                     "clean_merchant": clean_merchant,
@@ -865,11 +869,17 @@ class ImportService:
                 clean_merchant = pred.get("clean_merchant") or normalize_merchant_name(payee)
                 merchant_id = None
                 if clean_merchant or payee:
-                    merchant_id = MerchantService.get_or_create_merchant_in_conn(
+                    merchant_id = MerchantService.get_or_create_identity_in_conn(
                         conn=conn,
-                        raw_name=clean_merchant or payee,
-                        account_id=account_id
+                        raw_name=clean_merchant or payee
                     )
+                    if pred["category_source"] == "csv_column" and pred["category_id"]:
+                        MerchantService.learn_defaults_in_conn(
+                            conn=conn,
+                            merchant_name_or_id=merchant_id,
+                            category_id=pred["category_id"],
+                            overwrite=False
+                        )
 
                 category_id = pred["category_id"]
                 essentiality = pred["essentiality"]

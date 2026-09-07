@@ -438,7 +438,7 @@ export const modals = {
     if (descInput) descInput.value = '';
     if (noteInput) noteInput.value = '';
     if (catSelect) catSelect.value = '';
-    if (essSelect) essSelect.value = 'discretionary';
+    if (essSelect) essSelect.value = 'unknown';
     if (recurringCheck) recurringCheck.checked = false;
     if (origCurrInput) origCurrInput.value = '';
     if (origAmtInput) origAmtInput.value = '';
@@ -701,11 +701,11 @@ export const modals = {
     if (!accSelect || !symbolEl) return;
     const selectedOpt = accSelect.options[accSelect.selectedIndex];
     const curr = selectedOpt?.dataset?.currency || state.currency || 'USD';
-    const symbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥', VND: '₫' };
-    symbolEl.textContent = symbols[curr] || curr;
+    const symbol = state.currencyCatalog?.get(curr)?.symbol || { USD: '$', EUR: '€', GBP: '£', JPY: '¥', VND: '₫' }[curr] || curr;
+    symbolEl.textContent = symbol;
 
-    const fractionDigits = (curr === 'VND' || curr === 'JPY' || curr === 'KRW') ? 0 : (curr === 'KWD' || curr === 'BHD' ? 3 : 2);
-    const stepVal = fractionDigits === 0 ? '1' : (fractionDigits === 3 ? '0.001' : '0.01');
+    const fractionDigits = (typeof state.getMinorUnit === 'function') ? state.getMinorUnit(curr) : ((curr === 'VND' || curr === 'JPY' || curr === 'KRW') ? 0 : (curr === 'KWD' || curr === 'BHD' ? 3 : 2));
+    const stepVal = (typeof state.getAmountStep === 'function') ? state.getAmountStep(curr) : (fractionDigits === 0 ? '1' : (fractionDigits === 3 ? '0.001' : '0.01'));
     const placeholderVal = fractionDigits === 0 ? '0' : (fractionDigits === 3 ? '0.000' : '0.00');
 
     const amtInput = document.getElementById('tx-amount');
@@ -719,8 +719,8 @@ export const modals = {
     if (toAccSelect && toAmtInput) {
       const toOpt = toAccSelect.options[toAccSelect.selectedIndex];
       const toCurr = toOpt?.dataset?.currency || curr;
-      const toDigits = (toCurr === 'VND' || toCurr === 'JPY' || toCurr === 'KRW') ? 0 : (toCurr === 'KWD' || toCurr === 'BHD' ? 3 : 2);
-      toAmtInput.step = toDigits === 0 ? '1' : (toDigits === 3 ? '0.001' : '0.01');
+      const toDigits = (typeof state.getMinorUnit === 'function') ? state.getMinorUnit(toCurr) : ((toCurr === 'VND' || toCurr === 'JPY' || toCurr === 'KRW') ? 0 : (toCurr === 'KWD' || toCurr === 'BHD' ? 3 : 2));
+      toAmtInput.step = (typeof state.getAmountStep === 'function') ? state.getAmountStep(toCurr) : (toDigits === 0 ? '1' : (toDigits === 3 ? '0.001' : '0.01'));
       toAmtInput.placeholder = toDigits === 0 ? '0' : (toDigits === 3 ? '0.000' : '0.00');
     }
   },
@@ -736,7 +736,7 @@ export const modals = {
     if (currentVal) catSelect.value = currentVal;
   },
 
-  openTransactionModal(txData = null, defaultDate = null) {
+  openTransactionModal(txData = null, defaultDateOrOptions = null) {
     const modalOverlay = document.getElementById('tx-modal-overlay');
     const title = document.getElementById('tx-modal-title');
     const form = document.getElementById('tx-form');
@@ -747,8 +747,14 @@ export const modals = {
 
     this.populateSelectOptions();
 
+    const options = (typeof defaultDateOrOptions === 'object' && defaultDateOrOptions !== null)
+      ? defaultDateOrOptions
+      : { defaultDate: defaultDateOrOptions };
+
+    const isEditMode = options.mode === 'edit' || (Boolean(txData) && txData.id != null && options.mode !== 'create');
+
     // Synchronize date pills with activeDate (UX-H04)
-    const activeDate = txData?.transaction_date || defaultDate || toLocalDateString();
+    const activeDate = txData?.transaction_date || options.defaultDate || toLocalDateString();
     const todayStr = toLocalDateString();
     const yesterdayStr = localYesterdayString();
 
@@ -772,7 +778,7 @@ export const modals = {
     const origAmtInput = document.getElementById('tx-orig-amount');
     const toAmtInput = document.getElementById('tx-to-amount');
 
-    if (txData) {
+    if (isEditMode) {
       this.activeTxId = txData.id;
       title.textContent = 'Edit Transaction';
       this.touched = { account: true, category: true, essentiality: true, date: true, type: true };
@@ -783,7 +789,7 @@ export const modals = {
       document.getElementById('tx-merchant').value = txData.merchant_name || '';
       document.getElementById('tx-time').value = txData.transaction_time || '12:00';
       document.getElementById('tx-description').value = txData.description || '';
-      document.getElementById('tx-essentiality').value = txData.essentiality || 'discretionary';
+      document.getElementById('tx-essentiality').value = txData.essentiality || 'unknown';
       document.getElementById('tx-recurring').checked = Boolean(txData.is_recurring);
       document.getElementById('tx-note').value = txData.note || '';
       if (origCurrInput) origCurrInput.value = txData.original_currency || '';
@@ -828,6 +834,7 @@ export const modals = {
         if (span) span.textContent = 'Fewer Details';
       }
     } else {
+      // Creation mode (brand new or prefilled handoff)
       this.activeTxId = null;
       title.textContent = 'Record Transaction';
       this.resetTouchedState();
@@ -840,20 +847,55 @@ export const modals = {
       const span = moreDetailsToggle?.querySelector('span');
       if (span) span.textContent = 'More Details';
 
-      document.getElementById('tx-date').value = activeDate;
-      document.getElementById('tx-time').value = new Date().toTimeString().slice(0, 5);
-      document.getElementById('tx-type').value = 'expense';
-      modalOverlay.querySelectorAll('.segmented-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.type === 'expense');
-        btn.disabled = false;
-        btn.style.pointerEvents = 'auto';
-        btn.style.opacity = '1';
-      });
       const defaultAcc = (state.accountId && state.accounts.some(a => a.id === state.accountId))
         ? state.accountId
         : (state.accounts.length > 0 ? state.accounts[0].id : '');
-      document.getElementById('tx-account').value = defaultAcc;
-      this.updateFormFieldsForType('expense');
+
+      if (txData) {
+        // Prefilled creation (e.g. from quick-capture Shift+Enter handoff)
+        document.getElementById('tx-amount').value = txData.amount != null ? txData.amount : '';
+        document.getElementById('tx-account').value = txData.account_id || defaultAcc;
+        document.getElementById('tx-merchant').value = txData.merchant_name || '';
+        document.getElementById('tx-time').value = txData.transaction_time || new Date().toTimeString().slice(0, 5);
+        document.getElementById('tx-description').value = txData.description || '';
+        document.getElementById('tx-essentiality').value = txData.essentiality || 'unknown';
+        document.getElementById('tx-recurring').checked = Boolean(txData.is_recurring);
+        document.getElementById('tx-note').value = txData.note || '';
+        if (origCurrInput) origCurrInput.value = txData.original_currency || '';
+        if (origAmtInput) origAmtInput.value = txData.original_amount != null ? txData.original_amount : '';
+
+        const type = txData.transaction_type || 'expense';
+        document.getElementById('tx-type').value = type;
+        modalOverlay.querySelectorAll('.segmented-btn').forEach(btn => {
+          btn.classList.toggle('active', btn.dataset.type === type);
+          btn.disabled = false;
+          btn.style.pointerEvents = 'auto';
+          btn.style.opacity = '1';
+        });
+        this.updateFormFieldsForType(type);
+        if (txData.category_id) {
+          document.getElementById('tx-category').value = txData.category_id;
+        }
+
+        // Auto-expand details if foreign currency or additional metadata present
+        if (txData.original_currency || txData.description || txData.note || txData.is_recurring) {
+          moreDetailsBody?.classList.add('open');
+          if (span) span.textContent = 'Fewer Details';
+        }
+      } else {
+        // Standard blank creation
+        document.getElementById('tx-date').value = activeDate;
+        document.getElementById('tx-time').value = new Date().toTimeString().slice(0, 5);
+        document.getElementById('tx-type').value = 'expense';
+        modalOverlay.querySelectorAll('.segmented-btn').forEach(btn => {
+          btn.classList.toggle('active', btn.dataset.type === 'expense');
+          btn.disabled = false;
+          btn.style.pointerEvents = 'auto';
+          btn.style.opacity = '1';
+        });
+        document.getElementById('tx-account').value = defaultAcc;
+        this.updateFormFieldsForType('expense');
+      }
       this.updateCurrencySymbol();
     }
 

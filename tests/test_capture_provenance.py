@@ -17,7 +17,7 @@ def test_migrations_009_010_011_schema_and_backfill(isolated_db):
         cur = conn.cursor()
         cur.execute("SELECT MAX(version) FROM schema_migrations")
         ver = cur.fetchone()[0]
-        assert ver == MAX_SUPPORTED_SCHEMA_VERSION == 11
+        assert ver == MAX_SUPPORTED_SCHEMA_VERSION == 12
 
         # Check provenance columns on active_transactions view
         cur.execute("PRAGMA table_info(transactions)")

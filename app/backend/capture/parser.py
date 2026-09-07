@@ -39,8 +39,12 @@ CURRENCY_SYMBOLS = {
 }
 
 CURRENCY_WORDS = {
-    "vnd", "usd", "eur", "gbp", "jpy", "aud", "cad", "sgd", "chf"
+    "vnd", "usd", "eur", "gbp", "jpy", "aud", "cad", "sgd", "chf",
+    "kwd", "bhd", "omr", "tnd", "clp", "krw"
 }
+
+THREE_DECIMAL_CURRENCIES = {"KWD", "BHD", "OMR", "TND"}
+ZERO_DECIMAL_CURRENCIES = {"VND", "JPY", "KRW", "CLP"}
 
 def parse_quick_capture(text: str, reference_date: Optional[str] = None) -> QuickCaptureParseResult:
     """
@@ -129,7 +133,16 @@ def parse_quick_capture(text: str, reference_date: Optional[str] = None) -> Quic
                 pass
 
         # 4. Amount parsing
-        parsed_amt, parsed_curr, parsed_type = _try_parse_amount_token(token)
+        # Look ahead for currency in next token to aid 3-decimal / currency-aware parsing
+        lookahead_curr = None
+        if i + 1 < len(tokens):
+            nt = tokens[i+1].lower()
+            if nt in CURRENCY_WORDS:
+                lookahead_curr = nt.upper()
+            elif nt in CURRENCY_SYMBOLS:
+                lookahead_curr = CURRENCY_SYMBOLS[nt]
+
+        parsed_amt, parsed_curr, parsed_type = _try_parse_amount_token(token, currency_hint=lookahead_curr)
         if parsed_amt is not None and amount is None:
             # Check if next token is a standalone magnitude token (e.g. "2.5 tỷ", "15 tr")
             if i + 1 < len(tokens):
@@ -152,6 +165,10 @@ def parse_quick_capture(text: str, reference_date: Optional[str] = None) -> Quic
                     i += 1
                 elif next_tok in CURRENCY_SYMBOLS:
                     currency = CURRENCY_SYMBOLS[next_tok]
+                    i += 1
+            elif currency and i + 1 < len(tokens):
+                next_tok = tokens[i+1].lower()
+                if (next_tok in CURRENCY_WORDS and next_tok.upper() == currency) or (next_tok in CURRENCY_SYMBOLS and CURRENCY_SYMBOLS[next_tok] == currency):
                     i += 1
             i += 1
             continue
@@ -193,7 +210,7 @@ def parse_quick_capture(text: str, reference_date: Optional[str] = None) -> Quic
     )
 
 
-def _try_parse_amount_token(tok: str) -> Tuple[Optional[float], Optional[str], Optional[str]]:
+def _try_parse_amount_token(tok: str, currency_hint: Optional[str] = None) -> Tuple[Optional[float], Optional[str], Optional[str]]:
     """
     Attempts to parse a token as an amount.
     Returns (amount, currency, tx_type).
@@ -220,7 +237,7 @@ def _try_parse_amount_token(tok: str) -> Tuple[Optional[float], Optional[str], O
         detected_currency = CURRENCY_SYMBOLS[token[0]]
         token = token[1:]
     # Prefix currency code: USD50
-    for c in ("USD", "VND", "EUR", "GBP", "JPY"):
+    for c in ("USD", "VND", "EUR", "GBP", "JPY", "KWD", "BHD", "OMR", "TND", "CLP", "KRW"):
         if token.upper().startswith(c) and len(token) > len(c) and (token[len(c)].isdigit() or token[len(c)] in ('.', ',')):
             detected_currency = c
             token = token[len(c):]
@@ -231,8 +248,8 @@ def _try_parse_amount_token(tok: str) -> Tuple[Optional[float], Optional[str], O
         detected_currency = CURRENCY_SYMBOLS[token[-1]]
         token = token[:-1]
 
-    # Suffix currency code: 50usd, 100vnd
-    for c in ("USD", "VND", "EUR", "GBP", "JPY", "AUD", "CAD", "SGD"):
+    # Suffix currency code: 50usd, 100vnd, 1.234kwd
+    for c in ("USD", "VND", "EUR", "GBP", "JPY", "AUD", "CAD", "SGD", "KWD", "BHD", "OMR", "TND", "CLP", "KRW"):
         if token.upper().endswith(c) and len(token) > len(c) and token[-len(c)-1].isdigit():
             detected_currency = c
             token = token[:-len(c)]
@@ -250,9 +267,9 @@ def _try_parse_amount_token(tok: str) -> Tuple[Optional[float], Optional[str], O
                 token = num_part
                 break
 
-    # Parse numeric part
-    # Handle European / Vietnamese number formats (e.g. 100.000 or 100,000 or 15.5)
-    clean_num = _normalize_number_string(token)
+    # Parse numeric part with currency context
+    effective_currency = detected_currency or currency_hint
+    clean_num = _normalize_number_string(token, currency=effective_currency)
     if clean_num is None:
         return None, None, None
 
@@ -274,39 +291,37 @@ def _is_number_like(s: str) -> bool:
     return cleaned.isdigit()
 
 
-def _normalize_number_string(s: str) -> Optional[str]:
+def _normalize_number_string(s: str, currency: Optional[str] = None) -> Optional[str]:
     """
     Normalizes number string with dots or commas into standard float string.
-    E.g.:
-      "85" -> "85"
-      "85.5" -> "85.5"
-      "85,5" -> "85.5"
-      "100.000" -> "100000" (if 3 digits after dot, standard VND thousand separator)
-      "1,000.50" -> "1000.50"
-      "1.000,50" -> "1000.50"
+    Currency-aware: preserves 3-decimal fractions for KWD/BHD/OMR/TND.
     """
     s = s.strip()
     if not s:
         return None
+
+    curr_upper = (currency or "").upper()
+    is_three_decimal = curr_upper in THREE_DECIMAL_CURRENCIES
+    is_zero_decimal = curr_upper in ZERO_DECIMAL_CURRENCIES
 
     # If both '.' and ',' present
     if "." in s and "," in s:
         last_dot = s.rfind(".")
         last_comma = s.rfind(",")
         if last_dot > last_comma:
-            # 1,000.50 format
+            # 1,000.50 or 1,234.567 format: comma is thousands, dot is decimal
             s = s.replace(",", "")
         else:
-            # 1.000,50 format
+            # 1.000,50 or 1.234,567 format: dot is thousands, comma is decimal
             s = s.replace(".", "").replace(",", ".")
         return s
 
     # Only comma
     if "," in s:
         parts = s.split(",")
-        # If exactly 3 digits after comma and nothing else, e.g. "100,000"
-        if len(parts) == 2 and len(parts[1]) == 3 and int(parts[1]) >= 0:
-            # Ambiguous: could be 100,000 or 100.000. If magnitude is >= 100, usually thousands
+        if is_three_decimal and len(parts) == 2:
+            return parts[0] + "." + parts[1]
+        elif len(parts) == 2 and len(parts[1]) == 3 and int(parts[1]) >= 0:
             return parts[0] + parts[1]
         elif len(parts) > 2:
             return "".join(parts)
@@ -316,12 +331,23 @@ def _normalize_number_string(s: str) -> Optional[str]:
     # Only dot
     if "." in s:
         parts = s.split(".")
-        # If parts after dot are all 3 digits, e.g. "100.000" or "1.000.000"
-        if len(parts) >= 2 and all(len(p) == 3 for p in parts[1:]):
-            return "".join(parts)
-        elif len(parts) == 2:
-            # e.g. 85.5 or 12.34
-            return s
+        if is_three_decimal:
+            # For 3-decimal currencies, exactly 1 dot followed by 3 digits is a fractional amount: 1.234 KWD
+            if len(parts) == 2:
+                return s
+            elif len(parts) > 2 and all(len(p) == 3 for p in parts[1:]):
+                return "".join(parts)
+        elif is_zero_decimal:
+            if len(parts) >= 2 and all(len(p) == 3 for p in parts[1:]):
+                return "".join(parts)
+            elif len(parts) == 2:
+                return s
+        else:
+            # If parts after dot are all 3 digits, e.g. "100.000" or "1.000.000"
+            if len(parts) >= 2 and all(len(p) == 3 for p in parts[1:]):
+                return "".join(parts)
+            elif len(parts) == 2:
+                return s
 
     if s.isdigit():
         return s
