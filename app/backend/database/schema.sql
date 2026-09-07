@@ -62,14 +62,22 @@ CREATE TABLE IF NOT EXISTS transactions (
     is_recurring INTEGER NOT NULL DEFAULT 0,
     recurring_rule_id INTEGER,
     payment_method TEXT DEFAULT 'Card',
-    essentiality TEXT NOT NULL DEFAULT 'discretionary' CHECK (essentiality IN ('essential', 'discretionary', 'savings')),
+    essentiality TEXT NOT NULL DEFAULT 'discretionary' CHECK (essentiality IN ('unknown', 'essential', 'discretionary', 'savings')),
     transfer_group_id TEXT DEFAULT NULL, -- Links legs of double-entry transfers
     transfer_role TEXT CHECK (transfer_role IS NULL OR transfer_role IN ('source', 'destination')),
     linked_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
     refund_of_transaction_id INTEGER DEFAULT NULL REFERENCES transactions(id) ON DELETE SET NULL,
     source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'csv_import', 'recurring_generated', 'adjustment')),
+    capture_method TEXT NOT NULL DEFAULT 'manual_form',
+    category_source TEXT DEFAULT 'manual',
+    category_confidence INTEGER DEFAULT 100,
+    essentiality_source TEXT DEFAULT 'manual',
+    essentiality_confidence INTEGER DEFAULT 100,
+    review_reason TEXT,
+    parser_version TEXT,
     needs_review INTEGER NOT NULL DEFAULT 0,
     is_deleted INTEGER NOT NULL DEFAULT 0,
+    raw_merchant_name TEXT DEFAULT '',
     original_currency TEXT,
     original_amount_minor INTEGER,
     base_currency TEXT,
@@ -78,6 +86,19 @@ CREATE TABLE IF NOT EXISTS transactions (
     fx_rate_date TEXT,
     fx_rate_source TEXT,
     fx_status TEXT NOT NULL DEFAULT 'not_required',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS import_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    header_signature TEXT NOT NULL UNIQUE,
+    delimiter TEXT NOT NULL DEFAULT ',',
+    has_header INTEGER NOT NULL DEFAULT 1,
+    date_format TEXT,
+    column_mapping_json TEXT NOT NULL,
+    category_rules_json TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -270,5 +291,5 @@ AFTER DELETE ON exchange_rates
 BEGIN
     UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
 END;
-
-
+CREATE INDEX IF NOT EXISTS idx_tx_merchant_id ON transactions(merchant_id);
+CREATE INDEX IF NOT EXISTS idx_tx_review_account ON transactions(needs_review, account_id, transaction_date);

@@ -309,9 +309,13 @@ class BackupService:
         query = """
             SELECT 
                 t.id, t.transaction_date, t.transaction_time, t.transaction_type,
-                ROUND(CAST(t.amount_minor AS REAL) / 100.0, 2) as amount,
+                t.amount_minor,
+                COALESCE(a.currency, 'USD') as account_currency,
                 t.merchant_name, c.name as category, a.name as account,
-                t.essentiality, t.payment_method, t.description, t.note
+                t.essentiality, t.payment_method, t.description, t.note,
+                t.original_amount_minor, t.original_currency,
+                t.base_amount_minor, t.base_currency,
+                t.fx_rate_to_base, t.fx_status, t.needs_review
             FROM active_transactions t
             LEFT JOIN categories c ON t.category_id = c.id
             LEFT JOIN accounts a ON t.account_id = a.id
@@ -337,7 +341,22 @@ class BackupService:
             cur.execute(query, params)
             rows = cur.fetchall()
 
+        from app.backend.domain.money import minor_to_major
+        from app.backend.domain.currencies import get_currency_meta
+
+        def _format_curr_amount(minor: Optional[int], curr: Optional[str]) -> str:
+            if minor is None or not curr:
+                return ""
+            try:
+                meta = get_currency_meta(curr)
+                val = minor_to_major(minor, curr)
+                return f"{val:.{meta.minor_unit}f}"
+            except Exception:
+                return f"{minor / 100.0:.2f}"
+
         def _sanitize_csv_cell(val: Any) -> Any:
+            if val is None:
+                return ""
             if isinstance(val, str) and val and val[0] in ("=", "+", "-", "@", "\t", "\r"):
                 return f"'{val}"
             return val
@@ -346,10 +365,40 @@ class BackupService:
             writer = csv.writer(f)
             writer.writerow([
                 "ID", "Date", "Time", "Type", "Amount", "Merchant",
-                "Category", "Account", "Essentiality", "Payment Method", "Description", "Note"
+                "Category", "Account", "Essentiality", "Payment Method", "Description", "Note",
+                "Currency", "Amount Minor", "Original Amount", "Original Currency",
+                "Base Amount", "Base Currency", "FX Rate", "FX Status", "Needs Review"
             ])
             for r in rows:
-                writer.writerow([_sanitize_csv_cell(c) for c in r])
+                acc_curr = r["account_currency"] or "USD"
+                amt_str = _format_curr_amount(r["amount_minor"], acc_curr)
+                orig_amt_str = _format_curr_amount(r["original_amount_minor"], r["original_currency"])
+                base_amt_str = _format_curr_amount(r["base_amount_minor"], r["base_currency"])
+
+                row_cells = [
+                    r["id"],
+                    r["transaction_date"],
+                    r["transaction_time"],
+                    r["transaction_type"],
+                    amt_str,
+                    r["merchant_name"],
+                    r["category"],
+                    r["account"],
+                    r["essentiality"],
+                    r["payment_method"],
+                    r["description"],
+                    r["note"],
+                    acc_curr,
+                    r["amount_minor"],
+                    orig_amt_str,
+                    r["original_currency"] or "",
+                    base_amt_str,
+                    r["base_currency"] or "",
+                    r["fx_rate_to_base"] or "",
+                    r["fx_status"] or "",
+                    r["needs_review"] if r["needs_review"] is not None else 0
+                ]
+                writer.writerow([_sanitize_csv_cell(c) for c in row_cells])
 
         return str(filepath)
 

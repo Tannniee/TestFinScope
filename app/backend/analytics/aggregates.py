@@ -7,15 +7,17 @@ periods, categories, merchants, and time dimensions.
 from typing import Dict, Any, List, Optional, Tuple
 from app.backend.database.connection import get_db_connection
 from app.backend.analytics.semantics import calculate_net_spending
+from app.backend.analytics.money_context import resolve_analytics_money_context
 
 class AggregateQueries:
     @staticmethod
     def get_monthly_pnl(month: str, account_id: Optional[int] = None) -> Dict[str, int]:
         """Returns exact integer minor units for income, gross expense, refunds, net spending, and net flow."""
+        ctx = resolve_analytics_money_context(account_id)
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
-            amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
+            amt_expr = ctx.amount_expr
             params = [f"{month}%"] + ([account_id] if account_id else [])
 
             cur.execute(f"""
@@ -46,10 +48,11 @@ class AggregateQueries:
     @staticmethod
     def get_monthly_history(limit_months: int = 24, account_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Returns chronologically sorted monthly summaries in minor units."""
+        ctx = resolve_analytics_money_context(account_id)
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
-            amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
+            amt_expr = ctx.amount_expr
             params = [account_id] if account_id else []
 
             cur.execute(f"""
@@ -97,10 +100,11 @@ class AggregateQueries:
     @staticmethod
     def get_category_monthly_series(category_id: int, account_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Returns monthly net expense for a specific category."""
+        ctx = resolve_analytics_money_context(account_id)
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND account_id = ?" if account_id else ""
-            amt_expr = "amount_minor" if account_id else "COALESCE(base_amount_minor, amount_minor)"
+            amt_expr = ctx.amount_expr
             params = [category_id] + ([account_id] if account_id else [])
 
             cur.execute(f"""
@@ -141,10 +145,11 @@ class AggregateQueries:
     @staticmethod
     def get_categories_breakdown(month: str, account_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Returns all expense categories with net spending, transaction count, and average ticket."""
+        ctx = resolve_analytics_money_context(account_id)
         with get_db_connection() as conn:
             cur = conn.cursor()
             acc_clause = " AND t.account_id = ?" if account_id else ""
-            amt_t_expr = "t.amount_minor" if account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
+            amt_t_expr = ctx.tx_amount_expr
             params = [f"{month}%"] + ([account_id] if account_id else [])
 
             cur.execute(f"""
@@ -195,10 +200,11 @@ class AggregateQueries:
     @staticmethod
     def get_merchants_breakdown(month: str, category_id: Optional[int] = None, account_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Returns merchants breakdown for a given month, optionally filtered by category."""
+        ctx = resolve_analytics_money_context(account_id)
         with get_db_connection() as conn:
             cur = conn.cursor()
             clauses = ["t.transaction_type IN ('expense', 'refund')", "t.transaction_date LIKE ?"]
-            amt_t_expr = "t.amount_minor" if account_id else "COALESCE(t.base_amount_minor, t.amount_minor)"
+            amt_t_expr = ctx.tx_amount_expr
             params: List[Any] = [f"{month}%"]
 
             if category_id:

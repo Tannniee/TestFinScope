@@ -43,6 +43,23 @@ export const modals = {
   },
 
   formSnapshot: null,
+  touched: {
+    account: false,
+    category: false,
+    essentiality: false,
+    date: false,
+    type: false
+  },
+
+  resetTouchedState() {
+    this.touched = {
+      account: false,
+      category: false,
+      essentiality: false,
+      date: false,
+      type: false
+    };
+  },
 
   _getFormValues() {
     return {
@@ -135,12 +152,22 @@ export const modals = {
     // Payee Autocomplete & Merchant Memory
     this.setupPayeeAutocomplete(payeeInput);
 
-    // Account currency symbol and step update
+    // Account & field touched tracking (P0-03)
     document.getElementById('tx-account')?.addEventListener('change', () => {
+      this.touched.account = true;
       this.updateCurrencySymbol();
     });
     document.getElementById('tx-to-account')?.addEventListener('change', () => {
       this.updateCurrencySymbol();
+    });
+    document.getElementById('tx-category')?.addEventListener('change', () => {
+      this.touched.category = true;
+    });
+    document.getElementById('tx-essentiality')?.addEventListener('change', () => {
+      this.touched.essentiality = true;
+    });
+    document.getElementById('tx-date')?.addEventListener('change', () => {
+      this.touched.date = true;
     });
 
     // Save & Add Another handler
@@ -366,29 +393,79 @@ export const modals = {
     const payeeInput = document.getElementById('tx-merchant');
     if (payeeInput) payeeInput.value = suggestion.name;
 
-    // Smart autofill Category
-    if (suggestion.default_category_id) {
+    // Smart autofill Category (respect touched state)
+    if (!this.touched.category && suggestion.default_category_id) {
       const catSelect = document.getElementById('tx-category');
       if (catSelect && Array.from(catSelect.options).some(opt => parseInt(opt.value) === suggestion.default_category_id)) {
         catSelect.value = suggestion.default_category_id;
       }
     }
 
-    // Smart autofill Account
-    if (suggestion.preferred_account_id) {
+    // Smart autofill Account (respect touched state & refresh currency UI)
+    if (!this.touched.account && suggestion.preferred_account_id) {
       const accSelect = document.getElementById('tx-account');
       if (accSelect && Array.from(accSelect.options).some(opt => parseInt(opt.value) === suggestion.preferred_account_id)) {
         accSelect.value = suggestion.preferred_account_id;
+        this.updateCurrencySymbol();
       }
     }
 
-    // Smart autofill Essentiality
-    if (suggestion.default_essentiality) {
+    // Smart autofill Essentiality (respect touched state)
+    if (!this.touched.essentiality && suggestion.default_essentiality) {
       const essSelect = document.getElementById('tx-essentiality');
       if (essSelect) essSelect.value = suggestion.default_essentiality;
     }
 
     this.hideAutocomplete();
+  },
+
+  resetTransactionFormForNextCapture({ preserveDate = true, preserveAccount = true } = {}) {
+    const amtInput = document.getElementById('tx-amount');
+    const merchantInput = document.getElementById('tx-merchant');
+    const descInput = document.getElementById('tx-description');
+    const noteInput = document.getElementById('tx-note');
+    const catSelect = document.getElementById('tx-category');
+    const essSelect = document.getElementById('tx-essentiality');
+    const recurringCheck = document.getElementById('tx-recurring');
+    const origCurrInput = document.getElementById('tx-orig-currency');
+    const origAmtInput = document.getElementById('tx-orig-amount');
+    const toAccSelect = document.getElementById('tx-to-account');
+    const toAmtInput = document.getElementById('tx-to-amount');
+    const refundIdInput = document.getElementById('tx-refund-id');
+
+    if (amtInput) amtInput.value = '';
+    if (merchantInput) merchantInput.value = '';
+    if (descInput) descInput.value = '';
+    if (noteInput) noteInput.value = '';
+    if (catSelect) catSelect.value = '';
+    if (essSelect) essSelect.value = 'discretionary';
+    if (recurringCheck) recurringCheck.checked = false;
+    if (origCurrInput) origCurrInput.value = '';
+    if (origAmtInput) origAmtInput.value = '';
+    if (toAccSelect) toAccSelect.value = '';
+    if (toAmtInput) toAmtInput.value = '';
+    if (refundIdInput) refundIdInput.value = '';
+
+    if (!preserveAccount) {
+      const accSelect = document.getElementById('tx-account');
+      if (accSelect && accSelect.options.length > 0) {
+        accSelect.selectedIndex = 0;
+      }
+    }
+
+    if (!preserveDate) {
+      const dateInput = document.getElementById('tx-date');
+      if (dateInput) dateInput.value = toLocalDateString();
+    }
+
+    this.resetTouchedState();
+    if (preserveAccount) this.touched.account = true;
+    if (preserveDate) this.touched.date = true;
+
+    this.hideAutocomplete();
+    this.updateCurrencySymbol();
+    this.captureFormSnapshot();
+    amtInput?.focus();
   },
 
   hideAutocomplete() {
@@ -548,15 +625,7 @@ export const modals = {
       state.notify({ type: 'data_changed' });
 
       if (isSaveAndAddAnother && !this.activeTxId) {
-        // Reset amount and merchant, keep date & account
-        document.getElementById('tx-amount').value = '';
-        document.getElementById('tx-merchant').value = '';
-        document.getElementById('tx-description').value = '';
-        document.getElementById('tx-note').value = '';
-        this.hideAutocomplete();
-        this.captureFormSnapshot();
-        const amtInput = document.getElementById('tx-amount');
-        amtInput?.focus();
+        this.resetTransactionFormForNextCapture({ preserveDate: true, preserveAccount: true });
         showToast('Ready for next transaction', 'info', 1800);
       } else {
         this.closeTransactionModal(true);
@@ -706,6 +775,7 @@ export const modals = {
     if (txData) {
       this.activeTxId = txData.id;
       title.textContent = 'Edit Transaction';
+      this.touched = { account: true, category: true, essentiality: true, date: true, type: true };
       if (saveAddBtn) saveAddBtn.style.display = 'none'; // Editing single transaction
 
       document.getElementById('tx-amount').value = txData.amount;
@@ -760,6 +830,7 @@ export const modals = {
     } else {
       this.activeTxId = null;
       title.textContent = 'Record Transaction';
+      this.resetTouchedState();
       if (saveAddBtn) saveAddBtn.style.display = 'inline-block';
       form.reset();
       if (origCurrInput) origCurrInput.value = '';

@@ -111,6 +111,14 @@ ROUTES: Dict[str, Route] = {
     # Settings
     "get_settings": Route(api_handler.get_settings, "READ"),
     "update_settings": Route(api_handler.update_settings, "WRITE"),
+
+    # Quick Capture V1
+    "preview_quick_capture": Route(api_handler.preview_quick_capture, "READ"),
+    "commit_quick_capture": Route(api_handler.commit_quick_capture, "WRITE"),
+
+    # Multi-Currency & Offline FX Reconciliation
+    "get_currency_catalog": Route(api_handler.get_currency_catalog, "READ"),
+    "reconcile_pending_fx": Route(api_handler.reconcile_pending_fx, "WRITE"),
 }
 
 MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB limit

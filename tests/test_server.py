@@ -28,7 +28,10 @@ def test_server_api_endpoints(ephemeral_server):
         ("get_analytics_context", {"month": "2026-09"}),
         ("get_monthly_budget", {"month": "2026-09"}),
         ("get_storage_health", {}),
-        ("create_backup", {})
+        ("create_backup", {}),
+        ("get_currency_catalog", {}),
+        ("reconcile_pending_fx", {}),
+        ("preview_quick_capture", {"raw_text": "85k lunch"})
     ]
 
     for method, payload in endpoints:
@@ -38,9 +41,38 @@ def test_server_api_endpoints(ephemeral_server):
         assert resp.get("api_version") == 2
         assert "data" in resp
 
+
+def test_server_quick_capture_flow(ephemeral_server):
+    """Verifies end-to-end quick capture preview and commit via HTTP API."""
+    client = ephemeral_server
+
+    # Create account first
+    status, acc_resp = client.post("create_account", {"name": "Test Checking", "account_type": "checking", "currency": "USD"})
+    assert status == 200
+    acc_id = acc_resp["data"]
+
+    # Preview
+    status, p_resp = client.post("preview_quick_capture", {"raw_text": "50k cafe"})
+    assert status == 200
+    assert p_resp.get("success") is True
+    p_data = p_resp["data"]
+    assert p_data["parse"]["amount"] == 50000.0
+    assert p_data["enrichment"]["account_id"] == acc_id
+
+    # Commit
+    status, c_resp = client.post("commit_quick_capture", {"raw_text": "50k cafe"})
+    assert status == 200
+    assert c_resp.get("success") is True
+    c_data = c_resp["data"]
+    assert c_data["success"] is True
+    assert c_data["transaction"]["amount"] == 50000.0
+    assert c_data["transaction"]["capture_method"] == "quick_capture"
+
+
 def test_server_export_csv(ephemeral_server):
     """Verifies CSV export endpoint returns CSV data with valid token."""
     client = ephemeral_server
     status, csv_text = client.get_export_csv()
     assert status == 200
     assert "Date" in csv_text or "Amount" in csv_text or len(csv_text) >= 0
+

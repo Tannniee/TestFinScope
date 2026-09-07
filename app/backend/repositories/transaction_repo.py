@@ -38,14 +38,26 @@ def _hydrate_transaction_row(row: Dict[str, Any]) -> Dict[str, Any]:
     tx["original_currency"] = orig_curr
     tx["original_amount"] = float(minor_to_major(orig_minor, orig_curr))
 
-    base_minor = tx["base_amount_minor"] if tx.get("base_amount_minor") is not None else tx["amount_minor"]
-    tx["base_amount_minor"] = base_minor
-    tx["base_currency"] = base_curr
-    tx["base_amount"] = float(minor_to_major(base_minor, base_curr))
+    if tx.get("base_amount_minor") is not None:
+        base_minor = tx["base_amount_minor"]
+        tx["base_amount_minor"] = base_minor
+        tx["base_currency"] = base_curr
+        tx["base_amount"] = float(minor_to_major(base_minor, base_curr))
+        tx["formatted_base_amount"] = format_money(base_minor, base_curr)
+    elif acct_curr == base_curr:
+        base_minor = tx["amount_minor"]
+        tx["base_amount_minor"] = base_minor
+        tx["base_currency"] = base_curr
+        tx["base_amount"] = float(minor_to_major(base_minor, base_curr))
+        tx["formatted_base_amount"] = format_money(base_minor, base_curr)
+    else:
+        tx["base_amount_minor"] = None
+        tx["base_currency"] = base_curr
+        tx["base_amount"] = None
+        tx["formatted_base_amount"] = "Pending"
 
     tx["formatted_amount"] = format_money(tx["amount_minor"], acct_curr)
     tx["formatted_original_amount"] = format_money(orig_minor, orig_curr)
-    tx["formatted_base_amount"] = format_money(base_minor, base_curr)
 
     return tx
 
@@ -70,6 +82,8 @@ class TransactionRepository:
             query = """
                 SELECT 
                     t.id, t.account_id, t.category_id, t.merchant_id, t.merchant_name,
+                    t.raw_merchant_name, t.capture_method, t.category_source, t.category_confidence,
+                    t.essentiality_source, t.essentiality_confidence, t.review_reason, t.parser_version,
                     t.transaction_type, t.amount_minor,
                     t.transaction_date, t.transaction_time, t.description, t.note,
                     t.is_recurring, t.recurring_rule_id, t.payment_method, t.essentiality,
@@ -144,6 +158,8 @@ class TransactionRepository:
             query = """
                 SELECT 
                     t.id, t.account_id, t.category_id, t.merchant_id, t.merchant_name,
+                    t.raw_merchant_name, t.capture_method, t.category_source, t.category_confidence,
+                    t.essentiality_source, t.essentiality_confidence, t.review_reason, t.parser_version,
                     t.transaction_type, t.amount_minor,
                     t.transaction_date, t.transaction_time, t.description, t.note,
                     t.is_recurring, t.recurring_rule_id, t.payment_method, t.essentiality,
@@ -250,12 +266,19 @@ class TransactionRepository:
                 fx_rate_source = "identity"
             else:
                 # Foreign account ledger (e.g. USD account when base is VND)
-                conv = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
-                base_amount_minor = conv.target.minor
-                fx_status = "market_estimate"
-                fx_rate_to_base = str(conv.rate)
-                fx_rate_date = conv.rate_date
-                fx_rate_source = conv.provider
+                try:
+                    conv = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                    base_amount_minor = conv.target.minor
+                    fx_status = "market_estimate"
+                    fx_rate_to_base = str(conv.rate)
+                    fx_rate_date = conv.rate_date
+                    fx_rate_source = conv.provider
+                except Exception:
+                    base_amount_minor = None
+                    fx_status = "pending"
+                    fx_rate_to_base = None
+                    fx_rate_date = None
+                    fx_rate_source = None
         else:
             # Foreign merchant purchase on account (e.g. 10 USD on VND account)
             orig_val = data.get("original_amount") if data.get("original_amount") is not None else data.get("amount")
@@ -269,9 +292,14 @@ class TransactionRepository:
                 amount_minor = validate_positive_amount(data["amount"], "Settlement amount", currency=account_currency)
                 fx_status = "user_settlement"
             else:
-                conv_acct = FxService.convert_minor(original_amount_minor, original_currency, account_currency, on_date=clean_date)
-                amount_minor = conv_acct.target.minor
-                fx_status = "market_estimate"
+                try:
+                    conv_acct = FxService.convert_minor(original_amount_minor, original_currency, account_currency, on_date=clean_date)
+                    amount_minor = conv_acct.target.minor
+                    fx_status = "market_estimate"
+                except Exception:
+                    # Fallback to direct amount if conversion unavailable
+                    amount_minor = major_to_minor(data.get("amount") or orig_val, account_currency)
+                    fx_status = "pending"
 
             if account_currency == base_currency:
                 base_amount_minor = amount_minor
@@ -286,30 +314,45 @@ class TransactionRepository:
                     fx_rate_date = clean_date
                     fx_rate_source = "user_settlement"
             else:
-                conv_base = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
-                base_amount_minor = conv_base.target.minor
-                fx_rate_to_base = str(conv_base.rate)
-                fx_rate_date = conv_base.rate_date
-                fx_rate_source = conv_base.provider
+                try:
+                    conv_base = FxService.convert_minor(amount_minor, account_currency, base_currency, on_date=clean_date)
+                    base_amount_minor = conv_base.target.minor
+                    fx_rate_to_base = str(conv_base.rate)
+                    fx_rate_date = conv_base.rate_date
+                    fx_rate_source = conv_base.provider
+                except Exception:
+                    base_amount_minor = None
+                    fx_status = "pending"
+                    fx_rate_to_base = None
+                    fx_rate_date = None
+                    fx_rate_source = None
 
         category_id = data.get("category_id")
-        raw_merchant = data.get("merchant_name", "")
+        raw_merchant = data.get("raw_merchant_name") or data.get("merchant_name", "")
         clean_merchant = normalize_merchant_name(raw_merchant)
         needs_review = 1 if data.get("needs_review") else 0
-
-        merchant_id = None
-        if clean_merchant:
-            merchant_id = MerchantService.get_or_create_merchant(
-                clean_merchant,
-                category_id=category_id,
-                account_id=account_id,
-                essentiality=data.get("essentiality")
-            )
+        review_reason = data.get("review_reason")
+        capture_method = data.get("capture_method", "modal")
+        category_source = data.get("category_source", "user")
+        category_confidence = data.get("category_confidence")
+        essentiality_source = data.get("essentiality_source", "user")
+        essentiality_confidence = data.get("essentiality_confidence")
+        parser_version = data.get("parser_version")
 
         with get_db_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 cur = conn.cursor()
+
+                merchant_id = None
+                if clean_merchant:
+                    merchant_id = MerchantService.get_or_create_merchant_in_conn(
+                        conn,
+                        clean_merchant,
+                        category_id=category_id,
+                        account_id=account_id,
+                        essentiality=data.get("essentiality")
+                    )
 
                 # Handle Uncategorized for expense if category is missing
                 if tx_type == "expense" and not category_id:
@@ -318,29 +361,42 @@ class TransactionRepository:
                     if uncat_row:
                         category_id = uncat_row["id"]
                         needs_review = 1
+                        if not review_reason:
+                            review_reason = "uncategorized"
 
                 from app.backend.domain.validators import validate_category_for_transaction
                 category_id = validate_category_for_transaction(conn, category_id, tx_type)
 
                 cur.execute("""
                     INSERT INTO transactions (
-                        account_id, category_id, merchant_id, merchant_name, transaction_type,
-                        amount_minor, transaction_date, transaction_time, description,
-                        note, is_recurring, payment_method, essentiality,
+                        account_id, category_id, merchant_id, merchant_name, raw_merchant_name,
+                        transaction_type, amount_minor, transaction_date, transaction_time,
+                        description, note, is_recurring, payment_method, essentiality,
                         transfer_group_id, transfer_role, linked_transaction_id,
-                        refund_of_transaction_id, source, needs_review, is_deleted,
-                        original_currency, original_amount_minor,
+                        refund_of_transaction_id, source, needs_review, review_reason,
+                        capture_method, category_source, category_confidence,
+                        essentiality_source, essentiality_confidence, parser_version,
+                        is_deleted, original_currency, original_amount_minor,
                         base_currency, base_amount_minor,
                         fx_rate_to_base, fx_rate_date, fx_rate_source, fx_status
                     ) VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,
-                        ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?,
+                        ?, ?, ?,
+                        ?, ?, ?, ?,
+                        ?, ?, ?,
+                        ?, ?, ?,
+                        0, ?, ?,
+                        ?, ?,
+                        ?, ?, ?, ?
                     )
                 """, (
                     account_id,
                     category_id,
                     merchant_id,
                     clean_merchant or raw_merchant,
+                    raw_merchant,
                     tx_type,
                     amount_minor,
                     clean_date,
@@ -356,6 +412,13 @@ class TransactionRepository:
                     data.get("refund_of_transaction_id"),
                     data.get("source", "manual"),
                     needs_review,
+                    review_reason,
+                    capture_method,
+                    category_source,
+                    category_confidence,
+                    essentiality_source,
+                    essentiality_confidence,
+                    parser_version,
                     original_currency,
                     original_amount_minor,
                     base_currency,
@@ -713,7 +776,10 @@ class TransactionRepository:
             "amount_minor",
             "transaction_date", "transaction_time", "description",
             "note", "is_recurring", "payment_method", "essentiality",
-            "needs_review", "original_currency", "original_amount_minor",
+            "needs_review", "review_reason", "raw_merchant_name",
+            "capture_method", "category_source", "category_confidence",
+            "essentiality_source", "essentiality_confidence", "parser_version",
+            "original_currency", "original_amount_minor",
             "base_currency", "base_amount_minor",
             "fx_rate_to_base", "fx_rate_date", "fx_rate_source", "fx_status"
         }
@@ -956,8 +1022,10 @@ class TransactionRepository:
             cur = conn.cursor()
             query = """
                 SELECT 
-                    t.id, t.account_id, t.category_id, t.merchant_id, t.merchant_name, t.amount_minor,
-                    t.transaction_date, t.transaction_time, t.description, t.note,
+                    t.id, t.account_id, t.category_id, t.merchant_id, t.merchant_name,
+                    t.raw_merchant_name, t.capture_method, t.category_source, t.category_confidence,
+                    t.essentiality_source, t.essentiality_confidence, t.review_reason, t.parser_version,
+                    t.amount_minor, t.transaction_date, t.transaction_time, t.description, t.note,
                     t.transaction_type, t.is_recurring, t.payment_method, t.essentiality,
                     t.transfer_group_id, t.transfer_role, t.linked_transaction_id,
                     t.refund_of_transaction_id, t.source, t.needs_review, t.is_deleted,
@@ -1002,29 +1070,37 @@ class TransactionRepository:
 
     @staticmethod
     def resolve_review(tx_id: int, category_id: int, merchant_name: Optional[str] = None) -> bool:
-        """Sets category, clears review flag, and authoritatively re-learns merchant defaults (FSC-M14)."""
-        tx = TransactionRepository.get_by_id(tx_id)
-        if not tx:
-            return False
-
-        effective_merchant = normalize_merchant_name(merchant_name or tx.get("merchant_name", ""))
-        if effective_merchant:
-            MerchantService.learn_defaults(
-                effective_merchant,
-                category_id=category_id,
-                account_id=tx.get("account_id"),
-                overwrite=True
-            )
-
+        """Sets category, clears review flag, and authoritatively re-learns merchant defaults atomically (P0-04, P0-05)."""
         with get_db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE transactions 
-                SET category_id = ?, needs_review = 0, merchant_name = ?
-                WHERE id = ?
-            """, (category_id, effective_merchant or tx.get("merchant_name", ""), tx_id))
-            conn.commit()
-            return cur.rowcount > 0
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT id, account_id, merchant_name FROM transactions WHERE id = ? AND is_deleted = 0", (tx_id,))
+                tx = cur.fetchone()
+                if not tx:
+                    return False
+
+                effective_merchant = normalize_merchant_name(merchant_name or tx["merchant_name"] or "")
+                if effective_merchant:
+                    MerchantService.learn_defaults_in_conn(
+                        conn,
+                        effective_merchant,
+                        category_id=category_id,
+                        account_id=tx["account_id"],
+                        overwrite=True
+                    )
+
+                cur.execute("""
+                    UPDATE transactions 
+                    SET category_id = ?, needs_review = 0, merchant_name = ?
+                    WHERE id = ?
+                """, (category_id, effective_merchant or tx["merchant_name"] or "", tx_id))
+                updated = cur.rowcount > 0
+                conn.commit()
+                return updated
+            except Exception:
+                conn.rollback()
+                raise
 
     @staticmethod
     def duplicate(tx_id: int) -> Optional[int]:

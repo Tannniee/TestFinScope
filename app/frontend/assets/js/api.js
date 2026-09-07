@@ -255,5 +255,26 @@ export const api = {
   },
   updateSettings(settings) {
     return this.call('update_settings', { settings });
+  },
+
+  // Quick Capture V1
+  previewQuickCapture(rawText, defaultAccountId = null, referenceDate = null) {
+    return this.call('preview_quick_capture', {
+      raw_text: rawText,
+      default_account_id: defaultAccountId,
+      reference_date: referenceDate
+    });
+  },
+  commitQuickCapture(payload) {
+    return this.call('commit_quick_capture', payload);
+  },
+
+  // Multi-Currency Catalog & FX Reconciliation
+  getCurrencyCatalog() {
+    return this.call('get_currency_catalog');
+  },
+  reconcilePendingFx(limit = 200) {
+    return this.call('reconcile_pending_fx', { limit });
   }
 };
+

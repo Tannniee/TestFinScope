@@ -411,3 +411,40 @@ class ApiHandler:
     def update_settings(self, settings: Dict[str, str]) -> bool:
         SettingsService.update_settings(settings)
         return True
+
+    # --- Quick Capture V1 ---
+    def preview_quick_capture(
+        self,
+        raw_text: str,
+        default_account_id: Optional[int] = None,
+        reference_date: Optional[str] = None
+    ) -> Dict[str, Any]:
+        from app.backend.capture.service import QuickCaptureService
+        return QuickCaptureService.preview(
+            raw_text=raw_text,
+            default_account_id=default_account_id,
+            reference_date=reference_date
+        ).to_dict()
+
+    def commit_quick_capture(self, **payload) -> Dict[str, Any]:
+        from app.backend.capture.service import QuickCaptureService
+        return QuickCaptureService.commit(payload)
+
+    # --- Multi-Currency Catalog & FX Reconciliation ---
+    def get_currency_catalog(self) -> List[Dict[str, Any]]:
+        from app.backend.domain.currencies import _CURRENCIES_LIST
+        return [
+            {
+                "code": c.code,
+                "name": c.name,
+                "symbol": c.symbol,
+                "minor_unit": c.minor_unit,
+                "numeric_code": c.numeric_code
+            }
+            for c in _CURRENCIES_LIST
+        ]
+
+    def reconcile_pending_fx(self, limit: int = 200) -> Dict[str, Any]:
+        from app.backend.fx.reconciliation import FxReconciliationService
+        return FxReconciliationService.reconcile_pending_fx(limit=limit)
+

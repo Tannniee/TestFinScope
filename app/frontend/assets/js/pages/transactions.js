@@ -396,16 +396,36 @@ function renderTableRows(items, isReviewQueueView = false) {
     const merchantName = tx.merchant_name || tx.description || 'Transaction';
     const initials = getMerchantInitials(merchantName);
 
-    const categoryCell = needsReview ? `
-      <span class="review-needed-tag action-quick-resolve" data-id="${tx.id}" title="Click to assign confirmed category">
-        <i data-lucide="alert-circle" style="width: 12px; height: 12px;"></i>
-        Needs Review
-      </span>
-    ` : `
-      <span class="tag-pill" style="background: ${catColor}20; color: ${catColor}; border: 1px solid ${catColor}40;">
-        ${escapeHtml(tx.category_name || (isTransfer ? 'Transfer' : 'Uncategorized'))}
-      </span>
-    `;
+    let categoryCell = '';
+    if (isReviewQueueView) {
+      const filteredCats = (state.categories || []).filter(c => c.name !== 'Uncategorized' && (!tx.transaction_type || c.type === tx.transaction_type || !c.type));
+      categoryCell = `
+        <div class="inline-review-wrap" style="display: flex; align-items: center; gap: 6px;">
+          <select class="form-select form-select-sm inline-category-select" data-id="${tx.id}" style="font-size: 12px; padding: 4px 8px; min-width: 140px; background: var(--bg-surface);">
+            <option value="">Choose category...</option>
+            ${filteredCats.map(c => `<option value="${c.id}" ${c.id === tx.category_id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary btn-sm action-inline-resolve" data-id="${tx.id}" style="padding: 4px 10px; font-size: 11.5px; font-weight: 600;" title="Confirm category and update merchant memory">
+            Accept
+          </button>
+        </div>
+        ${tx.review_reason ? `<div style="font-size: 10.5px; color: var(--text-muted); margin-top: 3px;">Flagged: ${escapeHtml(tx.review_reason)}</div>` : ''}
+      `;
+    } else if (needsReview) {
+      categoryCell = `
+        <span class="review-needed-tag action-quick-resolve" data-id="${tx.id}" title="Click to assign confirmed category">
+          <i data-lucide="alert-circle" style="width: 12px; height: 12px;"></i>
+          Needs Review
+        </span>
+        ${tx.review_reason ? `<div style="font-size: 10px; color: var(--text-muted); margin-top: 2px;">${escapeHtml(tx.review_reason)}</div>` : ''}
+      `;
+    } else {
+      categoryCell = `
+        <span class="tag-pill" style="background: ${catColor}20; color: ${catColor}; border: 1px solid ${catColor}40;">
+          ${escapeHtml(tx.category_name || (isTransfer ? 'Transfer' : 'Uncategorized'))}
+        </span>
+      `;
+    }
 
     const isExpense = tx.transaction_type === 'expense';
     const isLinkedRefund = Boolean(tx.refund_of_transaction_id);
@@ -497,6 +517,37 @@ function renderTableRows(items, isReviewQueueView = false) {
     el.addEventListener('click', () => {
       const tx = items.find(t => t.id === parseInt(el.dataset.id));
       if (tx) modals.openTransactionModal(tx);
+    });
+  });
+
+  tbody.querySelectorAll('.action-inline-resolve').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const txId = parseInt(btn.dataset.id, 10);
+      const row = btn.closest('tr');
+      const select = row?.querySelector('.inline-category-select');
+      const catId = select ? parseInt(select.value, 10) : null;
+      if (!catId) {
+        showToast('Please select a category first', 'warning');
+        return;
+      }
+      const tx = items.find(t => t.id === txId);
+      try {
+        btn.disabled = true;
+        btn.textContent = '...';
+        await api.resolveReview(txId, catId, tx?.merchant_name);
+        showToast('Category confirmed & learned!', 'success');
+        state.notify({ type: 'data_changed' });
+        await updateReviewQueueBadge();
+        if (isReviewQueueActive) {
+          loadReviewQueueItems();
+        } else {
+          loadTransactions();
+        }
+      } catch (err) {
+        showToast(err.message || 'Failed to resolve review', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Accept';
+      }
     });
   });
 

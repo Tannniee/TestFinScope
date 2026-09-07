@@ -98,6 +98,52 @@ class MerchantService:
             return m_id
 
     @staticmethod
+    def learn_defaults_in_conn(
+        conn,
+        merchant_name_or_id: Any,
+        category_id: Optional[int] = None,
+        account_id: Optional[int] = None,
+        essentiality: Optional[str] = None,
+        overwrite: bool = True
+    ) -> bool:
+        """
+        Learns or updates defaults for a merchant inside an existing connection/transaction (P0-05).
+        """
+        cur = conn.cursor()
+        if isinstance(merchant_name_or_id, int):
+            cur.execute("SELECT id, default_category_id, preferred_account_id, default_essentiality FROM merchants WHERE id = ?", (merchant_name_or_id,))
+        else:
+            cname = normalize_merchant_name(str(merchant_name_or_id))
+            if not cname:
+                return False
+            cur.execute("SELECT id, default_category_id, preferred_account_id, default_essentiality FROM merchants WHERE name = ?", (cname,))
+        row = cur.fetchone()
+        if not row:
+            if isinstance(merchant_name_or_id, str):
+                m_id = MerchantService.get_or_create_merchant_in_conn(conn, merchant_name_or_id, category_id, account_id, essentiality)
+                return m_id > 0
+            return False
+
+        m_id = row["id"]
+        updates = []
+        params = []
+        if category_id is not None and (overwrite or not row["default_category_id"]):
+            updates.append("default_category_id = ?")
+            params.append(category_id)
+        if account_id is not None and (overwrite or not row["preferred_account_id"]):
+            updates.append("preferred_account_id = ?")
+            params.append(account_id)
+        if essentiality is not None and (overwrite or not row["default_essentiality"]):
+            updates.append("default_essentiality = ?")
+            params.append(essentiality)
+
+        if updates:
+            params.append(m_id)
+            cur.execute(f"UPDATE merchants SET {', '.join(updates)} WHERE id = ?", params)
+            return cur.rowcount > 0
+        return True
+
+    @staticmethod
     def learn_defaults(
         merchant_name_or_id: Any,
         category_id: Optional[int] = None,
@@ -111,41 +157,11 @@ class MerchantService:
         authoritatively sets the specified defaults.
         """
         with get_db_connection() as conn:
-            cur = conn.cursor()
-            if isinstance(merchant_name_or_id, int):
-                cur.execute("SELECT id, default_category_id, preferred_account_id, default_essentiality FROM merchants WHERE id = ?", (merchant_name_or_id,))
-            else:
-                cname = normalize_merchant_name(str(merchant_name_or_id))
-                if not cname:
-                    return False
-                cur.execute("SELECT id, default_category_id, preferred_account_id, default_essentiality FROM merchants WHERE name = ?", (cname,))
-            row = cur.fetchone()
-            if not row:
-                if isinstance(merchant_name_or_id, str):
-                    m_id = MerchantService.get_or_create_merchant_in_conn(conn, merchant_name_or_id, category_id, account_id, essentiality)
-                    conn.commit()
-                    return m_id > 0
-                return False
-
-            m_id = row["id"]
-            updates = []
-            params = []
-            if category_id is not None and (overwrite or not row["default_category_id"]):
-                updates.append("default_category_id = ?")
-                params.append(category_id)
-            if account_id is not None and (overwrite or not row["preferred_account_id"]):
-                updates.append("preferred_account_id = ?")
-                params.append(account_id)
-            if essentiality is not None and (overwrite or not row["default_essentiality"]):
-                updates.append("default_essentiality = ?")
-                params.append(essentiality)
-
-            if updates:
-                params.append(m_id)
-                cur.execute(f"UPDATE merchants SET {', '.join(updates)} WHERE id = ?", params)
-                conn.commit()
-                return cur.rowcount > 0
-            return True
+            res = MerchantService.learn_defaults_in_conn(
+                conn, merchant_name_or_id, category_id, account_id, essentiality, overwrite
+            )
+            conn.commit()
+            return res
 
     @staticmethod
     def suggest_merchants(query: str, limit: int = 6) -> List[Dict[str, Any]]:

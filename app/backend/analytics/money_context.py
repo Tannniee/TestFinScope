@@ -67,8 +67,8 @@ def resolve_analytics_money_context(account_id: Optional[int] = None) -> Analyti
             currency=base_currency,
             account_id=None,
             is_portfolio=True,
-            amount_expr="COALESCE(base_amount_minor, amount_minor)",
-            tx_amount_expr="COALESCE(t.base_amount_minor, t.amount_minor)"
+            amount_expr=f"COALESCE(base_amount_minor, CASE WHEN COALESCE(base_currency, '{base_currency}') = COALESCE((SELECT currency FROM accounts WHERE id = account_id), '{base_currency}') THEN amount_minor ELSE 0 END)",
+            tx_amount_expr=f"COALESCE(t.base_amount_minor, CASE WHEN COALESCE(t.base_currency, '{base_currency}') = COALESCE((SELECT currency FROM accounts WHERE id = t.account_id), '{base_currency}') THEN t.amount_minor ELSE 0 END)"
         )
 
     with get_db_connection() as conn:
@@ -84,3 +84,37 @@ def resolve_analytics_money_context(account_id: Optional[int] = None) -> Analyti
         amount_expr="amount_minor",
         tx_amount_expr="t.amount_minor"
     )
+
+
+def get_portfolio_fx_completeness(month: Optional[str] = None) -> Dict[str, Any]:
+    """Returns FX completeness stats for portfolio scope."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        query = """
+            SELECT 
+                COUNT(*) as total_txs,
+                SUM(CASE WHEN a.currency <> t.base_currency THEN 1 ELSE 0 END) as foreign_txs,
+                SUM(CASE WHEN a.currency <> t.base_currency AND t.base_amount_minor IS NULL THEN 1 ELSE 0 END) as pending_fx_txs
+            FROM active_transactions t
+            JOIN accounts a ON t.account_id = a.id
+            WHERE 1=1
+        """
+        params = []
+        if month:
+            query += " AND t.transaction_date LIKE ?"
+            params.append(f"{month}%")
+        cur.execute(query, params)
+        row = cur.fetchone()
+        total = row["total_txs"] or 0
+        foreign = row["foreign_txs"] or 0
+        pending = row["pending_fx_txs"] or 0
+        reconciled = foreign - pending
+        pct = round((reconciled / foreign * 100.0) if foreign > 0 else 100.0, 1)
+        return {
+            "total_transactions": total,
+            "foreign_transactions": foreign,
+            "pending_valuations": pending,
+            "reconciled_percentage": pct,
+            "is_complete": pending == 0
+        }
+

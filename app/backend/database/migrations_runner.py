@@ -7,7 +7,7 @@ from app.backend.config import DB_PATH
 logger = logging.getLogger(__name__)
 
 MIGRATIONS: List[tuple[int, str, Callable[[sqlite3.Connection], None]]] = []
-MAX_SUPPORTED_SCHEMA_VERSION = 8
+MAX_SUPPORTED_SCHEMA_VERSION = 11
 
 def migration(version: int, name: str):
     def decorator(fn: Callable[[sqlite3.Connection], None]):
@@ -647,6 +647,227 @@ def migration_008_multi_currency_foundation(conn: sqlite3.Connection):
         SET currency = COALESCE(currency, ?)
         WHERE currency IS NULL
     """, (base_curr,))
+
+
+@migration(9, "capture_provenance_and_raw_merchant")
+def migration_009_capture_provenance(conn: sqlite3.Connection):
+    """
+    Adds capture provenance, confidence tracking, and raw merchant identity (P0-06, Phase 2).
+    """
+    _add_column_if_not_exists(conn, "transactions", "raw_merchant_name TEXT DEFAULT ''")
+    _add_column_if_not_exists(conn, "transactions", "capture_method TEXT NOT NULL DEFAULT 'manual_form'")
+    _add_column_if_not_exists(conn, "transactions", "category_source TEXT DEFAULT 'manual'")
+    _add_column_if_not_exists(conn, "transactions", "category_confidence INTEGER DEFAULT 100")
+    _add_column_if_not_exists(conn, "transactions", "essentiality_source TEXT DEFAULT 'manual'")
+    _add_column_if_not_exists(conn, "transactions", "essentiality_confidence INTEGER DEFAULT 100")
+    _add_column_if_not_exists(conn, "transactions", "review_reason TEXT DEFAULT NULL")
+    _add_column_if_not_exists(conn, "transactions", "parser_version TEXT DEFAULT NULL")
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_merchant_id ON transactions(merchant_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_review_account ON transactions(needs_review, account_id, transaction_date);")
+
+    # Backfill existing transactions
+    conn.execute("""
+        UPDATE transactions
+        SET raw_merchant_name = COALESCE(NULLIF(merchant_name, ''), description, ''),
+            capture_method = CASE
+                WHEN source = 'csv_import' THEN 'csv_import'
+                WHEN source = 'recurring_generated' THEN 'recurring_generated'
+                ELSE 'manual_form'
+            END,
+            category_source = 'legacy',
+            category_confidence = 100,
+            essentiality_source = 'legacy',
+            essentiality_confidence = 100
+        WHERE raw_merchant_name IS NULL OR raw_merchant_name = '';
+    """)
+
+    conn.execute("DROP VIEW IF EXISTS active_transactions;")
+    conn.execute("""
+        CREATE VIEW active_transactions AS
+        SELECT *
+        FROM transactions
+        WHERE is_deleted = 0;
+    """)
+
+
+@migration(10, "essentiality_repair_and_pending_fx")
+def migration_010_essentiality_and_fx_repair(conn: sqlite3.Connection):
+    """
+    Allows 'unknown' essentiality and marks suspicious legacy FX conversions as pending_revaluation (P0-07, P1-05).
+    """
+    conn.execute("PRAGMA foreign_keys = OFF;")
+
+    conn.execute("""
+        CREATE TABLE transactions_v10 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+            category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            merchant_id INTEGER REFERENCES merchants(id) ON DELETE SET NULL,
+            merchant_name TEXT NOT NULL DEFAULT '',
+            raw_merchant_name TEXT DEFAULT '',
+            transaction_type TEXT NOT NULL CHECK (transaction_type IN ('income', 'expense', 'transfer', 'refund', 'adjustment')),
+            amount_minor INTEGER NOT NULL,
+            transaction_date TEXT NOT NULL,
+            transaction_time TEXT DEFAULT '12:00',
+            description TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            is_recurring INTEGER NOT NULL DEFAULT 0,
+            recurring_rule_id INTEGER,
+            payment_method TEXT DEFAULT 'Card',
+            essentiality TEXT NOT NULL DEFAULT 'discretionary' CHECK (essentiality IN ('unknown', 'essential', 'discretionary', 'savings')),
+            transfer_group_id TEXT DEFAULT NULL,
+            transfer_role TEXT CHECK (transfer_role IS NULL OR transfer_role IN ('source', 'destination')),
+            linked_transaction_id INTEGER DEFAULT NULL REFERENCES transactions_v10(id) ON DELETE SET NULL,
+            refund_of_transaction_id INTEGER DEFAULT NULL REFERENCES transactions_v10(id) ON DELETE SET NULL,
+            source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'csv_import', 'recurring_generated', 'adjustment')),
+            capture_method TEXT NOT NULL DEFAULT 'manual_form',
+            category_source TEXT DEFAULT 'manual',
+            category_confidence INTEGER DEFAULT 100,
+            essentiality_source TEXT DEFAULT 'manual',
+            essentiality_confidence INTEGER DEFAULT 100,
+            review_reason TEXT DEFAULT NULL,
+            parser_version TEXT DEFAULT NULL,
+            needs_review INTEGER NOT NULL DEFAULT 0,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            original_currency TEXT,
+            original_amount_minor INTEGER,
+            base_currency TEXT,
+            base_amount_minor INTEGER,
+            fx_rate_to_base TEXT,
+            fx_rate_date TEXT,
+            fx_rate_source TEXT,
+            fx_status TEXT NOT NULL DEFAULT 'not_required',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    conn.execute("""
+        INSERT INTO transactions_v10 (
+            id, account_id, category_id, merchant_id, merchant_name, raw_merchant_name,
+            transaction_type, amount_minor, transaction_date, transaction_time,
+            description, note, is_recurring, recurring_rule_id, payment_method,
+            essentiality, transfer_group_id, transfer_role, linked_transaction_id,
+            refund_of_transaction_id, source, capture_method, category_source,
+            category_confidence, essentiality_source, essentiality_confidence,
+            review_reason, parser_version, needs_review, is_deleted,
+            original_currency, original_amount_minor, base_currency, base_amount_minor,
+            fx_rate_to_base, fx_rate_date, fx_rate_source, fx_status,
+            created_at, updated_at
+        )
+        SELECT
+            id, account_id, category_id, merchant_id, merchant_name, COALESCE(raw_merchant_name, merchant_name, ''),
+            transaction_type, amount_minor, transaction_date, transaction_time,
+            description, note, is_recurring, recurring_rule_id, payment_method,
+            CASE WHEN essentiality IN ('unknown', 'essential', 'discretionary', 'savings') THEN essentiality ELSE 'discretionary' END,
+            transfer_group_id, transfer_role, linked_transaction_id,
+            refund_of_transaction_id, source, COALESCE(capture_method, 'manual_form'),
+            category_source, category_confidence, essentiality_source, essentiality_confidence,
+            review_reason, parser_version, needs_review, is_deleted,
+            original_currency, original_amount_minor, base_currency, base_amount_minor,
+            fx_rate_to_base, fx_rate_date, fx_rate_source, fx_status,
+            created_at, updated_at
+        FROM transactions;
+    """)
+
+    old_count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+    new_count = conn.execute("SELECT COUNT(*) FROM transactions_v10").fetchone()[0]
+    if old_count != new_count:
+        raise RuntimeError(f"Migration 010 row-count mismatch: {old_count} != {new_count}")
+
+    conn.execute("DROP VIEW IF EXISTS active_transactions;")
+    conn.execute("DROP TABLE transactions;")
+    conn.execute("ALTER TABLE transactions_v10 RENAME TO transactions;")
+
+    # Recreate all indexes
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(transaction_date);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(category_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_account ON transactions(account_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_type ON transactions(transaction_type);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_essentiality ON transactions(essentiality);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_transfer_group ON transactions(transfer_group_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_review ON transactions(needs_review);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_refund_of ON transactions(refund_of_transaction_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_is_deleted ON transactions(is_deleted);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_merchant_id ON transactions(merchant_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_review_account ON transactions(needs_review, account_id, transaction_date);")
+
+    # Recreate active_transactions view
+    conn.execute("""
+        CREATE VIEW active_transactions AS
+        SELECT *
+        FROM transactions
+        WHERE is_deleted = 0;
+    """)
+
+    # Recreate mutation triggers on transactions for analytics revision tracking (F108-15)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_tx_insert
+        AFTER INSERT ON transactions
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_tx_update
+        AFTER UPDATE ON transactions
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_analytics_state_tx_delete
+        AFTER DELETE ON transactions
+        BEGIN
+            UPDATE analytics_state SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1;
+        END;
+    """)
+
+    # Repair suspicious legacy FX conversions (P0-07)
+    conn.execute("""
+        UPDATE transactions
+        SET base_amount_minor = NULL,
+            fx_status = 'pending_revaluation'
+        WHERE id IN (
+            SELECT t.id
+            FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            WHERE a.currency <> t.base_currency
+              AND (t.fx_rate_to_base IS NULL OR t.fx_rate_source IS NULL OR t.fx_rate_source = 'identity')
+              AND t.fx_status = 'not_required'
+        );
+    """)
+
+    conn.execute("PRAGMA foreign_keys = ON;")
+    fk_issues = conn.execute("PRAGMA foreign_key_check;").fetchall()
+    if fk_issues:
+        raise RuntimeError(f"Migration 010 foreign key check failed: {fk_issues}")
+
+
+@migration(11, "import_profiles_and_merchant_rules")
+def migration_011_import_profiles(conn: sqlite3.Connection):
+    """
+    Creates import_profiles and expands merchant_rules for intelligent matching (WP-04).
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS import_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            header_signature TEXT NOT NULL UNIQUE,
+            delimiter TEXT NOT NULL DEFAULT ',',
+            has_header INTEGER NOT NULL DEFAULT 1,
+            date_format TEXT,
+            column_mapping_json TEXT NOT NULL,
+            category_rules_json TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    _add_column_if_not_exists(conn, "merchant_rules", "rule_type TEXT NOT NULL DEFAULT 'exact'")
+    _add_column_if_not_exists(conn, "merchant_rules", "priority INTEGER NOT NULL DEFAULT 100")
+    _add_column_if_not_exists(conn, "merchant_rules", "is_active INTEGER NOT NULL DEFAULT 1")
 
 
 def run_migrations(conn: sqlite3.Connection):

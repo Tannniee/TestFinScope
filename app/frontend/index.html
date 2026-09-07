@@ -70,6 +70,10 @@
       </nav>
 
       <div class="sidebar-footer">
+        <button id="sidebar-quick-capture" class="btn-quick-capture-bar" title="Quick Capture (Ctrl+K)">
+          <i data-lucide="zap" style="width: 15px; height: 15px;"></i>
+          <span>Quick Capture (Ctrl+K)</span>
+        </button>
         <button id="sidebar-quick-add" class="btn-quick-add" title="Shortcut: Ctrl+N">
           <i data-lucide="plus" style="width: 16px; height: 16px;"></i>
           <span>Record Expense</span>
@@ -87,6 +91,13 @@
         </div>
 
         <div class="header-controls">
+          <!-- Quick Capture Command Bar Trigger -->
+          <button id="btn-quick-capture" class="quick-capture-btn" title="Quick Capture (Ctrl+K)">
+            <i data-lucide="zap" style="width: 14px; height: 14px; color: var(--accent-blue);"></i>
+            <span class="quick-capture-text">Quick Capture</span>
+            <span class="quick-capture-kbd"><kbd>Ctrl</kbd><kbd>K</kbd></span>
+          </button>
+
           <!-- Month Period Picker -->
           <div class="period-picker">
             <button id="btn-period-prev" class="period-btn" title="Previous Month">
@@ -112,6 +123,63 @@
 
       <!-- Dynamic Page Container -->
       <main id="page-container"></main>
+    </div>
+  </div>
+
+  <!-- Quick Capture Command Bar Modal (WP-01) -->
+  <div class="modal-overlay" id="quick-capture-overlay" style="display: none;">
+    <div class="quick-capture-modal">
+      <div class="quick-capture-header">
+        <div class="quick-capture-input-box">
+          <i data-lucide="zap" class="qc-input-icon"></i>
+          <input type="text" id="qc-input" class="qc-input" placeholder="Type naturally: e.g. 85k grab, +15tr salary, 50k cafe @cash #food" autocomplete="off" />
+          <span class="qc-spinner" id="qc-loading" style="display: none;"></span>
+        </div>
+        <button id="qc-close-btn" class="modal-close" type="button" title="Close (Esc)">
+          <i data-lucide="x" style="width: 18px; height: 18px;"></i>
+        </button>
+      </div>
+
+      <!-- Live Preview Card -->
+      <div id="qc-preview-card" class="qc-preview-card" style="display: none;">
+        <div class="qc-preview-top">
+          <span id="qc-chip-type" class="qc-badge qc-badge-expense">Expense</span>
+          <span id="qc-preview-amount" class="qc-preview-amount">0.00</span>
+          <span id="qc-preview-merchant" class="qc-preview-merchant">Merchant</span>
+        </div>
+        <div class="qc-preview-details">
+          <div class="qc-chip-item">
+            <span class="qc-chip-label">Category:</span>
+            <span id="qc-chip-category" class="qc-chip-val">Uncategorized</span>
+            <span id="qc-chip-confidence" class="qc-confidence-pill low">Fallback 0%</span>
+          </div>
+          <div class="qc-chip-item">
+            <span class="qc-chip-label">Account:</span>
+            <span id="qc-chip-account" class="qc-chip-val">Checking</span>
+          </div>
+          <div class="qc-chip-item">
+            <span class="qc-chip-label">Date:</span>
+            <span id="qc-chip-date" class="qc-chip-val">Today</span>
+          </div>
+        </div>
+        <div id="qc-validation-box" class="qc-validation-box" style="display: none;"></div>
+      </div>
+
+      <!-- Quick Tips & Recent Chips -->
+      <div class="qc-footer">
+        <div class="qc-recent-chips" id="qc-recent-chips">
+          <span class="qc-recent-label">Try:</span>
+          <button type="button" class="qc-example-chip" data-sample="85k Grab">85k Grab</button>
+          <button type="button" class="qc-example-chip" data-sample="+15tr Salary #Income">+15tr Salary</button>
+          <button type="button" class="qc-example-chip" data-sample="50k Cafe @Cash #Food">50k Cafe @Cash #Food</button>
+          <button type="button" class="qc-example-chip" data-sample="120k Dinner yesterday">120k Dinner yesterday</button>
+        </div>
+        <div class="qc-footer-hints">
+          <span><kbd>Enter</kbd> Save</span>
+          <span><kbd>Shift</kbd>+<kbd>Enter</kbd> Full Form</span>
+          <span><kbd>Esc</kbd> Close</span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -397,13 +465,15 @@
     import { state } from './assets/js/state.js';
     import { router } from './assets/js/router.js';
     import { modals } from './assets/js/components/modals.js';
+    import { quickCapture } from './assets/js/components/quick-capture.js';
 
     document.addEventListener('DOMContentLoaded', async () => {
       // 1. Initialize Icons
       if (window.lucide) window.lucide.createIcons();
 
-      // 2. Initialize Modals
+      // 2. Initialize Modals & Quick Capture
       modals.init();
+      quickCapture.init();
 
       // 3. Load Accounts & Categories Metadata
       await state.loadInitialData();
