@@ -163,11 +163,13 @@ class ForecastResult:
     model_method: str = "weekday_hybrid"
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     currency: str = "USD"
+    budget_currency: str = "USD"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "target_month": self.target_month,
             "currency": self.currency,
+            "budget_currency": self.budget_currency,
             "projected_expense_minor": self.projected_expense_minor,
             "projected_expense": _to_major(self.projected_expense_minor, self.currency),
             "lower_bound_minor": self.lower_bound_minor,

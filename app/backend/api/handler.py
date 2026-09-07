@@ -113,7 +113,13 @@ class ApiHandler:
         orig_id = original_tx_id or original_transaction_id or kwargs.get("original_tx_id")
         if not orig_id:
             raise ValueError("original_tx_id or original_transaction_id is required for a linked refund.")
-        return TransactionRepository.create_refund(orig_id, amount, transaction_date, account_id, note)
+        return TransactionRepository.create_refund(
+            original_tx_id=orig_id,
+            amount=amount,
+            transaction_date=transaction_date,
+            note=note,
+            account_id=account_id
+        )
 
     def get_refundable_info(
         self,

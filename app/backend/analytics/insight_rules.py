@@ -11,8 +11,12 @@ Integrates persistent insight keys and dynamic novelty scoring.
 
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+from decimal import Decimal
 from app.backend.analytics.models import Insight
 from app.backend.analytics.insight_history import InsightHistoryTracker
+from app.backend.domain.currencies import get_currency_meta
+from app.backend.domain.money import format_money, minor_to_major
+
 
 class InsightRulesGenerator:
     @staticmethod
@@ -25,6 +29,31 @@ class InsightRulesGenerator:
         candidates: List[Insight] = []
         now_str = datetime.now().isoformat()
         total_curr_minor = changes_data.get("total_current_minor", 1)
+
+        currency = changes_data.get("currency") or forecast_data.get("currency") or (anomalies_data[0].get("currency") if anomalies_data else None) or "USD"
+
+        meta = get_currency_meta(currency)
+        if meta.minor_unit == 0:
+            if currency == "VND":
+                threshold_20 = 500000
+                threshold_30 = 750000
+                threshold_50 = 1000000
+                threshold_15 = 350000
+            else:
+                threshold_20 = 3000
+                threshold_30 = 4500
+                threshold_50 = 7500
+                threshold_15 = 2000
+        elif meta.minor_unit == 3:
+            threshold_20 = 6000
+            threshold_30 = 9000
+            threshold_50 = 15000
+            threshold_15 = 4500
+        else:
+            threshold_20 = 2000
+            threshold_30 = 3000
+            threshold_50 = 5000
+            threshold_15 = 1500
 
         # 1. Rules from What Changed? drivers
         drivers = changes_data.get("drivers", [])
@@ -41,7 +70,7 @@ class InsightRulesGenerator:
                 continue
 
             # Significant category increase
-            if delta > 2000 and share >= 0.20:  # > $20 and >= 20% of increase
+            if delta > threshold_20 and share >= 0.20:
                 freq_eff = d.get("frequency_effect_minor", 0)
                 ticket_eff = d.get("ticket_effect_minor", 0)
                 ref_eff = d.get("refund_effect_minor", 0)
@@ -63,7 +92,7 @@ class InsightRulesGenerator:
                     id=f"change_{cid}_{month}",
                     insight_type="CHANGE",
                     title=f"{name} drove {pct_share}% of spending increase",
-                    summary=f"{name} increased by ${round(delta / 100.0, 2):.2f}, {driver_narrative}.",
+                    summary=f"{name} increased by {format_money(delta, currency)}, {driver_narrative}.",
                     metric="net_spending",
                     entity_type="category",
                     entity_id=cid,
@@ -71,7 +100,7 @@ class InsightRulesGenerator:
                     baseline_value_minor=d["previous_minor"],
                     delta_value_minor=delta,
                     delta_percent=round((delta / float(d["previous_minor"]) * 100.0), 1) if d["previous_minor"] > 0 else 100.0,
-                    severity="warning" if delta > 5000 else "info",
+                    severity="warning" if delta > threshold_50 else "info",
                     confidence="high",
                     impact_score=min(1.0, (delta / float(max(1, total_curr_minor))) * 3.0),
                     unusualness_score=0.6,
@@ -81,20 +110,21 @@ class InsightRulesGenerator:
                     drilldown_filter={"category_id": cid, "month": month},
                     evidence={
                         "category": name,
-                        "current": round(d["current_minor"] / 100.0, 2),
-                        "previous": round(d["previous_minor"] / 100.0, 2),
-                        "delta": round(delta / 100.0, 2),
+                        "current": float(minor_to_major(d["current_minor"], currency)),
+                        "previous": float(minor_to_major(d["previous_minor"], currency)),
+                        "delta": float(minor_to_major(delta, currency)),
                         "share_of_increase": f"{pct_share}%",
-                        "frequency_effect": round(freq_eff / 100.0, 2),
-                        "ticket_effect": round(ticket_eff / 100.0, 2),
-                        "refund_effect": round(ref_eff / 100.0, 2)
+                        "frequency_effect": float(minor_to_major(freq_eff, currency)),
+                        "ticket_effect": float(minor_to_major(ticket_eff, currency)),
+                        "refund_effect": float(minor_to_major(ref_eff, currency))
                     },
                     generated_at=now_str,
-                    insight_key=insight_key
+                    insight_key=insight_key,
+                    currency=currency
                 ))
 
             # Significant reduction (achievement)
-            elif delta < -3000:
+            elif delta < -threshold_30:
                 achieve_key = f"achievement:{cid}"
                 if not InsightHistoryTracker.is_dismissed(achieve_key):
                     pct_drop = round(abs(delta) / float(d["previous_minor"]) * 100.0) if d["previous_minor"] > 0 else 0
@@ -103,7 +133,7 @@ class InsightRulesGenerator:
                         id=f"achieve_{cid}_{month}",
                         insight_type="ACHIEVEMENT",
                         title=f"{name} spending dropped {pct_drop}%",
-                        summary=f"You reduced {name} spending by ${round(abs(delta) / 100.0, 2):.2f} compared to last month.",
+                        summary=f"You reduced {name} spending by {format_money(abs(delta), currency)} compared to last month.",
                         metric="net_spending",
                         entity_type="category",
                         entity_id=cid,
@@ -121,11 +151,12 @@ class InsightRulesGenerator:
                         drilldown_filter={"category_id": cid, "month": month},
                         evidence={
                             "category": name,
-                            "saved": round(abs(delta) / 100.0, 2),
+                            "saved": float(minor_to_major(abs(delta), currency)),
                             "drop_pct": f"{pct_drop}%"
                         },
                         generated_at=now_str,
-                        insight_key=achieve_key
+                        insight_key=achieve_key,
+                        currency=currency
                     ))
 
         # 2. Rules from Anomalies
@@ -167,7 +198,8 @@ class InsightRulesGenerator:
                     "robust_score": a.get("robust_score", 0)
                 },
                 generated_at=now_str,
-                insight_key=a_id
+                insight_key=a_id,
+                currency=a.get("currency") or currency
             ))
 
         # 3. Rules from Forecast & Budgets
@@ -184,7 +216,7 @@ class InsightRulesGenerator:
                 id=f"forecast_overrun_{month}",
                 insight_type="FORECAST",
                 title=f"Projected to exceed budget by {over_pct}%",
-                summary=f"At current pace, projected spending is ${round(proj_m / 100.0, 2):.2f}, which is ${round(over_m / 100.0, 2):.2f} over your monthly budget.",
+                summary=f"At current pace, projected spending is {format_money(proj_m, currency)}, which is {format_money(over_m, currency)} over your monthly budget.",
                 metric="budget_variance",
                 entity_type="budget",
                 entity_id=None,
@@ -201,13 +233,14 @@ class InsightRulesGenerator:
                 final_rank_score=0.0,
                 drilldown_filter={"view": "forecast", "month": month},
                 evidence={
-                    "projected": round(proj_m / 100.0, 2),
-                    "budget": round(budget_m / 100.0, 2),
-                    "overrun": round(over_m / 100.0, 2),
+                    "projected": float(minor_to_major(proj_m, currency)),
+                    "budget": float(minor_to_major(budget_m, currency)),
+                    "overrun": float(minor_to_major(over_m, currency)),
                     "method": forecast_data.get("method")
                 },
                 generated_at=now_str,
-                insight_key=fc_key
+                insight_key=fc_key,
+                currency=currency
             ))
 
         # 4. Rules from Category Budgets Overrun
@@ -218,18 +251,20 @@ class InsightRulesGenerator:
                 c_name = c.get("name")
                 b_key = f"cat_budget_risk:{cid}"
 
-                if var_m > 1500 and not InsightHistoryTracker.is_dismissed(b_key):
+                if var_m > threshold_15 and not InsightHistoryTracker.is_dismissed(b_key):
                     novelty = InsightHistoryTracker.compute_novelty_score(b_key, var_m)
+                    c_proj_m = c.get("projected_minor", 0)
+                    c_bud_m = c.get("budget_minor", 0)
                     candidates.append(Insight(
                         id=f"cat_overrun_{cid}_{month}",
                         insight_type="BUDGET",
                         title=f"{c_name} at risk of exceeding budget",
-                        summary=f"{c_name} is projected to reach ${c.get('projected'):.2f}, exceeding its ${c.get('budget'):.2f} budget.",
+                        summary=f"{c_name} is projected to reach {format_money(c_proj_m, currency)}, exceeding its {format_money(c_bud_m, currency)} budget.",
                         metric="category_budget",
                         entity_type="category",
                         entity_id=cid,
-                        current_value_minor=c.get("projected_minor", 0),
-                        baseline_value_minor=c.get("budget_minor", 0),
+                        current_value_minor=c_proj_m,
+                        baseline_value_minor=c_bud_m,
                         delta_value_minor=var_m,
                         delta_percent=round(var_m / float(c.get("budget_minor", 1)) * 100.0, 1),
                         severity="warning",
@@ -246,7 +281,8 @@ class InsightRulesGenerator:
                             "variance": c.get("projected_variance")
                         },
                         generated_at=now_str,
-                        insight_key=b_key
+                        insight_key=b_key,
+                        currency=currency
                     ))
 
         return candidates

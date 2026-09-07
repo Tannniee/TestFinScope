@@ -22,7 +22,25 @@ let activeFilters = {
   essentiality: null
 };
 
-export async function renderTransactionsPage(container) {
+export function resetTransactionPageState() {
+  currentOffset = 0;
+  isReviewQueueActive = false;
+  activeFilters = {
+    search: '',
+    category_id: null,
+    account_id: null,
+    transaction_type: null,
+    essentiality: null
+  };
+}
+
+export async function renderTransactionsPage(container, context = {}) {
+  resetTransactionPageState();
+  if (context.registerCleanup) {
+    context.registerCleanup(() => {
+      resetTransactionPageState();
+    });
+  }
   container.innerHTML = `
     <div class="transactions-view">
       <!-- Filter Bar -->

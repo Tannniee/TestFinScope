@@ -881,21 +881,24 @@ async function renderForecastTab(container) {
 
   const netColor = (fc.projected_net_flow || 0) >= 0 ? 'var(--color-positive)' : 'var(--color-negative)';
 
+  const curr = fc.currency || state.currency;
+  const budCurr = fc.budget_currency || state.currency;
+
   container.innerHTML = `
     <!-- Top 4 Cards -->
     <div class="grid-4col" style="margin-bottom: 24px;">
       <div class="fin-card">
         <span class="kpi-label">Projected Month-End Spend</span>
         <div class="kpi-value" style="font-size: 28px; margin: 6px 0; color: var(--text-primary);">
-          ${state.formatCurrency(fc.projected_expense)}
+          ${state.formatCurrency(fc.projected_expense, curr)}
         </div>
-        <span class="kpi-footer">${(fc.range_type === 'calibrated_range' || fc.components?.range_type === 'calibrated_range') ? 'Likely range' : 'Early estimate'}: ${state.formatCurrency(fc.lower_bound)} – ${state.formatCurrency(fc.upper_bound)}</span>
+        <span class="kpi-footer">${(fc.range_type === 'calibrated_range' || fc.components?.range_type === 'calibrated_range') ? 'Likely range' : 'Early estimate'}: ${state.formatCurrency(fc.lower_bound, curr)} – ${state.formatCurrency(fc.upper_bound, curr)}</span>
       </div>
 
       <div class="fin-card">
         <span class="kpi-label">Spent to Date</span>
         <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #4DD5A5;">
-          ${state.formatCurrency(fc.actual_spent_to_date)}
+          ${state.formatCurrency(fc.actual_spent_to_date, curr)}
         </div>
         <span class="kpi-footer">Days 1–${fc.components?.elapsed_days || 15} of ${fc.components?.total_days || 30}</span>
       </div>
@@ -903,7 +906,7 @@ async function renderForecastTab(container) {
       <div class="fin-card">
         <span class="kpi-label">Upcoming Recurring</span>
         <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #5B8CFF;">
-          ${state.formatCurrency(fc.upcoming_recurring)}
+          ${state.formatCurrency(fc.upcoming_recurring, curr)}
         </div>
         <span class="kpi-footer">Scheduled bills executing later</span>
       </div>
@@ -911,7 +914,7 @@ async function renderForecastTab(container) {
       <div class="fin-card">
         <span class="kpi-label">Remaining Variable</span>
         <div class="kpi-value" style="font-size: 26px; margin: 6px 0; color: #FF9F43;">
-          ${state.formatCurrency(fc.expected_variable)}
+          ${state.formatCurrency(fc.expected_variable, curr)}
         </div>
         <span class="kpi-footer">${escapeHtml(
           {
@@ -931,7 +934,7 @@ async function renderForecastTab(container) {
         <div>
           <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600;">Month-End Net Flow Projection</span>
           <div style="font-size: 24px; font-weight: 800; color: ${netColor}; margin-top: 4px;">
-            ${(fc.projected_net_flow || 0) >= 0 ? '+' : ''}${state.formatCurrency(fc.projected_net_flow || 0)}
+            ${(fc.projected_net_flow || 0) >= 0 ? '+' : ''}${state.formatCurrency(fc.projected_net_flow || 0, curr)}
           </div>
         </div>
 
@@ -939,13 +942,13 @@ async function renderForecastTab(container) {
           <div>
             <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Projected Income</div>
             <div style="font-size: 16px; font-weight: 700; color: var(--color-positive); margin-top: 2px;">
-              ${state.formatCurrency(fc.projected_income || 0)}
+              ${state.formatCurrency(fc.projected_income || 0, curr)}
             </div>
           </div>
           <div>
             <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Projected Spend</div>
             <div style="font-size: 16px; font-weight: 700; color: var(--color-negative); margin-top: 2px;">
-              ${state.formatCurrency(fc.projected_expense)}
+              ${state.formatCurrency(fc.projected_expense, curr)}
             </div>
           </div>
           <div>
@@ -982,17 +985,18 @@ async function renderForecastTab(container) {
           <tbody>
             ${catForecasts.map(cf => {
               const varColor = cf.is_over_budget ? 'var(--color-negative)' : 'var(--color-positive)';
+              const cfBudCurr = cf.budget_currency || budCurr;
               return `
                 <tr>
                   <td style="font-weight: 500;">
                     <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${escapeHtml(cf.color)}; margin-right:6px;"></span>
                     ${escapeHtml(cf.name)}
                   </td>
-                  <td style="text-align: right;">${state.formatCurrency(cf.actual)}</td>
-                  <td style="text-align: right; font-weight: 600;">${state.formatCurrency(cf.projected)}</td>
-                  <td style="text-align: right;">${cf.budget !== null ? state.formatCurrency(cf.budget) : '—'}</td>
+                  <td style="text-align: right;">${state.formatCurrency(cf.actual, curr)}</td>
+                  <td style="text-align: right; font-weight: 600;">${state.formatCurrency(cf.projected, curr)}</td>
+                  <td style="text-align: right;">${cf.budget !== null ? state.formatCurrency(cf.budget, cfBudCurr) : '—'}</td>
                   <td style="text-align: right; font-weight: 600; color: ${cf.projected_variance !== null ? varColor : 'var(--text-muted)'};">
-                    ${cf.projected_variance !== null ? `${cf.projected_variance > 0 ? '+' : ''}${state.formatCurrency(cf.projected_variance)}` : '—'}
+                    ${cf.projected_variance !== null ? `${cf.projected_variance > 0 ? '+' : ''}${state.formatCurrency(cf.projected_variance, cfBudCurr)}` : '—'}
                   </td>
                   <td>
                     ${cf.is_over_budget ? `

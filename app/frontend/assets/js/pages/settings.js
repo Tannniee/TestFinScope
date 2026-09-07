@@ -369,9 +369,9 @@ async function loadAccountsTable() {
           <td><span class="delta-badge neutral">${escapeHtml(a.account_type)}</span></td>
           <td style="color: var(--text-secondary);">${escapeHtml(a.institution || '—')}</td>
           <td style="font-family: monospace;">${escapeHtml(a.currency || 'USD')}</td>
-          <td style="text-align: right; font-family: monospace;">${state.formatCurrency(a.opening_balance)}</td>
+          <td style="text-align: right; font-family: monospace;">${state.formatCurrency(a.opening_balance, a.currency)}</td>
           <td style="text-align: right; font-weight: 700; font-family: monospace; color: ${Number(a.current_balance) >= 0 ? 'var(--color-positive)' : 'var(--color-negative)'};">
-            ${state.formatCurrency(a.current_balance)}
+            ${state.formatCurrency(a.current_balance, a.currency)}
           </td>
           <td>
             ${isArchived 

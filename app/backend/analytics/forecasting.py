@@ -22,6 +22,8 @@ from app.backend.services.merchant_service import normalize_merchant_name
 from app.backend.analytics.recurring_schedule import generate_occurrences
 from app.backend.services.settings_service import SettingsService
 from app.backend.fx.service import FxService
+from app.backend.domain.money import minor_to_major
+from app.backend.analytics.point_in_time import pit_filter_sql
 from app.backend.analytics.forecast_strategies import (
     ForecastContext,
     ModelSelector,
@@ -144,6 +146,7 @@ class ForecastingEngine:
             acc_clause = " AND t.account_id = ?" if context.account_id else ""
             acc_params: List[Any] = [context.account_id] if context.account_id else []
             amt_expr = money_ctx.tx_amount_expr
+            pit_clause, pit_params = pit_filter_sql(as_of_cutoff, table_alias="t", is_replay=replay_mode)
 
             # 1. Actual Spend & Income To Date
             actual_rows = []
@@ -159,9 +162,9 @@ class ForecastingEngine:
                         COUNT(t.id) as count
                     FROM active_transactions t
                     LEFT JOIN categories c ON t.category_id = c.id
-                    WHERE t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause}
+                    WHERE t.transaction_date >= ? AND t.transaction_date <= ? {acc_clause} {pit_clause}
                     GROUP BY t.transaction_type, t.is_recurring, t.category_id
-                """, [f"{context.as_of_month}-01", f"{context.as_of_month}-{elapsed_day:02d}"] + acc_params)
+                """, [f"{context.as_of_month}-01", f"{context.as_of_month}-{elapsed_day:02d}"] + acc_params + pit_params)
                 actual_rows = cur.fetchall()
 
             actual_expense_minor = 0
@@ -648,7 +651,14 @@ class ForecastingEngine:
                 c_var_amt = cat_vars.get(cid, 0)
                 c_proj = c_actual + c_upcoming + c_var_amt
                 c_budget = budget_map.get(cid)
-                c_var = (c_proj - c_budget) if c_budget is not None else None
+
+                if money_ctx.currency == base_currency:
+                    c_proj_base = c_proj
+                else:
+                    conv = FxService.convert_minor(c_proj, money_ctx.currency, base_currency, on_date=as_of_cutoff)
+                    c_proj_base = conv.target.minor
+
+                c_var = (c_proj_base - c_budget) if c_budget is not None else None
 
                 if c_proj != 0 or c_actual != 0 or c_budget is not None:
                     cat_forecasts.append({
@@ -656,13 +666,15 @@ class ForecastingEngine:
                         "name": c["name"],
                         "color": c["color"],
                         "actual_minor": c_actual,
-                        "actual": round(c_actual / 100.0, 2),
+                        "actual": money_ctx.to_major(c_actual),
                         "projected_minor": c_proj,
-                        "projected": round(c_proj / 100.0, 2),
+                        "projected": money_ctx.to_major(c_proj),
+                        "projected_base_minor": c_proj_base,
                         "budget_minor": c_budget,
-                        "budget": round(c_budget / 100.0, 2) if c_budget is not None else None,
+                        "budget": float(minor_to_major(c_budget, base_currency)) if c_budget is not None else None,
+                        "budget_currency": base_currency,
                         "projected_variance_minor": c_var,
-                        "projected_variance": round(c_var / 100.0, 2) if c_var is not None else None,
+                        "projected_variance": float(minor_to_major(c_var, base_currency)) if c_var is not None else None,
                         "is_over_budget": bool(c_var and c_var > 0)
                     })
 
@@ -765,8 +777,14 @@ class ForecastingEngine:
             lower_bound_minor = min(lower_bound_minor, projected_total_minor)
             upper_bound_minor = max(upper_bound_minor, projected_total_minor)
 
+            if money_ctx.currency == base_currency:
+                proj_total_base_minor = projected_total_minor
+            else:
+                conv_tot = FxService.convert_minor(projected_total_minor, money_ctx.currency, base_currency, on_date=as_of_cutoff)
+                proj_total_base_minor = conv_tot.target.minor
+
             # F110-09: Correct zero-budget check (0 is not None)
-            proj_budget_variance = (projected_total_minor - total_budget_minor) if total_budget_minor is not None else None
+            proj_budget_variance = (proj_total_base_minor - total_budget_minor) if total_budget_minor is not None else None
 
             # Diagnostics Payload (v1.0.9 Section 28 & 29, F110-04)
             comparable_origins = 0
@@ -834,6 +852,7 @@ class ForecastingEngine:
                 projected_savings_rate=projected_savings_rate,
                 actual_income_to_date_minor=actual_income_to_date_minor,
                 diagnostics=diagnostics,
-                currency=money_ctx.currency
+                currency=money_ctx.currency,
+                budget_currency=base_currency
             )
             return res.to_dict()

@@ -102,6 +102,25 @@ class BudgetRepository:
             return cur.lastrowid
 
     @staticmethod
+    def set_category_budget(category_id: int, month: str, amount_minor: int, currency: Optional[str] = None) -> int:
+        from app.backend.domain.validators import validate_month, validate_budget_category
+        validate_month(month)
+        base_currency = SettingsService.get_setting("currency", "USD") or "USD"
+        eff_currency = currency or base_currency
+        with get_db_connection() as conn:
+            validate_budget_category(conn, category_id)
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO budgets (category_id, start_date, amount_minor, period_type, currency)
+                VALUES (?, ?, ?, 'monthly', ?)
+                ON CONFLICT(category_id, start_date) DO UPDATE SET
+                    amount_minor = excluded.amount_minor,
+                    currency = excluded.currency
+            """, (category_id, month, int(amount_minor), eff_currency))
+            conn.commit()
+            return cur.lastrowid
+
+    @staticmethod
     def delete_budget(budget_id: int) -> bool:
         with get_db_connection() as conn:
             cur = conn.cursor()

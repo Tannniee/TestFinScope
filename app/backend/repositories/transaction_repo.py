@@ -229,7 +229,7 @@ class TransactionRepository:
         account_currency = account["currency"] if account else "USD"
         base_currency = SettingsService.get_setting("currency", "USD") or "USD"
 
-        raw_orig_curr = data.get("original_currency")
+        raw_orig_curr = data.get("original_currency") or data.get("currency")
         original_currency = validate_currency_code(raw_orig_curr) if raw_orig_curr else account_currency
         clean_date = validate_iso_date(data["transaction_date"], "Transaction date")
 
@@ -398,30 +398,37 @@ class TransactionRepository:
 
     @staticmethod
     def create_refund(
-        original_tx_id: int,
-        amount: float,
-        transaction_date: str,
+        original_tx_id: Optional[int] = None,
+        amount: float = 0.0,
+        transaction_date: str = "",
         account_id: Optional[int] = None,
-        note: str = ""
+        note: str = "",
+        *,
+        parent_tx_id: Optional[int] = None,
+        orig_tx_id: Optional[int] = None
     ) -> int:
         """
         Creates a refund linked to an original expense transaction atomically under BEGIN IMMEDIATE.
         Enforces:
-        1. Original transaction exists.
-        2. Original transaction is an expense.
-        3. Refund amount is strictly positive.
-        4. Cumulative active refunds do not exceed the original expense amount.
+        1. Original transaction exists and is an expense.
+        2. Refund amount is strictly positive and evaluated in the parent's original purchase currency.
+        3. Cumulative active refunds do not exceed the parent's original purchase amount.
+        4. Settlement amount into target account is correctly converted via FX.
         """
+        target_orig_id = parent_tx_id or orig_tx_id or original_tx_id
+        if not target_orig_id:
+            raise ValueError("Original transaction ID is required for a linked refund.")
+
         from app.backend.domain.validators import validate_positive_amount, validate_iso_date
         clean_date = validate_iso_date(transaction_date, "Refund transaction date")
 
         # 1. Pre-fetch original transaction and account currencies before transaction lock
         with get_db_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM transactions WHERE id = ?", (original_tx_id,))
+            cur.execute("SELECT * FROM transactions WHERE id = ?", (target_orig_id,))
             orig = cur.fetchone()
             if not orig:
-                raise ValueError(f"Original transaction {original_tx_id} not found.")
+                raise ValueError(f"Original transaction {target_orig_id} not found.")
 
             if orig["transaction_type"] != "expense":
                 raise ValueError(f"Cannot refund a transaction of type '{orig['transaction_type']}'; only expenses can be refunded.")
@@ -436,13 +443,19 @@ class TransactionRepository:
             target_acc_curr = target_acc_row["currency"] if target_acc_row else orig_acc_curr
 
         base_currency = SettingsService.get_setting("currency", "USD") or "USD"
-        refund_minor = validate_positive_amount(amount, "Refund amount", currency=orig_acc_curr)
+        orig_dict = dict(orig)
+        orig_purchase_curr = orig_dict.get("original_currency") or orig_acc_curr
+        orig_total_minor = orig_dict.get("original_amount_minor") if orig_dict.get("original_amount_minor") is not None else orig_dict["amount_minor"]
 
-        # 2. Resolve multi-currency and FX valuations outside of exclusive transaction lock
-        if target_acc_curr == orig_acc_curr:
-            target_amount_minor = refund_minor
+        # Validate amount in the parent's original purchase currency
+        refund_original_minor = validate_positive_amount(amount, "Refund amount", currency=orig_purchase_curr)
+
+        # 2. Resolve multi-currency and FX valuations:
+        # Original refund amount (in orig_purchase_curr) -> settlement in target account -> base/reporting currency
+        if target_acc_curr == orig_purchase_curr:
+            target_amount_minor = refund_original_minor
         else:
-            conv_target = FxService.convert_minor(refund_minor, orig_acc_curr, target_acc_curr, on_date=clean_date)
+            conv_target = FxService.convert_minor(refund_original_minor, orig_purchase_curr, target_acc_curr, on_date=clean_date)
             target_amount_minor = conv_target.target.minor
 
         if target_acc_curr == base_currency:
@@ -471,23 +484,15 @@ class TransactionRepository:
                     SELECT COALESCE(SUM(COALESCE(original_amount_minor, amount_minor)), 0)
                     FROM active_transactions
                     WHERE refund_of_transaction_id = ? AND transaction_type = 'refund'
-                """, (original_tx_id,))
+                """, (target_orig_id,))
                 existing_refunded_minor = cur.fetchone()[0]
 
-                orig_dict = dict(orig)
-                orig_total_minor = orig_dict.get("original_amount_minor") if orig_dict.get("original_amount_minor") is not None else orig_dict["amount_minor"]
                 remaining_refundable_minor = orig_total_minor - existing_refunded_minor
-                if refund_minor > remaining_refundable_minor:
-                    if orig_acc_curr == "USD":
-                        err_str = (
-                            f"Refund amount of ${refund_minor / 100:.2f} exceeds remaining refundable balance of ${remaining_refundable_minor / 100:.2f} "
-                            f"(Original: ${orig_total_minor / 100:.2f}, Prior Refunds: ${existing_refunded_minor / 100:.2f})."
-                        )
-                    else:
-                        err_str = (
-                            f"Refund amount of {format_money(refund_minor, orig_acc_curr)} exceeds remaining refundable balance of {format_money(remaining_refundable_minor, orig_acc_curr)} "
-                            f"(Original: {format_money(orig_total_minor, orig_acc_curr)}, Prior Refunds: {format_money(existing_refunded_minor, orig_acc_curr)})."
-                        )
+                if refund_original_minor > remaining_refundable_minor:
+                    err_str = (
+                        f"Refund amount of {format_money(refund_original_minor, orig_purchase_curr)} exceeds remaining refundable balance of {format_money(remaining_refundable_minor, orig_purchase_curr)} "
+                        f"(Original: {format_money(orig_total_minor, orig_purchase_curr)}, Prior Refunds: {format_money(existing_refunded_minor, orig_purchase_curr)})."
+                    )
                     raise ValueError(err_str)
 
                 cur.execute("""
@@ -516,9 +521,9 @@ class TransactionRepository:
                     note,
                     orig["payment_method"] or "Card",
                     orig["essentiality"] or "discretionary",
-                    original_tx_id,
-                    orig_acc_curr,
-                    refund_minor,
+                    target_orig_id,
+                    orig_purchase_curr,
+                    refund_original_minor,
                     base_currency,
                     base_amount_minor,
                     fx_rate_to_base,
@@ -542,9 +547,8 @@ class TransactionRepository:
         account_id: Optional[int] = None
     ) -> bool:
         """
-        Updates an existing refund transaction atomically under BEGIN IMMEDIATE,
-        enforcing that the updated amount does not cause total cumulative refunds
-        to exceed the original expense.
+        Updates an existing refund transaction atomically under BEGIN IMMEDIATE.
+        Recalculates FX conversions and validates cumulative bounds against original parent in purchase currency.
         """
         from app.backend.domain.validators import validate_positive_amount, validate_iso_date
 
@@ -558,35 +562,39 @@ class TransactionRepository:
             if orig_refund["transaction_type"] != "refund":
                 raise ValueError(f"Transaction {tx_id} is not a refund.")
 
-            clean_date = validate_iso_date(transaction_date, "Refund transaction date") if transaction_date else orig_refund["transaction_date"]
-            target_acc_id = account_id if account_id is not None else orig_refund["account_id"]
+            ref_dict = dict(orig_refund)
+            clean_date = validate_iso_date(transaction_date, "Refund transaction date") if transaction_date else ref_dict["transaction_date"]
+            target_acc_id = account_id if account_id is not None else ref_dict["account_id"]
             cur.execute("SELECT currency FROM accounts WHERE id = ?", (target_acc_id,))
             target_row = cur.fetchone()
             target_acc_curr = target_row["currency"] if target_row else "USD"
 
-            parent_id = orig_refund["refund_of_transaction_id"]
+            parent_id = ref_dict.get("refund_of_transaction_id")
             parent_acc_curr = target_acc_curr
+            parent_orig_curr = ref_dict.get("original_currency") or target_acc_curr
             parent_tx = None
             if parent_id:
                 cur.execute("SELECT * FROM transactions WHERE id = ?", (parent_id,))
                 parent_tx = cur.fetchone()
                 if parent_tx:
-                    cur.execute("SELECT currency FROM accounts WHERE id = ?", (parent_tx["account_id"],))
+                    p_dict = dict(parent_tx)
+                    cur.execute("SELECT currency FROM accounts WHERE id = ?", (p_dict["account_id"],))
                     p_row = cur.fetchone()
                     parent_acc_curr = p_row["currency"] if p_row else "USD"
+                    parent_orig_curr = p_dict.get("original_currency") or parent_acc_curr
 
         base_currency = SettingsService.get_setting("currency", "USD") or "USD"
 
         if amount is not None:
-            new_amount_minor = validate_positive_amount(amount, "Refund amount", currency=parent_acc_curr)
+            new_original_minor = validate_positive_amount(amount, "Refund amount", currency=parent_orig_curr)
         else:
-            new_amount_minor = orig_refund.get("original_amount_minor") or orig_refund["amount_minor"]
+            new_original_minor = ref_dict.get("original_amount_minor") if ref_dict.get("original_amount_minor") is not None else ref_dict["amount_minor"]
 
-        # 2. Resolve FX valuations outside of exclusive transaction lock
-        if target_acc_curr == parent_acc_curr:
-            target_amount_minor = new_amount_minor
+        # 2. Resolve FX valuations: parent_orig_curr -> target_acc_curr -> base_currency
+        if target_acc_curr == parent_orig_curr:
+            target_amount_minor = new_original_minor
         else:
-            conv_target = FxService.convert_minor(new_amount_minor, parent_acc_curr, target_acc_curr, on_date=clean_date)
+            conv_target = FxService.convert_minor(new_original_minor, parent_orig_curr, target_acc_curr, on_date=clean_date)
             target_amount_minor = conv_target.target.minor
 
         if target_acc_curr == base_currency:
@@ -619,17 +627,14 @@ class TransactionRepository:
                     p_dict = dict(parent_tx)
                     parent_total_minor = p_dict.get("original_amount_minor") if p_dict.get("original_amount_minor") is not None else p_dict["amount_minor"]
                     remaining = parent_total_minor - other_refunds
-                    if new_amount_minor > remaining:
-                        if parent_acc_curr == "USD":
-                            err_str = f"Updated refund amount of ${new_amount_minor / 100:.2f} exceeds remaining refundable balance of ${remaining / 100:.2f}."
-                        else:
-                            err_str = f"Updated refund amount of {format_money(new_amount_minor, parent_acc_curr)} exceeds remaining refundable balance of {format_money(remaining, parent_acc_curr)}."
+                    if new_original_minor > remaining:
+                        err_str = f"Updated refund amount of {format_money(new_original_minor, parent_orig_curr)} exceeds remaining refundable balance of {format_money(remaining, parent_orig_curr)}."
                         raise ValueError(err_str)
 
                 updates: Dict[str, Any] = {
                     "amount_minor": target_amount_minor,
-                    "original_amount_minor": new_amount_minor,
-                    "original_currency": parent_acc_curr,
+                    "original_amount_minor": new_original_minor,
+                    "original_currency": parent_orig_curr,
                     "base_currency": base_currency,
                     "base_amount_minor": base_amount_minor,
                     "fx_rate_to_base": fx_rate_to_base,
@@ -951,10 +956,15 @@ class TransactionRepository:
             cur = conn.cursor()
             query = """
                 SELECT 
-                    t.id, t.account_id, t.category_id, t.merchant_name, t.amount_minor,
-                    ROUND(CAST(t.amount_minor AS REAL) / 100.0, 2) as amount,
-                    t.transaction_date, t.description, t.essentiality,
-                    a.name as account_name,
+                    t.id, t.account_id, t.category_id, t.merchant_id, t.merchant_name, t.amount_minor,
+                    t.transaction_date, t.transaction_time, t.description, t.note,
+                    t.transaction_type, t.is_recurring, t.payment_method, t.essentiality,
+                    t.transfer_group_id, t.transfer_role, t.linked_transaction_id,
+                    t.refund_of_transaction_id, t.source, t.needs_review, t.is_deleted,
+                    t.original_currency, t.original_amount_minor,
+                    t.base_currency, t.base_amount_minor,
+                    t.fx_rate_to_base, t.fx_rate_date, t.fx_rate_source, t.fx_status,
+                    a.name as account_name, a.currency as account_currency,
                     c.name as category_name, c.color as category_color, c.icon as category_icon
                 FROM active_transactions t
                 LEFT JOIN accounts a ON t.account_id = a.id
@@ -978,7 +988,7 @@ class TransactionRepository:
             params.extend([limit, offset])
 
             cur.execute(query, params)
-            items = [dict(r) for r in cur.fetchall()]
+            items = [_hydrate_transaction_row(dict(r)) for r in cur.fetchall()]
 
             cur.execute(count_query, count_params)
             total = cur.fetchone()[0]

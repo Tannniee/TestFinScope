@@ -128,17 +128,20 @@ function setupDrawerHandlers() {
   });
 }
 
+let calendarCurrency = null;
+
 async function loadCalendar() {
   try {
     const data = await api.getCalendarData(state.month, state.accountId);
-    renderCalendarGrid(data.days);
+    calendarCurrency = data.currency || (state.accountId ? state.accounts.find(a => a.id === state.accountId)?.currency : state.currency) || 'USD';
+    renderCalendarGrid(data.days, calendarCurrency);
   } catch (err) {
     console.error('Failed to load calendar data:', err);
     showToast('Failed to load calendar data', 'error');
   }
 }
 
-function renderCalendarGrid(daysMap) {
+function renderCalendarGrid(daysMap, currency) {
   const container = document.getElementById('calendar-cells-container');
   if (!container) return;
 
@@ -181,10 +184,10 @@ function renderCalendarGrid(daysMap) {
 
         <div class="calendar-amounts">
           ${dayData.income > 0 ? `
-            <span style="color: var(--color-positive);">+${state.formatCurrency(dayData.income)}</span>
+            <span style="color: var(--color-positive);">+${state.formatCurrency(dayData.income, currency)}</span>
           ` : ''}
           ${dayData.expense > 0 ? `
-            <span style="color: var(--color-negative);">-${state.formatCurrency(dayData.expense)}</span>
+            <span style="color: var(--color-negative);">-${state.formatCurrency(dayData.expense, currency)}</span>
           ` : ''}
         </div>
       </div>

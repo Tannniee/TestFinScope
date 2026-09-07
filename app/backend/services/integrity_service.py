@@ -97,6 +97,23 @@ class IntegrityService:
         if inconsistent_budgets > 0:
             issues.append(f"Found {inconsistent_budgets} category budget(s) denominated in non-base currency ({base_currency}).")
 
+        # 6. Check Refund Original Currency Mismatch (FS123-008)
+        cur.execute("""
+            SELECT ref.id
+            FROM transactions ref
+            JOIN transactions orig ON ref.refund_of_transaction_id = orig.id
+            LEFT JOIN accounts a_ref ON ref.account_id = a_ref.id
+            LEFT JOIN accounts a_orig ON orig.account_id = a_orig.id
+            WHERE ref.is_deleted = 0 AND orig.is_deleted = 0
+              AND ref.transaction_type = 'refund'
+              AND (
+                  COALESCE(ref.original_currency, a_ref.currency, 'USD') != COALESCE(orig.original_currency, a_orig.currency, 'USD')
+              )
+        """)
+        mismatched_refunds = cur.fetchall()
+        if mismatched_refunds:
+            issues.append(f"Found {len(mismatched_refunds)} refund transaction(s) with original_currency mismatching parent purchase currency.")
+
         is_healthy = len(issues) == 0
 
         return {
@@ -108,6 +125,7 @@ class IntegrityService:
                 "mismatched_transfers": len(mismatched_transfers),
                 "over_refunded_transactions": len(over_refunded),
                 "missing_base_valuations": missing_base_count,
-                "inconsistent_budgets": inconsistent_budgets
+                "inconsistent_budgets": inconsistent_budgets,
+                "mismatched_refunds": len(mismatched_refunds)
             }
         }
