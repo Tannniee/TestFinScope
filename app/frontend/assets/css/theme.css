@@ -31,7 +31,7 @@
   --accent-gradient-subtle: linear-gradient(135deg, rgba(200, 90, 244, 0.15) 0%, rgba(91, 140, 255, 0.15) 50%, rgba(39, 213, 213, 0.15) 100%);
 
   /* Semantic gradients — hero card, sparkline area-fill, icon chips */
-  --gradient-hero: var(--accent-gradient);
+  --gradient-hero: linear-gradient(135deg, #7C3AED 0%, #4F46E5 50%, #2563EB 100%);
   --gradient-income: linear-gradient(135deg, #4DD5A5 0%, #27D5D5 100%);
   --gradient-expense: linear-gradient(135deg, #FF6B8A 0%, #C85AF4 100%);
   --gradient-savings: linear-gradient(135deg, #FFCC66 0%, #FF9F43 100%);
@@ -142,3 +142,23 @@ a:hover {
   font-variant-numeric: tabular-nums;
   font-feature-settings: 'tnum' 1;
 }
+
+/* Global Reset: Suppress all browser numeric spinner controls (↑↓) */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]:hover::-webkit-outer-spin-button,
+input[type="number"]:hover::-webkit-inner-spin-button,
+input[type="number"]:focus::-webkit-outer-spin-button,
+input[type="number"]:focus::-webkit-inner-spin-button {
+  -webkit-appearance: none !important;
+  margin: 0 !important;
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield !important;
+  appearance: textfield !important;
+}
+

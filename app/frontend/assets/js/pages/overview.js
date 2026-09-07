@@ -35,15 +35,15 @@ export async function renderOverviewPage(container, context = {}) {
   const cleanup = () => {
     window.removeEventListener('resize', onResize);
     if (trendChartInstance) {
-      try { trendChartInstance.dispose(); } catch (e) {}
+      try { trendChartInstance.dispose(); } catch (e) { }
       trendChartInstance = null;
     }
     if (donutChartInstance) {
-      try { donutChartInstance.dispose(); } catch (e) {}
+      try { donutChartInstance.dispose(); } catch (e) { }
       donutChartInstance = null;
     }
     if (dailyChartInstance) {
-      try { dailyChartInstance.dispose(); } catch (e) {}
+      try { dailyChartInstance.dispose(); } catch (e) { }
       dailyChartInstance = null;
     }
   };
@@ -60,7 +60,7 @@ export async function renderOverviewPage(container, context = {}) {
       <div id="overview-fx-banner" style="margin-bottom: 20px; display: none;"></div>
 
       <!-- KPI Cards Row -->
-      <div class="grid-5col" id="kpi-row" style="margin-bottom: 24px;">
+      <div class="grid-5col" id="kpi-row">
         <div class="kpi-card stagger-in" id="kpi-income">
           <div class="kpi-header">
             <span class="kpi-label">Total Income</span>
@@ -130,7 +130,6 @@ export async function renderOverviewPage(container, context = {}) {
             </div>
           </div>
           <div class="kpi-value amount-value num-tabular" id="kpi-net-cash-val">$0.00</div>
-          <div id="kpi-net-cash-sparkline" class="kpi-sparkline"></div>
           <div class="kpi-footer">
             <span id="kpi-net-cash-sub">Liquid cash & balances</span>
           </div>
@@ -138,10 +137,10 @@ export async function renderOverviewPage(container, context = {}) {
       </div>
 
       <!-- Ranked Financial Insights Strip (Core Analytics Engine) -->
-      <div id="overview-insights-strip" class="insight-strip"></div>
+      <div id="overview-insights-strip" class="insight-strip" style="display: none;"></div>
 
       <!-- Charts Section: Cash Flow Trend & Expense Breakdown -->
-      <div class="grid-2col" style="grid-template-columns: 1.6fr 1fr; margin-bottom: 24px;">
+      <div class="grid-2col" style="grid-template-columns: 1.6fr 1fr;">
         <div class="fin-card">
           <div class="card-header">
             <div class="card-title-wrap">
@@ -149,7 +148,7 @@ export async function renderOverviewPage(container, context = {}) {
               <p>Daily income vs. expense progression</p>
             </div>
           </div>
-          <div id="trend-chart" style="width: 100%; height: 280px;"></div>
+          <div id="trend-chart" style="width: 100%; height: 250px;"></div>
         </div>
 
         <div class="fin-card">
@@ -159,7 +158,7 @@ export async function renderOverviewPage(container, context = {}) {
               <p>Spending distribution across categories</p>
             </div>
           </div>
-          <div id="donut-chart" style="width: 100%; height: 280px;"></div>
+          <div id="donut-chart" style="width: 100%; height: 250px;"></div>
         </div>
       </div>
 
@@ -172,7 +171,7 @@ export async function renderOverviewPage(container, context = {}) {
               <p>Expense intensity per day with peak day indicators</p>
             </div>
           </div>
-          <div id="daily-chart" style="width: 100%; height: 260px;"></div>
+          <div id="daily-chart" style="width: 100%; height: 230px;"></div>
         </div>
 
         <div class="fin-card">
@@ -183,7 +182,7 @@ export async function renderOverviewPage(container, context = {}) {
             </div>
             <a href="#transactions" class="btn btn-secondary btn-sm">View All</a>
           </div>
-          <div class="table-container" style="max-height: 260px; overflow-y: auto;">
+          <div class="table-container" style="height: 230px; max-height: 230px; overflow-y: auto;">
             <table class="fin-table" id="recent-tx-table">
               <thead>
                 <tr>
@@ -214,7 +213,7 @@ async function loadDashboardData() {
   try {
     const [summary, recentTxs, insightsData, accounts] = await Promise.all([
       api.getMonthSummary(state.month, state.accountId),
-      api.getTransactions({ month: state.month, account_id: state.accountId, limit: 6 }),
+      api.getTransactions({ month: state.month, account_id: state.accountId, limit: 8 }),
       api.getRankedInsights(state.month, state.accountId, 4),
       api.getAccounts()
     ]);
@@ -287,8 +286,11 @@ function renderRankedInsights(insights) {
 
   if (!insights || insights.length === 0) {
     container.innerHTML = '';
+    container.style.display = 'none';
     return;
   }
+
+  container.style.display = 'flex';
 
   const sevIcons = {
     critical: { icon: 'alert-triangle', color: '#FF6B8A', bg: 'rgba(255, 107, 138, 0.15)' },
@@ -466,17 +468,6 @@ function renderKPIs(kpis, accounts = [], trend = null, currency = null) {
       const netDaily = trend.income.map((inc, i) => inc - (trend.expense[i] || 0));
       renderSparkline(netSparkEl, netDaily, '#5B8CFF');
     }
-
-    const cashSparkEl = document.getElementById('kpi-net-cash-sparkline');
-    if (cashSparkEl && trend.income && trend.expense) {
-      // Running net balance trajectory
-      let running = netCash;
-      const cum = trend.income.map((inc, i) => {
-        running += (inc - (trend.expense[i] || 0));
-        return running;
-      });
-      renderSparkline(cashSparkEl, cum, '#FFFFFF', { lightOnGradient: true });
-    }
   }
 
   const savRadialEl = document.getElementById('kpi-savings-radial');
@@ -490,7 +481,7 @@ function renderTrendChart(trend, currency = 'USD') {
   if (!chartDom || !window.echarts) return;
 
   if (trendChartInstance) {
-    try { trendChartInstance.dispose(); } catch (e) {}
+    try { trendChartInstance.dispose(); } catch (e) { }
   }
   trendChartInstance = window.echarts.init(chartDom);
 
@@ -566,15 +557,41 @@ function renderDonutChart(categories, currency = 'USD') {
   if (!chartDom || !window.echarts) return;
 
   if (donutChartInstance) {
-    try { donutChartInstance.dispose(); } catch (e) {}
+    try { donutChartInstance.dispose(); } catch (e) { }
   }
   donutChartInstance = window.echarts.init(chartDom);
 
-  const chartData = (categories || []).map(c => ({
-    name: c.name,
-    value: c.amount,
-    itemStyle: { color: c.color }
-  }));
+  // Identify the top 4 categories with the highest spending amounts
+  const sortedCategories = [...(categories || [])].sort((a, b) => (b.amount || 0) - (a.amount || 0));
+  const top4Names = new Set(sortedCategories.slice(0, 4).filter(c => (c.amount || 0) > 0).map(c => c.name));
+
+  const chartData = (categories || []).map(c => {
+    const isTop4 = top4Names.has(c.name);
+    return {
+      name: c.name,
+      value: c.amount,
+      itemStyle: { color: c.color },
+      label: {
+        show: isTop4,
+        position: 'outside',
+        distanceToLabelLine: 6,
+        fontSize: 11,
+        fontWeight: 600,
+        color: '#CBD5E1',
+        formatter: (params) => `${params.name || ''}\n${params.percent}%`
+      },
+      labelLine: {
+        show: isTop4,
+        length: 16,
+        length2: 12,
+        smooth: 0.2,
+        lineStyle: {
+          color: 'rgba(255, 255, 255, 0.3)',
+          width: 1
+        }
+      }
+    };
+  });
 
   const option = {
     backgroundColor: 'transparent',
@@ -590,22 +607,26 @@ function renderDonutChart(categories, currency = 'USD') {
       {
         name: 'Expense by Category',
         type: 'pie',
-        radius: ['52%', '78%'],
-        center: ['50%', '50%'],
-        avoidLabelOverlap: false,
+        radius: ['46%', '70%'],
+        center: ['50%', '45%'],
+        avoidLabelOverlap: true,
         itemStyle: {
           borderRadius: 6,
           borderColor: '#171E33',
           borderWidth: 2
         },
-        label: { show: false },
+        labelLayout: {
+          hideOverlap: true
+        },
         emphasis: {
+          scale: true,
+          scaleSize: 6,
           label: {
             show: true,
             fontSize: 13,
             fontWeight: 'bold',
-            color: '#F5F7FB',
-            formatter: '{b}\n{d}%'
+            color: '#FFFFFF',
+            formatter: (params) => `${params.name}\n${params.percent}%`
           }
         },
         data: chartData.length > 0 ? chartData : [{ name: 'No Expenses', value: 0, itemStyle: { color: '#333' } }]
@@ -621,7 +642,7 @@ function renderDailyChart(trend, currency = 'USD') {
   if (!chartDom || !window.echarts) return;
 
   if (dailyChartInstance) {
-    try { dailyChartInstance.dispose(); } catch (e) {}
+    try { dailyChartInstance.dispose(); } catch (e) { }
   }
   dailyChartInstance = window.echarts.init(chartDom);
 
@@ -656,37 +677,34 @@ function renderDailyChart(trend, currency = 'USD') {
     },
     series: [
       {
-        name: 'Expense Bar',
-        type: 'bar',
-        data: (trend.expense || []).map(val => {
-          const isPeak = val === maxSpend && maxSpend > 0;
-          return {
-            value: val,
-            itemStyle: {
-              color: isPeak ? '#FF6B8A' : verticalGradient('#C85AF4', '#5B8CFF', 1.0, 0.85),
-              borderRadius: [4, 4, 0, 0]
-            }
-          };
-        }),
-        barMaxWidth: 18
-      },
-      {
-        name: 'Spending Trend',
+        name: 'Daily Spend',
         type: 'line',
         smooth: 0.35,
         data: trend.expense,
         itemStyle: { color: '#27D5D5' },
         lineStyle: { width: 2.5, color: '#27D5D5' },
+        areaStyle: {
+          color: verticalGradient('#27D5D5', '#27D5D5', 0.22, 0.0)
+        },
         showSymbol: false,
         markPoint: {
           data: [{ type: 'max', name: 'Peak' }],
-          symbol: 'pin',
-          symbolSize: 34,
-          itemStyle: { color: '#FF6B8A' },
+          symbol: 'circle',
+          symbolSize: 10,
+          itemStyle: {
+            color: '#FF6B8A',
+            borderColor: '#FFFFFF',
+            borderWidth: 2,
+            shadowColor: 'rgba(255, 107, 138, 0.6)',
+            shadowBlur: 8
+          },
           label: {
+            show: true,
+            position: 'top',
+            distance: 6,
             fontSize: 10,
-            fontWeight: 'bold',
-            color: '#FFFFFF',
+            fontWeight: '700',
+            color: '#FF6B8A',
             formatter: 'Peak'
           }
         }

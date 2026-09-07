@@ -7,9 +7,31 @@
   <meta name="description" content="Offline-first personal finance BI and analytics application for Windows." />
 
   <!-- FinScope Design System Stylesheets -->
-  <link rel="stylesheet" href="assets/css/theme.css" />
-  <link rel="stylesheet" href="assets/css/layout.css" />
-  <link rel="stylesheet" href="assets/css/components.css" />
+  <link rel="stylesheet" href="assets/css/theme.css?v=1.3.3.4" />
+  <link rel="stylesheet" href="assets/css/layout.css?v=1.3.3.4" />
+  <link rel="stylesheet" href="assets/css/components.css?v=1.3.3.4" />
+
+  <!-- Global browser spinner suppression for all number inputs -->
+  <style>
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]:hover::-webkit-inner-spin-button,
+    input[type="number"]:focus::-webkit-inner-spin-button,
+    .hero-amount-input::-webkit-outer-spin-button,
+    .hero-amount-input::-webkit-inner-spin-button {
+      -webkit-appearance: none !important;
+      margin: 0 !important;
+      display: none !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+    input[type="number"],
+    .hero-amount-input,
+    .form-input[type="number"] {
+      -moz-appearance: textfield !important;
+      appearance: textfield !important;
+    }
+  </style>
 
   <!-- Vendor Libraries (Bundled locally for 100% offline functionality) -->
   <script src="assets/vendor/echarts.min.js"></script>
@@ -201,7 +223,7 @@
             <button type="button" class="segmented-btn active expense" data-type="expense">Expense</button>
             <button type="button" class="segmented-btn income" data-type="income">Income</button>
             <button type="button" class="segmented-btn transfer" data-type="transfer">Transfer</button>
-            <button type="button" class="segmented-btn refund" data-type="refund">Refund</button>
+            <button type="button" class="segmented-btn refund" data-type="refund" id="tab-refund" style="display: none;">Refund</button>
           </div>
         </div>
 
@@ -211,36 +233,53 @@
           <input type="number" id="tx-amount" class="hero-amount-input" placeholder="0.00" step="0.01" min="0.01" required autocomplete="off" />
         </div>
 
-        <!-- Payee / Merchant with Autocomplete -->
-        <div class="form-group" id="group-merchant" style="position: relative;">
-          <label class="form-label" for="tx-merchant">Payee / Merchant</label>
-          <input type="text" id="tx-merchant" class="form-input" placeholder="e.g. Woolworths, Starbucks, City Rent" autocomplete="off" />
-          <div id="payee-autocomplete-box" class="payee-autocomplete-box"></div>
+        <!-- Mode Fields: Standard (Expense / Income / Refund) -->
+        <div id="slot-standard-fields">
+          <!-- Row 1: Payee / Merchant -->
+          <div class="form-group" id="group-merchant" style="position: relative; margin-bottom: 16px;">
+            <label class="form-label" for="tx-merchant">Payee / Merchant</label>
+            <input type="text" id="tx-merchant" class="form-input" placeholder="e.g. Woolworths, Starbucks, City Rent" autocomplete="off" />
+            <div id="payee-autocomplete-box" class="payee-autocomplete-box"></div>
+          </div>
+
+          <!-- Row 2: Category & Account -->
+          <div class="form-row form-row-cat-acc" style="margin-bottom: 16px;">
+            <div class="form-group" id="group-category" style="margin-bottom: 0;">
+              <label class="form-label" for="tx-category">Category</label>
+              <select id="tx-category" class="form-select">
+                <option value="">Select Category...</option>
+              </select>
+            </div>
+            <div id="slot-standard-account" style="margin-bottom: 0;">
+              <div class="form-group" id="group-account" style="margin-bottom: 0;">
+                <label class="form-label" for="tx-account" id="label-account">Account</label>
+                <select id="tx-account" class="form-select" required>
+                  <option value="">Select Account...</option>
+                </select>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- Category & Account / Destination -->
-        <div class="form-row">
-          <div class="form-group" id="group-category">
-            <label class="form-label" for="tx-category">Category</label>
-            <select id="tx-category" class="form-select">
-              <option value="">Select Category...</option>
-            </select>
+        <!-- Mode Fields: Transfer -->
+        <div id="slot-transfer-fields" style="display: none;">
+          <!-- Row 1: Source & Destination Account (50% / 50%) -->
+          <div class="form-row form-row-equal" style="margin-bottom: 16px;">
+            <div id="slot-transfer-account" style="margin-bottom: 0;">
+              <!-- #group-account moves here dynamically in transfer mode -->
+            </div>
+            <div class="form-group" id="group-to-account" style="margin-bottom: 0;">
+              <label class="form-label" for="tx-to-account">Destination Account</label>
+              <select id="tx-to-account" class="form-select">
+                <option value="">Select Destination...</option>
+              </select>
+            </div>
           </div>
-          <div class="form-group" id="group-account">
-            <label class="form-label" for="tx-account" id="label-account">Account / Source</label>
-            <select id="tx-account" class="form-select" required>
-              <option value="">Select Account...</option>
-            </select>
-          </div>
-          <div class="form-group" id="group-to-account" style="display: none;">
-            <label class="form-label" for="tx-to-account">Destination Account</label>
-            <select id="tx-to-account" class="form-select">
-              <option value="">Select Destination...</option>
-            </select>
-          </div>
-          <div class="form-group" id="group-to-amount" style="display: none;">
+
+          <!-- Row 2: Dest Amount (Optional) -->
+          <div class="form-group" id="group-to-amount" style="margin-bottom: 16px;">
             <label class="form-label" for="tx-to-amount">Dest Amount (Optional)</label>
-            <input type="number" id="tx-to-amount" class="form-input" placeholder="Auto FX" step="any" min="0.01" />
+            <input type="number" id="tx-to-amount" class="form-input" placeholder="0.00" step="any" min="0.01" />
           </div>
         </div>
 
@@ -251,14 +290,21 @@
           <span style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">Refunds must reference an original transaction</span>
         </div>
 
-        <!-- Quick Date Picker & More Details Button -->
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px; margin-bottom: 6px;">
-          <div class="quick-date-pills">
-            <button type="button" class="quick-date-btn active" data-date="today">Today</button>
-            <button type="button" class="quick-date-btn" data-date="yesterday">Yesterday</button>
-            <button type="button" class="quick-date-btn" data-date="pick">Pick Date</button>
-            <input type="date" id="tx-date" class="form-input" style="display: none; width: auto; padding: 3px 8px; font-size: 11.5px;" required />
+        <!-- Date Selector Control -->
+        <div class="tx-date-bar">
+          <div class="date-chip-control">
+            <span class="form-label-inline">Date:</span>
+            <button type="button" id="tx-date-btn" class="date-chip-btn" title="Click to pick a date">
+              <i data-lucide="calendar" style="width: 14px; height: 14px; color: var(--accent-blue);"></i>
+              <span id="tx-date-display-label">Today</span>
+              <i data-lucide="chevron-down" style="width: 12px; height: 12px; opacity: 0.6;"></i>
+            </button>
+            <input type="date" id="tx-date" class="date-picker-hidden-input" style="position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; border: 0; padding: 0; margin: 0; visibility: hidden;" required />
           </div>
+        </div>
+
+        <!-- Progressive Disclosure Divider -->
+        <div class="more-details-divider">
           <button type="button" id="more-details-toggle" class="more-details-toggle">
             <span>More Details</span>
             <i data-lucide="chevron-down" style="width: 14px; height: 14px;"></i>
@@ -313,10 +359,17 @@
         </div>
 
         <!-- Modal Actions -->
-        <div class="modal-actions">
-          <button type="button" id="tx-modal-cancel" class="btn btn-secondary">Cancel</button>
-          <button type="button" id="tx-modal-save-add" class="btn btn-secondary" title="Save & Add Another (Ctrl+Shift+Enter)">Save & Add Another</button>
-          <button type="submit" id="tx-modal-save" class="btn btn-primary" title="Save Transaction (Ctrl+Enter)">Save Transaction</button>
+        <div class="modal-actions" style="display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border-subtle);">
+          <div class="modal-actions-left" style="display: flex; align-items: center; margin-right: auto;">
+            <label class="tx-add-another-toggle" id="tx-add-another-wrapper" title="Keep modal open to record another transaction (Ctrl+Shift+Enter)" style="display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); cursor: pointer; user-select: none;">
+              <input type="checkbox" id="tx-add-another-check" style="width: 16px; height: 16px; accent-color: var(--accent-blue); cursor: pointer; margin: 0;" />
+              <span>Add another</span>
+            </label>
+          </div>
+          <div class="modal-actions-right" style="display: flex; align-items: center; gap: 12px;">
+            <button type="button" id="tx-modal-cancel" class="btn-text" style="background: transparent; border: none; color: var(--text-muted); font-size: 13.5px; font-weight: 500; padding: 8px 16px; border-radius: var(--radius-md); cursor: pointer;">Cancel</button>
+            <button type="submit" id="tx-modal-save" class="btn btn-primary" title="Save Transaction (Ctrl+Enter)" style="padding: 10px 24px; font-weight: 600; border: none !important; background: var(--accent-gradient) no-repeat !important; background-size: 100% 100% !important; background-clip: padding-box !important; overflow: hidden !important;">Save Transaction</button>
+          </div>
         </div>
       </form>
     </div>

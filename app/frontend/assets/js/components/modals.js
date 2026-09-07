@@ -146,8 +146,9 @@ export const modals = {
       if (icon) icon.style.transform = isOpen ? 'rotate(180deg)' : 'rotate(0deg)';
     });
 
-    // Quick Date Pills
-    this.setupDatePills();
+    // Amount & Date Control setup
+    this.setupAmountInput();
+    this.setupDateControl();
 
     // Payee Autocomplete & Merchant Memory
     this.setupPayeeAutocomplete(payeeInput);
@@ -170,7 +171,7 @@ export const modals = {
       this.touched.date = true;
     });
 
-    // Save & Add Another handler
+    // Save & Add Another handler (supports legacy button if present)
     saveAddBtn?.addEventListener('click', async (e) => {
       e.preventDefault();
       await this.handleTransactionSubmit(true);
@@ -179,7 +180,8 @@ export const modals = {
     // Form submit
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      await this.handleTransactionSubmit(false);
+      const addAnother = Boolean(document.getElementById('tx-add-another-check')?.checked);
+      await this.handleTransactionSubmit(addAnother);
     });
 
     // Modal keyboard shortcuts (Ctrl+Enter, Ctrl+Shift+Enter)
@@ -189,53 +191,94 @@ export const modals = {
         if (e.shiftKey) {
           this.handleTransactionSubmit(true);
         } else {
-          this.handleTransactionSubmit(false);
+          const addAnother = Boolean(document.getElementById('tx-add-another-check')?.checked);
+          this.handleTransactionSubmit(addAnother);
         }
       }
     });
   },
 
-  setupDatePills() {
-    const pills = document.querySelectorAll('.quick-date-btn');
+  setupAmountInput() {
+    const amtInput = document.getElementById('tx-amount');
+    const wrapper = document.querySelector('.hero-amount-wrapper');
+    if (!amtInput) return;
+
+    const updateAmtWidth = () => {
+      const len = (amtInput.value || amtInput.placeholder || '0.00').length;
+      amtInput.style.width = `${Math.max(4, len) + 0.5}ch`;
+    };
+
+    amtInput.addEventListener('input', updateAmtWidth);
+    amtInput.addEventListener('change', updateAmtWidth);
+
+    wrapper?.addEventListener('click', (e) => {
+      if (e.target !== amtInput) {
+        amtInput.focus();
+      }
+    });
+
+    updateAmtWidth();
+  },
+
+  updateAmountWidth() {
+    const amtInput = document.getElementById('tx-amount');
+    if (!amtInput) return;
+    const len = (amtInput.value || amtInput.placeholder || '0.00').length;
+    amtInput.style.width = `${Math.max(4, len) + 0.5}ch`;
+  },
+
+  setupDateControl() {
+    const dateBtn = document.getElementById('tx-date-btn');
     const dateInput = document.getElementById('tx-date');
-    if (!dateInput) return;
+    if (!dateBtn || !dateInput) return;
 
-    pills.forEach(pill => {
-      pill.addEventListener('click', () => {
-        pills.forEach(p => p.classList.remove('active'));
-        pill.classList.add('active');
-        const dateType = pill.dataset.date;
-
-        if (dateType === 'today') {
-          dateInput.value = toLocalDateString();
-          dateInput.style.display = 'none';
-        } else if (dateType === 'yesterday') {
-          dateInput.value = localYesterdayString();
-          dateInput.style.display = 'none';
-        } else if (dateType === 'pick') {
-          dateInput.style.display = 'inline-block';
+    dateBtn.addEventListener('click', () => {
+      if (typeof dateInput.showPicker === 'function') {
+        try {
+          dateInput.showPicker();
+        } catch (err) {
           dateInput.focus();
         }
-      });
+      } else {
+        dateInput.focus();
+      }
     });
 
     dateInput.addEventListener('change', () => {
-      const selected = dateInput.value;
-      const todayStr = toLocalDateString();
-      const yesterdayStr = localYesterdayString();
-
-      pills.forEach(p => p.classList.remove('active'));
-      if (selected === todayStr) {
-        document.querySelector('.quick-date-btn[data-date="today"]')?.classList.add('active');
-        dateInput.style.display = 'none';
-      } else if (selected === yesterdayStr) {
-        document.querySelector('.quick-date-btn[data-date="yesterday"]')?.classList.add('active');
-        dateInput.style.display = 'none';
-      } else {
-        document.querySelector('.quick-date-btn[data-date="pick"]')?.classList.add('active');
-        dateInput.style.display = 'inline-block';
-      }
+      this.touched.date = true;
+      this.updateDateDisplay(dateInput.value);
     });
+  },
+
+  updateDateDisplay(dateStr) {
+    const label = document.getElementById('tx-date-display-label');
+    const dateInput = document.getElementById('tx-date');
+    if (!dateStr) return;
+    if (dateInput && dateInput.value !== dateStr) {
+      dateInput.value = dateStr;
+    }
+    if (!label) return;
+
+    const todayStr = toLocalDateString();
+    const yesterdayStr = localYesterdayString();
+
+    if (dateStr === todayStr) {
+      label.textContent = 'Today';
+    } else if (dateStr === yesterdayStr) {
+      label.textContent = 'Yesterday';
+    } else {
+      try {
+        const parts = dateStr.split('-');
+        if (parts.length === 3) {
+          const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          label.textContent = d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+        } else {
+          label.textContent = dateStr;
+        }
+      } catch (e) {
+        label.textContent = dateStr;
+      }
+    }
   },
 
   setupPayeeAutocomplete(payeeInput) {
@@ -457,6 +500,8 @@ export const modals = {
       const dateInput = document.getElementById('tx-date');
       if (dateInput) dateInput.value = toLocalDateString();
     }
+    const currentActiveDate = document.getElementById('tx-date')?.value || toLocalDateString();
+    this.updateDateDisplay(currentActiveDate);
 
     this.resetTouchedState();
     if (preserveAccount) this.touched.account = true;
@@ -464,6 +509,7 @@ export const modals = {
 
     this.hideAutocomplete();
     this.updateCurrencySymbol();
+    this.updateAmountWidth();
     this.captureFormSnapshot();
     amtInput?.focus();
   },
@@ -643,37 +689,41 @@ export const modals = {
   },
 
   updateFormFieldsForType(type) {
-    const toAccGroup = document.getElementById('group-to-account');
-    const toAmtGroup = document.getElementById('group-to-amount');
-    const catGroup = document.getElementById('group-category');
-    const merchantGroup = document.getElementById('group-merchant');
+    const stdFields = document.getElementById('slot-standard-fields');
+    const transferFields = document.getElementById('slot-transfer-fields');
+    const slotStandard = document.getElementById('slot-standard-account');
+    const slotTransfer = document.getElementById('slot-transfer-account');
+    const groupAccount = document.getElementById('group-account');
     const essGroup = document.getElementById('group-essentiality');
     const refundGroup = document.getElementById('group-refund-ref');
     const labelAccount = document.getElementById('label-account');
 
     if (type === 'transfer') {
-      if (toAccGroup) toAccGroup.style.display = 'flex';
-      if (toAmtGroup) toAmtGroup.style.display = 'flex';
-      if (catGroup) catGroup.style.display = 'none';
-      if (merchantGroup) merchantGroup.style.display = 'none';
+      if (groupAccount && slotTransfer && groupAccount.parentElement !== slotTransfer) {
+        slotTransfer.appendChild(groupAccount);
+      }
+      if (stdFields) stdFields.style.display = 'none';
+      if (transferFields) transferFields.style.display = 'block';
       if (essGroup) essGroup.style.display = 'none';
       if (refundGroup) refundGroup.style.display = 'none';
       if (labelAccount) labelAccount.textContent = 'Source Account';
     } else if (type === 'refund') {
-      if (toAccGroup) toAccGroup.style.display = 'none';
-      if (toAmtGroup) toAmtGroup.style.display = 'none';
+      if (groupAccount && slotStandard && groupAccount.parentElement !== slotStandard) {
+        slotStandard.appendChild(groupAccount);
+      }
+      if (transferFields) transferFields.style.display = 'none';
+      if (stdFields) stdFields.style.display = 'block';
       if (labelAccount) labelAccount.textContent = 'Account';
-      if (catGroup) catGroup.style.display = 'flex';
-      if (merchantGroup) merchantGroup.style.display = 'block';
       if (essGroup) essGroup.style.display = 'none';
       if (refundGroup) refundGroup.style.display = 'block';
       this.filterCategoryDropdown('expense');
     } else {
-      if (toAccGroup) toAccGroup.style.display = 'none';
-      if (toAmtGroup) toAmtGroup.style.display = 'none';
+      if (groupAccount && slotStandard && groupAccount.parentElement !== slotStandard) {
+        slotStandard.appendChild(groupAccount);
+      }
+      if (transferFields) transferFields.style.display = 'none';
+      if (stdFields) stdFields.style.display = 'block';
       if (labelAccount) labelAccount.textContent = 'Account';
-      if (catGroup) catGroup.style.display = 'flex';
-      if (merchantGroup) merchantGroup.style.display = 'block';
       if (essGroup) essGroup.style.display = 'flex';
       if (refundGroup) refundGroup.style.display = 'none';
       this.filterCategoryDropdown(type);
@@ -685,11 +735,11 @@ export const modals = {
     const toAccSelect = document.getElementById('tx-to-account');
 
     const accOptions = '<option value="">Select Account...</option>' +
-      state.accounts.map(a => `<option value="${escapeHtml(a.id)}" data-currency="${escapeHtml(a.currency || 'USD')}">${escapeHtml(a.name)} (${escapeHtml(a.currency || 'USD')} - ${escapeHtml(a.account_type)})</option>`).join('');
+      state.accounts.map(a => `<option value="${escapeHtml(a.id)}" data-currency="${escapeHtml(a.currency || 'USD')}" data-type="${escapeHtml(a.account_type)}">${escapeHtml(a.name)} · ${escapeHtml(a.currency || 'USD')}</option>`).join('');
 
     if (accSelect) accSelect.innerHTML = accOptions;
     if (toAccSelect) toAccSelect.innerHTML = '<option value="">Select Destination...</option>' +
-      state.accounts.map(a => `<option value="${escapeHtml(a.id)}" data-currency="${escapeHtml(a.currency || 'USD')}">${escapeHtml(a.name)} (${escapeHtml(a.currency || 'USD')} - ${escapeHtml(a.account_type)})</option>`).join('');
+      state.accounts.map(a => `<option value="${escapeHtml(a.id)}" data-currency="${escapeHtml(a.currency || 'USD')}" data-type="${escapeHtml(a.account_type)}">${escapeHtml(a.name)} · ${escapeHtml(a.currency || 'USD')}</option>`).join('');
 
     this.filterCategoryDropdown(document.getElementById('tx-type')?.value || 'expense');
     this.updateCurrencySymbol();
@@ -753,36 +803,22 @@ export const modals = {
 
     const isEditMode = options.mode === 'edit' || (Boolean(txData) && txData.id != null && options.mode !== 'create');
 
-    // Synchronize date pills with activeDate (UX-H04)
+    // Synchronize date display with activeDate
     const activeDate = txData?.transaction_date || options.defaultDate || toLocalDateString();
-    const todayStr = toLocalDateString();
-    const yesterdayStr = localYesterdayString();
-
-    document.querySelectorAll('.quick-date-btn').forEach(p => p.classList.remove('active'));
-    const dateInput = document.getElementById('tx-date');
-    if (dateInput) {
-      dateInput.value = activeDate;
-      if (activeDate === todayStr) {
-        document.querySelector('.quick-date-btn[data-date="today"]')?.classList.add('active');
-        dateInput.style.display = 'none';
-      } else if (activeDate === yesterdayStr) {
-        document.querySelector('.quick-date-btn[data-date="yesterday"]')?.classList.add('active');
-        dateInput.style.display = 'none';
-      } else {
-        document.querySelector('.quick-date-btn[data-date="pick"]')?.classList.add('active');
-        dateInput.style.display = 'inline-block';
-      }
-    }
+    this.updateDateDisplay(activeDate);
 
     const origCurrInput = document.getElementById('tx-orig-currency');
     const origAmtInput = document.getElementById('tx-orig-amount');
     const toAmtInput = document.getElementById('tx-to-amount');
+    const addAnotherWrapper = document.getElementById('tx-add-another-wrapper');
+    const tabRefund = document.getElementById('tab-refund');
 
     if (isEditMode) {
       this.activeTxId = txData.id;
       title.textContent = 'Edit Transaction';
       this.touched = { account: true, category: true, essentiality: true, date: true, type: true };
       if (saveAddBtn) saveAddBtn.style.display = 'none'; // Editing single transaction
+      if (addAnotherWrapper) addAnotherWrapper.style.display = 'none';
 
       document.getElementById('tx-amount').value = txData.amount;
       document.getElementById('tx-account').value = txData.account_id || '';
@@ -798,6 +834,7 @@ export const modals = {
 
       const type = txData.transaction_type || 'expense';
       document.getElementById('tx-type').value = type;
+      if (tabRefund) tabRefund.style.display = (type === 'refund') ? 'inline-block' : 'none';
       const isSpecial = type === 'transfer' || type === 'refund';
       modalOverlay.querySelectorAll('.segmented-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.type === type);
@@ -839,6 +876,8 @@ export const modals = {
       title.textContent = 'Record Transaction';
       this.resetTouchedState();
       if (saveAddBtn) saveAddBtn.style.display = 'inline-block';
+      if (addAnotherWrapper) addAnotherWrapper.style.display = 'inline-flex';
+      if (tabRefund) tabRefund.style.display = 'none';
       form.reset();
       if (origCurrInput) origCurrInput.value = '';
       if (origAmtInput) origAmtInput.value = '';
@@ -899,6 +938,7 @@ export const modals = {
       this.updateCurrencySymbol();
     }
 
+    this.updateAmountWidth();
     this.captureFormSnapshot();
     modalOverlay.classList.add('open');
     if (window.lucide) window.lucide.createIcons();
@@ -932,6 +972,8 @@ export const modals = {
     if (title) title.textContent = 'Record Refund';
 
     // Switch type to refund
+    const tabRefund = document.getElementById('tab-refund');
+    if (tabRefund) tabRefund.style.display = 'inline-block';
     document.getElementById('tx-type').value = 'refund';
     modalOverlay.querySelectorAll('.segmented-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.type === 'refund');
